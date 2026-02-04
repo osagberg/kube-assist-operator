@@ -37,6 +37,8 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	assistv1alpha1 "github.com/osagberg/kube-assist-operator/api/v1alpha1"
+	"github.com/osagberg/kube-assist-operator/internal/checker"
+	"github.com/osagberg/kube-assist-operator/internal/checker/workload"
 )
 
 // TroubleshootRequestReconciler reconciles a TroubleshootRequest object
@@ -44,6 +46,9 @@ type TroubleshootRequestReconciler struct {
 	client.Client
 	Scheme    *runtime.Scheme
 	Clientset *kubernetes.Clientset
+
+	// Registry is the checker registry (optional, for future use)
+	Registry *checker.Registry
 }
 
 // +kubebuilder:rbac:groups=assist.cluster.local,resources=troubleshootrequests,verbs=get;list;watch;create;update;patch;delete
@@ -372,30 +377,13 @@ func (r *TroubleshootRequestReconciler) diagnosePodsDetailed(pods []corev1.Pod) 
 }
 
 func (r *TroubleshootRequestReconciler) getSuggestionForWaitingReason(reason string) string {
-	suggestions := map[string]string{
-		"ImagePullBackOff":           "Check if the image exists and credentials are configured correctly.",
-		"ErrImagePull":               "Verify image name and tag. Check registry authentication.",
-		"CrashLoopBackOff":           "Application is crashing. Check logs for error messages.",
-		"CreateContainerConfigError": "Check ConfigMaps and Secrets referenced by the pod.",
-		"ContainerCreating":          "Container is being created. If stuck, check node resources and events.",
-	}
-	if s, ok := suggestions[reason]; ok {
-		return s
-	}
-	return "Check pod events for more details."
+	// Delegate to workload checker for consistent suggestions
+	return workload.GetSuggestionForWaitingReason(reason)
 }
 
 func (r *TroubleshootRequestReconciler) getSuggestionForTerminatedReason(reason string, exitCode int32) string {
-	if reason == "OOMKilled" {
-		return "Container exceeded memory limit. Increase memory limit or optimize memory usage."
-	}
-	if exitCode == 137 {
-		return "Container was killed (likely OOM). Increase memory limit."
-	}
-	if exitCode == 1 {
-		return "Application exited with error. Check application logs for details."
-	}
-	return fmt.Sprintf("Container exited with code %d. Check application logs.", exitCode)
+	// Delegate to workload checker for consistent suggestions
+	return workload.GetSuggestionForTerminatedReason(reason, exitCode)
 }
 
 // collectLogs gathers logs from target pods and stores in ConfigMap

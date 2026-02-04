@@ -42,14 +42,14 @@ const (
 )
 
 var (
-	allNamespaces   bool
-	labelSelector   string
-	watchMode       bool
-	outputJSON      bool
-	outputFormat    string
-	cleanup         bool
-	timeout         time.Duration
-	workerCount     int
+	allNamespaces bool
+	labelSelector string
+	watchMode     bool
+	outputJSON    bool
+	outputFormat  string
+	cleanup       bool
+	timeout       time.Duration
+	workerCount   int
 )
 
 const (

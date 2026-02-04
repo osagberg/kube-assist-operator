@@ -37,6 +37,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	assistv1alpha1 "github.com/osagberg/kube-assist-operator/api/v1alpha1"
+	"github.com/osagberg/kube-assist-operator/internal/checker"
+	"github.com/osagberg/kube-assist-operator/internal/checker/workload"
 	"github.com/osagberg/kube-assist-operator/internal/controller"
 	// +kubebuilder:scaffold:imports
 )
@@ -186,10 +188,16 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Initialize checker registry with available checkers
+	registry := checker.NewRegistry()
+	registry.MustRegister(workload.New())
+	setupLog.Info("Registered checkers", "checkers", registry.List())
+
 	if err := (&controller.TroubleshootRequestReconciler{
 		Client:    mgr.GetClient(),
 		Scheme:    mgr.GetScheme(),
 		Clientset: clientset,
+		Registry:  registry,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "TroubleshootRequest")
 		os.Exit(1)
