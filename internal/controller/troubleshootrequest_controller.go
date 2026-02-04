@@ -1,0 +1,511 @@
+/*
+Copyright 2026.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package controller
+
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"io"
+	"strings"
+	"time"
+
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/kubernetes"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
+
+	assistv1alpha1 "github.com/osagberg/kube-assist-operator/api/v1alpha1"
+)
+
+// TroubleshootRequestReconciler reconciles a TroubleshootRequest object
+type TroubleshootRequestReconciler struct {
+	client.Client
+	Scheme    *runtime.Scheme
+	Clientset *kubernetes.Clientset
+}
+
+// +kubebuilder:rbac:groups=assist.cluster.local,resources=troubleshootrequests,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=assist.cluster.local,resources=troubleshootrequests/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=assist.cluster.local,resources=troubleshootrequests/finalizers,verbs=update
+// +kubebuilder:rbac:groups=apps,resources=deployments;statefulsets;daemonsets;replicasets,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=pods;pods/log;events;configmaps,verbs=get;list;watch;create;update;patch
+// +kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;watch
+
+func (r *TroubleshootRequestReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+
+	// Fetch the TroubleshootRequest
+	troubleshoot := &assistv1alpha1.TroubleshootRequest{}
+	if err := r.Get(ctx, req.NamespacedName, troubleshoot); err != nil {
+		if apierrors.IsNotFound(err) {
+			return ctrl.Result{}, nil
+		}
+		return ctrl.Result{}, err
+	}
+
+	// Skip if already completed or failed
+	if troubleshoot.Status.Phase == assistv1alpha1.PhaseCompleted ||
+		troubleshoot.Status.Phase == assistv1alpha1.PhaseFailed {
+		return ctrl.Result{}, nil
+	}
+
+	// Initialize status if needed
+	if troubleshoot.Status.Phase == "" {
+		troubleshoot.Status.Phase = assistv1alpha1.PhasePending
+		now := metav1.Now()
+		troubleshoot.Status.StartedAt = &now
+		if err := r.Status().Update(ctx, troubleshoot); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{Requeue: true}, nil
+	}
+
+	// Set to running
+	if troubleshoot.Status.Phase == assistv1alpha1.PhasePending {
+		troubleshoot.Status.Phase = assistv1alpha1.PhaseRunning
+		if err := r.Status().Update(ctx, troubleshoot); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
+	log.Info("Troubleshooting workload", "target", troubleshoot.Spec.Target.Name)
+
+	// Find the target workload
+	pods, err := r.findTargetPods(ctx, troubleshoot)
+	if err != nil {
+		r.setFailed(ctx, troubleshoot, fmt.Sprintf("Failed to find target: %v", err))
+		return ctrl.Result{}, nil
+	}
+
+	if len(pods) == 0 {
+		r.setFailed(ctx, troubleshoot, "No pods found for target workload")
+		return ctrl.Result{}, nil
+	}
+
+	r.setCondition(troubleshoot, assistv1alpha1.ConditionTargetFound, metav1.ConditionTrue,
+		"Found", fmt.Sprintf("Found %d pod(s)", len(pods)))
+
+	// Perform diagnostics
+	var issues []assistv1alpha1.DiagnosticIssue
+
+	for _, action := range troubleshoot.Spec.Actions {
+		switch action {
+		case assistv1alpha1.ActionDiagnose, assistv1alpha1.ActionAll:
+			diagIssues := r.diagnosePodsDetailed(pods)
+			issues = append(issues, diagIssues...)
+		}
+	}
+
+	// Collect logs if requested
+	for _, action := range troubleshoot.Spec.Actions {
+		if action == assistv1alpha1.ActionLogs || action == assistv1alpha1.ActionAll {
+			cmName, err := r.collectLogs(ctx, troubleshoot, pods)
+			if err != nil {
+				log.Error(err, "Failed to collect logs")
+			} else {
+				troubleshoot.Status.LogsConfigMap = cmName
+				r.setCondition(troubleshoot, assistv1alpha1.ConditionLogsCollected, metav1.ConditionTrue,
+					"Collected", "Logs stored in ConfigMap")
+			}
+			break
+		}
+	}
+
+	// Collect events if requested
+	for _, action := range troubleshoot.Spec.Actions {
+		if action == assistv1alpha1.ActionEvents || action == assistv1alpha1.ActionAll {
+			cmName, err := r.collectEvents(ctx, troubleshoot, pods)
+			if err != nil {
+				log.Error(err, "Failed to collect events")
+			} else {
+				troubleshoot.Status.EventsConfigMap = cmName
+			}
+			break
+		}
+	}
+
+	// Update status with findings
+	troubleshoot.Status.Issues = issues
+	troubleshoot.Status.Summary = r.generateSummary(pods, issues)
+	troubleshoot.Status.Phase = assistv1alpha1.PhaseCompleted
+	now := metav1.Now()
+	troubleshoot.Status.CompletedAt = &now
+
+	r.setCondition(troubleshoot, assistv1alpha1.ConditionDiagnosed, metav1.ConditionTrue,
+		"Diagnosed", fmt.Sprintf("Found %d issue(s)", len(issues)))
+	r.setCondition(troubleshoot, assistv1alpha1.ConditionComplete, metav1.ConditionTrue,
+		"Complete", "Troubleshooting completed")
+
+	if err := r.Status().Update(ctx, troubleshoot); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	log.Info("Troubleshooting completed", "issues", len(issues), "summary", troubleshoot.Status.Summary)
+	return ctrl.Result{}, nil
+}
+
+// findTargetPods locates pods belonging to the target workload
+func (r *TroubleshootRequestReconciler) findTargetPods(ctx context.Context, tr *assistv1alpha1.TroubleshootRequest) ([]corev1.Pod, error) {
+	var selector *metav1.LabelSelector
+
+	switch tr.Spec.Target.Kind {
+	case "Deployment", "":
+		deploy := &appsv1.Deployment{}
+		if err := r.Get(ctx, client.ObjectKey{Namespace: tr.Namespace, Name: tr.Spec.Target.Name}, deploy); err != nil {
+			return nil, err
+		}
+		selector = deploy.Spec.Selector
+	case "StatefulSet":
+		sts := &appsv1.StatefulSet{}
+		if err := r.Get(ctx, client.ObjectKey{Namespace: tr.Namespace, Name: tr.Spec.Target.Name}, sts); err != nil {
+			return nil, err
+		}
+		selector = sts.Spec.Selector
+	case "DaemonSet":
+		ds := &appsv1.DaemonSet{}
+		if err := r.Get(ctx, client.ObjectKey{Namespace: tr.Namespace, Name: tr.Spec.Target.Name}, ds); err != nil {
+			return nil, err
+		}
+		selector = ds.Spec.Selector
+	case "Pod":
+		pod := &corev1.Pod{}
+		if err := r.Get(ctx, client.ObjectKey{Namespace: tr.Namespace, Name: tr.Spec.Target.Name}, pod); err != nil {
+			return nil, err
+		}
+		return []corev1.Pod{*pod}, nil
+	default:
+		return nil, fmt.Errorf("unsupported target kind: %s", tr.Spec.Target.Kind)
+	}
+
+	// List pods matching selector
+	labelSelector, err := metav1.LabelSelectorAsSelector(selector)
+	if err != nil {
+		return nil, err
+	}
+
+	podList := &corev1.PodList{}
+	if err := r.List(ctx, podList,
+		client.InNamespace(tr.Namespace),
+		client.MatchingLabelsSelector{Selector: labelSelector}); err != nil {
+		return nil, err
+	}
+
+	return podList.Items, nil
+}
+
+// diagnosePodsDetailed performs detailed diagnostics on pods
+func (r *TroubleshootRequestReconciler) diagnosePodsDetailed(pods []corev1.Pod) []assistv1alpha1.DiagnosticIssue {
+	var issues []assistv1alpha1.DiagnosticIssue
+
+	for _, pod := range pods {
+		// Check pod phase
+		if pod.Status.Phase != corev1.PodRunning {
+			issues = append(issues, assistv1alpha1.DiagnosticIssue{
+				Type:     "PodNotRunning",
+				Severity: "Critical",
+				Message:  fmt.Sprintf("Pod %s is in %s phase", pod.Name, pod.Status.Phase),
+			})
+		}
+
+		// Check container statuses
+		for _, cs := range pod.Status.ContainerStatuses {
+			if !cs.Ready {
+				issue := assistv1alpha1.DiagnosticIssue{
+					Type:     "ContainerNotReady",
+					Severity: "Critical",
+					Message:  fmt.Sprintf("Container %s in pod %s is not ready", cs.Name, pod.Name),
+				}
+
+				// Analyze why
+				if cs.State.Waiting != nil {
+					issue.Message = fmt.Sprintf("Container %s is waiting: %s - %s",
+						cs.Name, cs.State.Waiting.Reason, cs.State.Waiting.Message)
+					issue.Suggestion = r.getSuggestionForWaitingReason(cs.State.Waiting.Reason)
+				} else if cs.State.Terminated != nil {
+					issue.Message = fmt.Sprintf("Container %s terminated: %s (exit code %d)",
+						cs.Name, cs.State.Terminated.Reason, cs.State.Terminated.ExitCode)
+					issue.Suggestion = r.getSuggestionForTerminatedReason(cs.State.Terminated.Reason, cs.State.Terminated.ExitCode)
+				}
+
+				issues = append(issues, issue)
+			}
+
+			// Check restart count
+			if cs.RestartCount > 3 {
+				issues = append(issues, assistv1alpha1.DiagnosticIssue{
+					Type:       "HighRestartCount",
+					Severity:   "Warning",
+					Message:    fmt.Sprintf("Container %s has restarted %d times", cs.Name, cs.RestartCount),
+					Suggestion: "Check logs for crash reasons. Consider increasing resource limits or fixing application bugs.",
+				})
+			}
+		}
+
+		// Check for pending conditions
+		for _, cond := range pod.Status.Conditions {
+			if cond.Status == corev1.ConditionFalse {
+				switch cond.Type {
+				case corev1.PodScheduled:
+					issues = append(issues, assistv1alpha1.DiagnosticIssue{
+						Type:       "SchedulingFailed",
+						Severity:   "Critical",
+						Message:    fmt.Sprintf("Pod %s failed to schedule: %s", pod.Name, cond.Message),
+						Suggestion: "Check node resources, taints/tolerations, and affinity rules.",
+					})
+				case corev1.PodReady:
+					if cond.Reason == "ContainersNotReady" {
+						// Already handled above
+						continue
+					}
+					issues = append(issues, assistv1alpha1.DiagnosticIssue{
+						Type:     "PodNotReady",
+						Severity: "Warning",
+						Message:  fmt.Sprintf("Pod %s not ready: %s", pod.Name, cond.Message),
+					})
+				}
+			}
+		}
+
+		// Check resource usage (basic)
+		for _, container := range pod.Spec.Containers {
+			if container.Resources.Limits.Memory().IsZero() {
+				issues = append(issues, assistv1alpha1.DiagnosticIssue{
+					Type:       "NoMemoryLimit",
+					Severity:   "Warning",
+					Message:    fmt.Sprintf("Container %s has no memory limit set", container.Name),
+					Suggestion: "Set memory limits to prevent OOM issues and ensure fair resource sharing.",
+				})
+			}
+		}
+	}
+
+	return issues
+}
+
+func (r *TroubleshootRequestReconciler) getSuggestionForWaitingReason(reason string) string {
+	suggestions := map[string]string{
+		"ImagePullBackOff":           "Check if the image exists and credentials are configured correctly.",
+		"ErrImagePull":               "Verify image name and tag. Check registry authentication.",
+		"CrashLoopBackOff":           "Application is crashing. Check logs for error messages.",
+		"CreateContainerConfigError": "Check ConfigMaps and Secrets referenced by the pod.",
+		"ContainerCreating":          "Container is being created. If stuck, check node resources and events.",
+	}
+	if s, ok := suggestions[reason]; ok {
+		return s
+	}
+	return "Check pod events for more details."
+}
+
+func (r *TroubleshootRequestReconciler) getSuggestionForTerminatedReason(reason string, exitCode int32) string {
+	if reason == "OOMKilled" {
+		return "Container exceeded memory limit. Increase memory limit or optimize memory usage."
+	}
+	if exitCode == 137 {
+		return "Container was killed (likely OOM). Increase memory limit."
+	}
+	if exitCode == 1 {
+		return "Application exited with error. Check application logs for details."
+	}
+	return fmt.Sprintf("Container exited with code %d. Check application logs.", exitCode)
+}
+
+// collectLogs gathers logs from target pods and stores in ConfigMap
+func (r *TroubleshootRequestReconciler) collectLogs(ctx context.Context, tr *assistv1alpha1.TroubleshootRequest, pods []corev1.Pod) (string, error) {
+	if r.Clientset == nil {
+		return "", fmt.Errorf("clientset not initialized")
+	}
+
+	cmName := fmt.Sprintf("%s-logs", tr.Name)
+	data := make(map[string]string)
+
+	tailLines := int64(tr.Spec.TailLines)
+	if tailLines == 0 {
+		tailLines = 100
+	}
+
+	for _, pod := range pods {
+		for _, container := range pod.Spec.Containers {
+			logOpts := &corev1.PodLogOptions{
+				Container: container.Name,
+				TailLines: &tailLines,
+			}
+
+			req := r.Clientset.CoreV1().Pods(pod.Namespace).GetLogs(pod.Name, logOpts)
+			stream, err := req.Stream(ctx)
+			if err != nil {
+				data[fmt.Sprintf("%s-%s", pod.Name, container.Name)] = fmt.Sprintf("Error getting logs: %v", err)
+				continue
+			}
+			defer stream.Close()
+
+			buf := new(bytes.Buffer)
+			_, err = io.Copy(buf, stream)
+			if err != nil {
+				data[fmt.Sprintf("%s-%s", pod.Name, container.Name)] = fmt.Sprintf("Error reading logs: %v", err)
+				continue
+			}
+
+			data[fmt.Sprintf("%s-%s", pod.Name, container.Name)] = buf.String()
+		}
+	}
+
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      cmName,
+			Namespace: tr.Namespace,
+			Labels: map[string]string{
+				"app.kubernetes.io/managed-by": "kube-assist",
+				"assist.cluster.local/request": tr.Name,
+			},
+		},
+		Data: data,
+	}
+
+	if err := r.Create(ctx, cm); err != nil {
+		if apierrors.IsAlreadyExists(err) {
+			// Update existing
+			existing := &corev1.ConfigMap{}
+			if err := r.Get(ctx, client.ObjectKey{Namespace: tr.Namespace, Name: cmName}, existing); err != nil {
+				return "", err
+			}
+			existing.Data = data
+			if err := r.Update(ctx, existing); err != nil {
+				return "", err
+			}
+		} else {
+			return "", err
+		}
+	}
+
+	return cmName, nil
+}
+
+// collectEvents gathers events for the target workload
+func (r *TroubleshootRequestReconciler) collectEvents(ctx context.Context, tr *assistv1alpha1.TroubleshootRequest, pods []corev1.Pod) (string, error) {
+	cmName := fmt.Sprintf("%s-events", tr.Name)
+
+	eventList := &corev1.EventList{}
+	if err := r.List(ctx, eventList, client.InNamespace(tr.Namespace)); err != nil {
+		return "", err
+	}
+
+	var relevantEvents []string
+	podNames := make(map[string]bool)
+	for _, pod := range pods {
+		podNames[pod.Name] = true
+	}
+
+	for _, event := range eventList.Items {
+		// Filter events for our pods or the target workload
+		if podNames[event.InvolvedObject.Name] || event.InvolvedObject.Name == tr.Spec.Target.Name {
+			eventStr := fmt.Sprintf("[%s] %s %s: %s",
+				event.LastTimestamp.Format(time.RFC3339),
+				event.Type,
+				event.Reason,
+				event.Message)
+			relevantEvents = append(relevantEvents, eventStr)
+		}
+	}
+
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      cmName,
+			Namespace: tr.Namespace,
+			Labels: map[string]string{
+				"app.kubernetes.io/managed-by": "kube-assist",
+				"assist.cluster.local/request": tr.Name,
+			},
+		},
+		Data: map[string]string{
+			"events": strings.Join(relevantEvents, "\n"),
+		},
+	}
+
+	if err := r.Create(ctx, cm); err != nil {
+		if apierrors.IsAlreadyExists(err) {
+			existing := &corev1.ConfigMap{}
+			if err := r.Get(ctx, client.ObjectKey{Namespace: tr.Namespace, Name: cmName}, existing); err != nil {
+				return "", err
+			}
+			existing.Data = cm.Data
+			if err := r.Update(ctx, existing); err != nil {
+				return "", err
+			}
+		} else {
+			return "", err
+		}
+	}
+
+	return cmName, nil
+}
+
+// generateSummary creates a human-readable summary
+func (r *TroubleshootRequestReconciler) generateSummary(pods []corev1.Pod, issues []assistv1alpha1.DiagnosticIssue) string {
+	if len(issues) == 0 {
+		return fmt.Sprintf("All %d pod(s) healthy - no issues found", len(pods))
+	}
+
+	// Count by severity
+	critical := 0
+	warning := 0
+	for _, issue := range issues {
+		if issue.Severity == "Critical" {
+			critical++
+		} else if issue.Severity == "Warning" {
+			warning++
+		}
+	}
+
+	if critical > 0 {
+		return fmt.Sprintf("%d critical, %d warning issue(s) found", critical, warning)
+	}
+	return fmt.Sprintf("%d warning issue(s) found", warning)
+}
+
+func (r *TroubleshootRequestReconciler) setFailed(ctx context.Context, tr *assistv1alpha1.TroubleshootRequest, message string) {
+	tr.Status.Phase = assistv1alpha1.PhaseFailed
+	tr.Status.Summary = message
+	now := metav1.Now()
+	tr.Status.CompletedAt = &now
+	r.Status().Update(ctx, tr)
+}
+
+func (r *TroubleshootRequestReconciler) setCondition(tr *assistv1alpha1.TroubleshootRequest, condType string, status metav1.ConditionStatus, reason, message string) {
+	meta.SetStatusCondition(&tr.Status.Conditions, metav1.Condition{
+		Type:               condType,
+		Status:             status,
+		ObservedGeneration: tr.Generation,
+		Reason:             reason,
+		Message:            message,
+		LastTransitionTime: metav1.Now(),
+	})
+}
+
+// SetupWithManager sets up the controller with the Manager.
+func (r *TroubleshootRequestReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	return ctrl.NewControllerManagedBy(mgr).
+		For(&assistv1alpha1.TroubleshootRequest{}).
+		Named("troubleshootrequest").
+		Complete(r)
+}

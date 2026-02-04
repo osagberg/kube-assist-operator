@@ -1,0 +1,14 @@
+apiVersion: assist.cluster.local/v1alpha1
+kind: TroubleshootRequest
+metadata:
+  labels:
+    app.kubernetes.io/name: kube-assist
+    app.kubernetes.io/managed-by: kustomize
+  name: troubleshoot-my-app
+spec:
+  target:
+    kind: Deployment
+    name: my-app
+  actions:
+    - all
+  tailLines: 200

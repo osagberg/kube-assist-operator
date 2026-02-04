@@ -1,0 +1,4 @@
+## Append samples of your project ##
+resources:
+- assist_v1alpha1_troubleshootrequest.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples
