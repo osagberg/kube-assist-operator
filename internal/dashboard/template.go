@@ -308,6 +308,11 @@ const dashboardHTML = `<!DOCTYPE html>
                 </div>
             </div>
 
+            <div id="namespaceInfo" style="margin-bottom: 1.5rem; padding: 1rem; background: var(--bg-secondary); border-radius: 8px; border: 1px solid var(--bg-card);">
+                <span style="color: var(--text-secondary); font-size: 0.875rem;">Monitoring namespaces: </span>
+                <span id="namespaceList" style="font-size: 0.875rem;"></span>
+            </div>
+
             <div class="checkers-grid" id="checkersGrid">
                 <!-- Checker cards will be inserted here -->
             </div>
@@ -319,7 +324,25 @@ const dashboardHTML = `<!DOCTYPE html>
     <script>
         let eventSource = null;
 
+        async function fetchInitialData() {
+            try {
+                const resp = await fetch('/api/health');
+                const data = await resp.json();
+                if (data && data.results) {
+                    updateDashboard(data);
+                } else {
+                    document.getElementById('loading').innerHTML =
+                        '<div class="spinner"></div><p>Waiting for first health check...</p><p style="font-size: 0.8rem; margin-top: 0.5rem;">This takes ~30 seconds on startup</p>';
+                }
+            } catch (e) {
+                console.log('Initial fetch failed, waiting for SSE');
+            }
+        }
+
         function connect() {
+            // Try to get initial data immediately
+            fetchInitialData();
+
             eventSource = new EventSource('/api/events');
 
             eventSource.onopen = () => {
@@ -349,11 +372,23 @@ const dashboardHTML = `<!DOCTYPE html>
             document.getElementById('warningCount').textContent = data.summary.warningCount;
             document.getElementById('infoCount').textContent = data.summary.infoCount;
 
-            // Update checkers
+            // Update namespace list
+            const namespaces = data.namespaces || [];
+            document.getElementById('namespaceList').textContent = namespaces.length > 0
+                ? namespaces.join(', ')
+                : 'none';
+
+            // Update checkers - sort by issue count (most issues first)
             const grid = document.getElementById('checkersGrid');
             grid.innerHTML = '';
 
-            for (const [name, result] of Object.entries(data.results)) {
+            const sortedCheckers = Object.entries(data.results).sort((a, b) => {
+                const aIssues = (a[1].issues || []).length;
+                const bIssues = (b[1].issues || []).length;
+                return bIssues - aIssues;
+            });
+
+            for (const [name, result] of sortedCheckers) {
                 const card = createCheckerCard(name, result);
                 grid.appendChild(card);
             }
@@ -368,8 +403,11 @@ const dashboardHTML = `<!DOCTYPE html>
             const card = document.createElement('div');
             card.className = 'checker-card';
 
-            const criticalCount = result.issues.filter(i => i.severity === 'critical').length;
-            const warningCount = result.issues.filter(i => i.severity === 'warning').length;
+            // Handle null/undefined issues array
+            const issues = result.issues || [];
+            const criticalCount = issues.filter(i => i.severity.toLowerCase() === 'critical').length;
+            const warningCount = issues.filter(i => i.severity.toLowerCase() === 'warning').length;
+            const infoCount = issues.filter(i => i.severity.toLowerCase() === 'info').length;
 
             card.innerHTML = ` + "`" + `
                 <div class="checker-header">
@@ -378,12 +416,13 @@ const dashboardHTML = `<!DOCTYPE html>
                         <span style="color: #22c55e;">${result.healthy} healthy</span>
                         ${criticalCount > 0 ? ` + "`" + `<span style="color: #ef4444;">${criticalCount} critical</span>` + "`" + ` : ''}
                         ${warningCount > 0 ? ` + "`" + `<span style="color: #f59e0b;">${warningCount} warning</span>` + "`" + ` : ''}
+                        ${infoCount > 0 ? ` + "`" + `<span style="color: #3b82f6;">${infoCount} info</span>` + "`" + ` : ''}
                     </div>
                 </div>
                 <div class="issues-list">
-                    ${result.issues.length === 0 ?
+                    ${issues.length === 0 ?
                         '<div class="no-issues">All resources healthy</div>' :
-                        result.issues.map(issue => createIssueHTML(issue)).join('')
+                        issues.map(issue => createIssueHTML(issue)).join('')
                     }
                 </div>
             ` + "`" + `;
@@ -392,15 +431,16 @@ const dashboardHTML = `<!DOCTYPE html>
         }
 
         function createIssueHTML(issue) {
+            const severityLower = issue.severity.toLowerCase();
             return ` + "`" + `
                 <div class="issue">
                     <div class="issue-header">
-                        <span class="severity-badge ${issue.severity}">${issue.severity}</span>
+                        <span class="severity-badge ${severityLower}">${issue.severity}</span>
                         <span class="issue-type">${issue.type}</span>
                     </div>
                     <div class="issue-resource">${issue.namespace}/${issue.resource}</div>
                     <div class="issue-message">${issue.message}</div>
-                    ${issue.suggestion ? ` + "`" + `<div class="issue-suggestion">Suggestion: ${issue.suggestion}</div>` + "`" + ` : ''}
+                    ${issue.suggestion ? ` + "`" + `<div class="issue-suggestion">→ ${issue.suggestion}</div>` + "`" + ` : ''}
                 </div>
             ` + "`" + `;
         }

@@ -4,262 +4,242 @@
 [![Kubernetes](https://img.shields.io/badge/Kubernetes-1.28+-326CE5?style=flat&logo=kubernetes)](https://kubernetes.io/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
-**One command to diagnose your entire Kubernetes cluster.**
+Kubernetes operator for workload diagnostics and cluster health monitoring. One command to diagnose your entire cluster.
 
-KubeAssist is a Kubernetes operator that simplifies workload troubleshooting. Instead of running multiple `kubectl` commands and interpreting cryptic error messages, just run `kubeassist` and get instant, actionable diagnostics.
+## Features
 
-```
-$ kubeassist
-
-Summary: 1 healthy, 2 unhealthy (2 critical, 1 warnings)
-
-api-server [production]
-  * [Critical] Container app is waiting: CrashLoopBackOff
-    -> Application is crashing. Check logs for error messages.
-  - [Warning] Container app has restarted 12 times
-
-worker [production]
-  * [Critical] Container worker is waiting: ImagePullBackOff
-    -> Check if the image exists and credentials are configured.
-
-redis [production]
-  All 1 pod(s) healthy - no issues found
-```
+- **Two CRDs**: TroubleshootRequest for workload diagnostics, TeamHealthRequest for comprehensive health checks
+- **8 Checkers**: Workloads, Secrets, PVCs, Quotas, NetworkPolicies, HelmReleases, Kustomizations, GitRepositories
+- **CLI Tool**: `kubeassist` for instant diagnostics, `kubeassist health` for full health reports
+- **Web Dashboard**: Real-time updates via Server-Sent Events (SSE) on port 9090
+- **Flux Integration**: Native support for HelmRelease, Kustomization, and GitRepository resources
+- **Actionable Output**: Issues include severity levels and fix suggestions
 
 ## Quick Start
 
-### Option 1: CLI Tool (Recommended)
+### Install CLI
 
 ```sh
 git clone https://github.com/osagberg/kube-assist-operator.git
 cd kube-assist-operator
 make install-cli
-
-kubeassist                    # Scan all namespaces
-kubeassist production         # Scan specific namespace
-kubeassist -l app=api         # Filter by label
-kubeassist -o json            # JSON output
 ```
 
-### Option 2: Helm Chart
+### Run Diagnostics
 
 ```sh
+kubeassist                    # Diagnose all workloads
+kubeassist health             # Run all health checkers
+```
+
+### Deploy Operator
+
+```sh
+# Option 1: Helm
 helm install kube-assist charts/kube-assist -n kube-assist --create-namespace
-```
 
-### Option 3: Deploy with Kustomize
-
-```sh
+# Option 2: Kustomize
 make deploy IMG=ghcr.io/osagberg/kube-assist-operator:latest
 ```
 
-## CLI Reference
+## CLI Usage
+
+### Workload Diagnostics
+
+```sh
+kubeassist                    # All namespaces (default)
+kubeassist production         # Specific namespace
+kubeassist -l app=api         # Filter by label
+kubeassist -o json            # JSON output
+kubeassist -w                 # Watch mode
+```
 
 | Flag | Description | Default |
 |------|-------------|---------|
 | `-A`, `--all-namespaces` | Scan all namespaces | `true` |
-| `-l`, `--selector` | Label selector to filter workloads | - |
-| `-o`, `--output` | Output format: `text` or `json` | `text` |
-| `--workers` | Parallel workers for processing | `5` |
-| `--cleanup` | Delete TroubleshootRequests after scan | `true` |
-| `--timeout` | Timeout for diagnostics | `60s` |
-| `-w`, `--watch` | Continuous monitoring mode | `false` |
+| `-l`, `--selector` | Label selector | - |
+| `-o`, `--output` | Format: `text`, `json` | `text` |
+| `-w`, `--watch` | Continuous monitoring | `false` |
+| `--workers` | Parallel workers | `5` |
+| `--timeout` | Diagnostic timeout | `60s` |
+| `--cleanup` | Delete requests after scan | `true` |
 
-## Detected Issues
+### Health Checks
 
-| Issue | Severity | Suggestion |
-|-------|----------|------------|
-| CrashLoopBackOff | Critical | Check logs for error messages |
-| ImagePullBackOff | Critical | Check image exists and credentials configured |
-| OOMKilled | Critical | Increase memory limit or optimize usage |
-| CreateContainerConfigError | Critical | Check ConfigMaps and Secrets |
-| Pending (Unschedulable) | Critical | Check node resources, taints, affinity |
-| High Restart Count | Warning | Check logs, consider increasing limits |
-| No Memory Limit | Warning | Set limits for fair resource sharing |
-| No Resource Requests | Warning | Set requests for proper scheduling |
-| No CPU Limit | Info | Consider for predictable performance |
-| No Liveness Probe | Info | Add for automatic restart on failure |
-| No Readiness Probe | Info | Add to prevent traffic to unready pods |
+```sh
+kubeassist health                              # Current namespace
+kubeassist health -n frontend,backend          # Specific namespaces
+kubeassist health --namespace-selector team=x  # By label
+kubeassist health --checks workloads,secrets   # Specific checkers
+kubeassist health -o json                      # JSON output
+```
 
-## Observability
+| Flag | Description | Default |
+|------|-------------|---------|
+| `-n`, `--namespaces` | Comma-separated namespaces | current |
+| `--namespace-selector` | Label selector for namespaces | - |
+| `--checks` | Comma-separated checker names | all |
+| `-o`, `--output` | Format: `text`, `json` | `text` |
+| `--timeout` | Check timeout | `120s` |
+| `--cleanup` | Delete request after display | `true` |
 
-The operator exposes Prometheus metrics on `:8080/metrics`:
+## Checkers
 
-| Metric | Type | Description |
-|--------|------|-------------|
-| `kubeassist_reconcile_total` | Counter | Reconciliations by name, namespace, result |
-| `kubeassist_reconcile_duration_seconds` | Histogram | Reconciliation duration |
-| `kubeassist_issues_total` | Gauge | Issues found by namespace and severity |
+| Checker | Resources | Issues Detected |
+|---------|-----------|-----------------|
+| `workloads` | Deployments, StatefulSets, DaemonSets | CrashLoopBackOff, OOMKilled, ImagePullBackOff, missing limits/probes |
+| `secrets` | Secrets (TLS) | Expired/expiring certificates, empty secrets |
+| `pvcs` | PersistentVolumeClaims | Pending, Lost state |
+| `quotas` | ResourceQuotas | Usage exceeding thresholds |
+| `networkpolicies` | NetworkPolicies | Missing policies, overly permissive rules |
+| `helmreleases` | Flux HelmReleases | Failed upgrades, stale reconciliation |
+| `kustomizations` | Flux Kustomizations | Build failures, stale reconciliation |
+| `gitrepositories` | Flux GitRepositories | Clone/auth failures, stale fetch |
 
-## TroubleshootRequest CRD
+## CRDs
+
+### TroubleshootRequest
+
+On-demand diagnostics for a specific workload.
 
 ```yaml
 apiVersion: assist.cluster.local/v1alpha1
 kind: TroubleshootRequest
 metadata:
   name: diagnose-my-app
-  namespace: default
+  namespace: production
 spec:
   target:
     kind: Deployment    # Deployment, StatefulSet, DaemonSet, Pod, ReplicaSet
     name: my-app
   actions:
-    - diagnose          # Analyze pod status and conditions
+    - diagnose          # Analyze pod status
     - logs              # Collect container logs
     - events            # Collect related events
-    # Or use "all" for everything
+    - all               # Everything above
   tailLines: 100        # Log lines to collect (default: 100)
 ```
 
-Status output includes issues, suggestions, and references to ConfigMaps containing collected logs and events. ConfigMaps are garbage collected automatically via OwnerReferences when the TroubleshootRequest is deleted.
+### TeamHealthRequest
 
-## Architecture
-
-```
-CLI (kubeassist)
-    |
-    v
-TroubleshootRequest CR  -->  Operator Controller
-                                   |
-                    +--------------+--------------+
-                    v              v              v
-                  Pods           Logs          Events
-                (diagnose)     (collect)      (collect)
-                    |              |              |
-                    v              v              v
-                 Status       ConfigMap       ConfigMap
-```
-
-## Roadmap: Team Health Dashboard
-
-KubeAssist is evolving into a **complete team health dashboard** - one command to see everything your team cares about.
-
-### Vision
-
-```
-┌────────────────────────────────────────────────────────────────────────────┐
-│                    KubeAssist Team Health Dashboard                        │
-├────────────────────────────────────────────────────────────────────────────┤
-│                                                                            │
-│  Namespace: [team-frontend ▼]              Last check: 2 minutes ago  [⟳] │
-│                                                                            │
-│  ┌──────────────┐ ┌──────────────┐ ┌──────────────┐ ┌──────────────┐      │
-│  │  Workloads   │ │    Helm      │ │   GitOps     │ │   Secrets    │      │
-│  │    12 ✓      │ │  3 ✓   1 ✗   │ │    5 ✓       │ │  8 ✓   1 ⚠   │      │
-│  └──────────────┘ └──────────────┘ └──────────────┘ └──────────────┘      │
-│                                                                            │
-│  ┌──────────────┐ ┌──────────────┐ ┌──────────────┐                       │
-│  │   Storage    │ │    Quotas    │ │   Network    │                       │
-│  │    4 ✓       │ │   78% used   │ │  2 policies  │                       │
-│  └──────────────┘ └──────────────┘ └──────────────┘                       │
-│                                                                            │
-│  ══════════════════════════════════════════════════════════════════════   │
-│                                                                            │
-│  ✗ CRITICAL  helmrelease/redis                                            │
-│    Helm upgrade failed: values validation error                           │
-│    ┌────────────────────────────────────────────────────────────────┐     │
-│    │ 🤖 AI: The 'persistence.size' value changed from 10Gi to 5Gi. │     │
-│    │    Helm won't shrink PVCs. Keep at 10Gi or delete the PVC.    │     │
-│    └────────────────────────────────────────────────────────────────┘     │
-│                                                                            │
-│  ⚠ WARNING  secret/tls-cert                                               │
-│    TLS certificate expires in 14 days                                     │
-│    → Renew certificate before expiry                                      │
-│                                                                            │
-└────────────────────────────────────────────────────────────────────────────┘
-```
-
-### Planned Features
-
-| Feature | Status | Description |
-|---------|--------|-------------|
-| **Workload Diagnostics** | ✅ Done | Pod health, crashes, resource issues |
-| **Flux HelmReleases** | 🔜 Planned | Failed upgrades, suspended, stale |
-| **Flux Kustomizations** | 🔜 Planned | Sync failures, drift detection |
-| **Flux GitRepositories** | 🔜 Planned | Fetch errors, auth failures |
-| **Secret Health** | 🔜 Planned | Cert expiry, missing references |
-| **PVC Status** | 🔜 Planned | Pending, capacity warnings |
-| **ResourceQuotas** | 🔜 Planned | Usage warnings, exceeded limits |
-| **NetworkPolicies** | 🔜 Planned | Missing policy detection |
-| **Web Dashboard** | 🔜 Planned | Real-time UI with SSE updates |
-| **AI Analysis** | 🔜 Planned | Context-aware suggestions |
-
-### Namespace Scoping
-
-Support for multi-tenant clusters - scope checks to your team's namespaces:
+Comprehensive health check across namespaces.
 
 ```yaml
 apiVersion: assist.cluster.local/v1alpha1
 kind: TeamHealthRequest
 metadata:
-  name: frontend-team
+  name: platform-health
 spec:
   scope:
-    namespaces: [team-frontend, team-shared]
-    # Or use label selector:
-    # namespaceSelector:
+    namespaces:         # Option 1: Explicit list
+      - frontend
+      - backend
+    # namespaceSelector:  # Option 2: Label selector
     #   matchLabels:
-    #     team: frontend
-  checks: [workloads, helmreleases, secrets, quotas]
+    #     team: platform
+    # currentNamespaceOnly: true  # Option 3: Current namespace
+  checks:               # Empty = all checkers
+    - workloads
+    - secrets
+    - helmreleases
+  config:
+    workloads:
+      restartThreshold: 3
+    secrets:
+      certExpiryWarningDays: 30
+    quotas:
+      usageWarningPercent: 80
 ```
 
-### AI-Powered Analysis
+## Dashboard
 
-Optional integration with OpenAI or Anthropic for intelligent suggestions:
+The operator includes a web dashboard with real-time SSE updates.
 
-```
-Static:  "Container exceeded memory limit. Increase limit."
+**Enable:**
+```sh
+# Local development
+make run ARGS="--enable-dashboard"
 
-AI:      "The api-server container is OOMKilled at 256Mi. Based on the
-         logs, it loads a 180MB ML model at startup. Increase memory
-         to 512Mi in deploy/production/api-server/deployment.yaml"
-```
-
-**Providers:** OpenAI (gpt-4o) | Anthropic (Claude) | None (static fallback)
-
-### Architecture Evolution
-
-```
-Current:                              Future:
-────────                              ──────
-
-TroubleshootRequest                   TeamHealthRequest
-       │                                     │
-       v                                     v
-  ┌─────────┐                         ┌─────────────┐
-  │Reconcile│                         │  Checkers   │
-  │  (pods) │                         ├─────────────┤
-  └─────────┘                         │ Workloads   │
-                                      │ HelmRelease │
-                                      │ Kustomize   │
-                                      │ Secrets     │
-                                      │ Quotas      │
-                                      │ PVCs        │
-                                      └──────┬──────┘
-                                             │
-                                      ┌──────▼──────┐
-                                      │ AI Provider │ (optional)
-                                      │ ┌─────────┐ │
-                                      │ │ OpenAI  │ │
-                                      │ │ Claude  │ │
-                                      │ │  None   │ │
-                                      │ └─────────┘ │
-                                      └──────┬──────┘
-                                             │
-                                      ┌──────▼──────┐
-                                      │  Dashboard  │
-                                      │  (Web UI)   │
-                                      └─────────────┘
+# Helm
+helm install kube-assist charts/kube-assist --set dashboard.enabled=true
 ```
 
----
+**Endpoints:**
+- `http://localhost:9090/` - Dashboard UI
+- `http://localhost:9090/api/health` - Health data (JSON)
+- `http://localhost:9090/api/events` - SSE stream
+
+## Architecture
+
+```
+                              +-----------------------+
+                              |      CLI / API        |
+                              | kubeassist [health]   |
+                              +-----------+-----------+
+                                          |
+                    +---------------------+---------------------+
+                    |                                           |
+          +---------v---------+                     +-----------v-----------+
+          | TroubleshootRequest|                     |  TeamHealthRequest    |
+          +--------+----------+                     +-----------+-----------+
+                   |                                            |
+          +--------v----------+                     +-----------v-----------+
+          |    Controller     |                     |      Controller       |
+          +--------+----------+                     +-----------+-----------+
+                   |                                            |
+          +--------v----------+                     +-----------v-----------+
+          |  Pod Diagnostics  |                     |   Checker Registry    |
+          | - Status          |                     +-----------+-----------+
+          | - Logs            |                                 |
+          | - Events          |         +----------+------------+----------+
+          +-------------------+         |          |            |          |
+                                        v          v            v          v
+                                   workloads   secrets      flux/*    resource/*
+
+                              +---------------------------------------------+
+                              |               Dashboard (9090)              |
+                              |          Real-time SSE Updates              |
+                              +---------------------------------------------+
+```
+
+## Detected Issues
+
+| Issue | Severity | Checker |
+|-------|----------|---------|
+| CrashLoopBackOff | Critical | workloads |
+| ImagePullBackOff | Critical | workloads |
+| OOMKilled | Critical | workloads |
+| CreateContainerConfigError | Critical | workloads |
+| Pending (Unschedulable) | Critical | workloads |
+| High Restart Count | Warning | workloads |
+| No Memory/CPU Limits | Warning | workloads |
+| No Liveness/Readiness Probe | Info | workloads |
+| Certificate Expired | Critical | secrets |
+| Certificate Expiring Soon | Warning | secrets |
+| PVC Pending/Lost | Warning/Critical | pvcs |
+| Quota Exceeded/Near Limit | Critical/Warning | quotas |
+| No NetworkPolicy | Info | networkpolicies |
+| HelmRelease Failed | Critical | helmreleases |
+| Kustomization Build Failed | Critical | kustomizations |
+| GitRepository Auth Failed | Critical | gitrepositories |
+
+## Metrics
+
+Prometheus metrics available at `:8080/metrics`:
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `kubeassist_reconcile_total` | Counter | Reconciliations by name, namespace, result |
+| `kubeassist_reconcile_duration_seconds` | Histogram | Reconciliation duration |
+| `kubeassist_issues_total` | Gauge | Issues by namespace and severity |
 
 ## Development
 
 ```sh
 make test                    # Run tests
-make run                     # Run locally against kubeconfig
-make docker-build IMG=...    # Build container image
+make run                     # Run locally
+make run ARGS="--enable-dashboard"  # With dashboard
+make docker-build IMG=...    # Build image
 make demo-up                 # Deploy demo workloads
 make demo-down               # Clean up demo
 ```
