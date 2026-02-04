@@ -5,7 +5,7 @@ metadata:
   labels:
     {{- include "kube-assist.labels" . | nindent 4 }}
 rules:
-  # Core resources for troubleshooting
+  # Core resources for troubleshooting and health checks
   - apiGroups:
       - ""
     resources:
@@ -13,17 +13,34 @@ rules:
       - events
       - pods
       - pods/log
+      - namespaces
+      - secrets
+      - persistentvolumeclaims
+      - resourcequotas
     verbs:
-      - create
       - get
       - list
-      - patch
-      - update
       - watch
   - apiGroups:
       - ""
     resources:
+      - events
+    verbs:
+      - create
+      - patch
+  - apiGroups:
+      - ""
+    resources:
       - nodes
+    verbs:
+      - get
+      - list
+      - watch
+  # Networking resources
+  - apiGroups:
+      - networking.k8s.io
+    resources:
+      - networkpolicies
     verbs:
       - get
       - list
@@ -36,6 +53,31 @@ rules:
       - deployments
       - replicasets
       - statefulsets
+    verbs:
+      - get
+      - list
+      - watch
+  # Flux CRDs for GitOps health checks
+  - apiGroups:
+      - helm.toolkit.fluxcd.io
+    resources:
+      - helmreleases
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - kustomize.toolkit.fluxcd.io
+    resources:
+      - kustomizations
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - source.toolkit.fluxcd.io
+    resources:
+      - gitrepositories
     verbs:
       - get
       - list
@@ -63,6 +105,33 @@ rules:
       - assist.cluster.local
     resources:
       - troubleshootrequests/status
+    verbs:
+      - get
+      - patch
+      - update
+  # TeamHealthRequest CRD
+  - apiGroups:
+      - assist.cluster.local
+    resources:
+      - teamhealthrequests
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  - apiGroups:
+      - assist.cluster.local
+    resources:
+      - teamhealthrequests/finalizers
+    verbs:
+      - update
+  - apiGroups:
+      - assist.cluster.local
+    resources:
+      - teamhealthrequests/status
     verbs:
       - get
       - patch
