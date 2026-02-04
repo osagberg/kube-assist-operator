@@ -15,6 +15,8 @@ Kubernetes operator for workload diagnostics and cluster health monitoring. One 
 - **Flux Integration**: Native support for HelmRelease, Kustomization, and GitRepository resources
 - **Actionable Output**: Issues include severity levels and fix suggestions
 
+![Dashboard Screenshot](docs/dashboard-screenshot.png)
+
 ## Quick Start
 
 ### Install CLI
