@@ -43,6 +43,7 @@ import (
 	assistv1alpha1 "github.com/osagberg/kube-assist-operator/api/v1alpha1"
 	"github.com/osagberg/kube-assist-operator/internal/checker"
 	"github.com/osagberg/kube-assist-operator/internal/checker/flux"
+	"github.com/osagberg/kube-assist-operator/internal/checker/resource"
 	"github.com/osagberg/kube-assist-operator/internal/checker/workload"
 	"github.com/osagberg/kube-assist-operator/internal/controller"
 	"github.com/osagberg/kube-assist-operator/internal/dashboard"
@@ -211,6 +212,10 @@ func main() {
 	registry.MustRegister(flux.NewHelmReleaseChecker())
 	registry.MustRegister(flux.NewKustomizationChecker())
 	registry.MustRegister(flux.NewGitRepositoryChecker())
+	registry.MustRegister(resource.NewSecretChecker())
+	registry.MustRegister(resource.NewPVCChecker())
+	registry.MustRegister(resource.NewQuotaChecker())
+	registry.MustRegister(resource.NewNetworkPolicyChecker())
 	setupLog.Info("Registered checkers", "checkers", registry.List())
 
 	if err := (&controller.TroubleshootRequestReconciler{

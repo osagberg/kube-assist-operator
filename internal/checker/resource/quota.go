@@ -1,0 +1,158 @@
+/*
+Copyright 2026.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package resource
+
+import (
+	"context"
+	"fmt"
+
+	corev1 "k8s.io/api/core/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/osagberg/kube-assist-operator/internal/checker"
+)
+
+const (
+	// QuotaCheckerName is the identifier for this checker
+	QuotaCheckerName = "quotas"
+
+	// Default warning threshold percentage
+	DefaultQuotaWarningPercent = 80
+)
+
+// QuotaChecker analyzes ResourceQuotas for health issues
+type QuotaChecker struct {
+	warningPercent int
+}
+
+// NewQuotaChecker creates a new ResourceQuota checker
+func NewQuotaChecker() *QuotaChecker {
+	return &QuotaChecker{
+		warningPercent: DefaultQuotaWarningPercent,
+	}
+}
+
+// WithWarningPercent sets the warning threshold percentage
+func (c *QuotaChecker) WithWarningPercent(percent int) *QuotaChecker {
+	c.warningPercent = percent
+	return c
+}
+
+// Name returns the checker identifier
+func (c *QuotaChecker) Name() string {
+	return QuotaCheckerName
+}
+
+// Supports always returns true since ResourceQuotas are core resources
+func (c *QuotaChecker) Supports(ctx context.Context, cl client.Client) bool {
+	return true
+}
+
+// Check performs health checks on ResourceQuotas
+func (c *QuotaChecker) Check(ctx context.Context, checkCtx *checker.CheckContext) (*checker.CheckResult, error) {
+	result := &checker.CheckResult{
+		CheckerName: QuotaCheckerName,
+		Issues:      []checker.Issue{},
+	}
+
+	// Get config if available
+	if checkCtx.Config != nil {
+		if percent, ok := checkCtx.Config["usageWarningPercent"].(int); ok {
+			c.warningPercent = percent
+		}
+	}
+
+	for _, ns := range checkCtx.Namespaces {
+		var quotaList corev1.ResourceQuotaList
+		if err := checkCtx.Client.List(ctx, &quotaList, client.InNamespace(ns)); err != nil {
+			continue
+		}
+
+		for _, quota := range quotaList.Items {
+			issues := c.checkQuota(&quota)
+			if len(issues) == 0 {
+				result.Healthy++
+			} else {
+				result.Issues = append(result.Issues, issues...)
+			}
+		}
+	}
+
+	return result, nil
+}
+
+// checkQuota analyzes a single ResourceQuota
+func (c *QuotaChecker) checkQuota(quota *corev1.ResourceQuota) []checker.Issue {
+	var issues []checker.Issue
+	resourceRef := fmt.Sprintf("resourcequota/%s", quota.Name)
+
+	// Check each resource in the quota
+	for resourceName, hardLimit := range quota.Status.Hard {
+		used, hasUsed := quota.Status.Used[resourceName]
+		if !hasUsed {
+			continue
+		}
+
+		// Calculate usage percentage
+		hardValue := hardLimit.Value()
+		usedValue := used.Value()
+
+		if hardValue == 0 {
+			continue
+		}
+
+		usagePercent := float64(usedValue) / float64(hardValue) * 100
+
+		if usagePercent >= 100 {
+			// Quota exceeded
+			issues = append(issues, checker.Issue{
+				Type:       "QuotaExceeded",
+				Severity:   checker.SeverityCritical,
+				Resource:   resourceRef,
+				Namespace:  quota.Namespace,
+				Message:    fmt.Sprintf("ResourceQuota %s: %s is at %.0f%% (%s/%s)", quota.Name, resourceName, usagePercent, used.String(), hardLimit.String()),
+				Suggestion: "Reduce resource usage or request a quota increase",
+				Metadata: map[string]string{
+					"quota":        quota.Name,
+					"resource":     string(resourceName),
+					"used":         used.String(),
+					"hard":         hardLimit.String(),
+					"usagePercent": fmt.Sprintf("%.1f", usagePercent),
+				},
+			})
+		} else if usagePercent >= float64(c.warningPercent) {
+			// Near quota limit
+			issues = append(issues, checker.Issue{
+				Type:       "QuotaNearLimit",
+				Severity:   checker.SeverityWarning,
+				Resource:   resourceRef,
+				Namespace:  quota.Namespace,
+				Message:    fmt.Sprintf("ResourceQuota %s: %s is at %.0f%% (%s/%s)", quota.Name, resourceName, usagePercent, used.String(), hardLimit.String()),
+				Suggestion: fmt.Sprintf("Consider requesting a quota increase before reaching the limit (warning threshold: %d%%)", c.warningPercent),
+				Metadata: map[string]string{
+					"quota":        quota.Name,
+					"resource":     string(resourceName),
+					"used":         used.String(),
+					"hard":         hardLimit.String(),
+					"usagePercent": fmt.Sprintf("%.1f", usagePercent),
+				},
+			})
+		}
+	}
+
+	return issues
+}
