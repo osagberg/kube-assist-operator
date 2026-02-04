@@ -1,0 +1,17 @@
+apiVersion: v2
+name: kube-assist
+description: A Kubernetes operator for automated workload troubleshooting
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+kubeVersion: ">=1.25.0-0"
+keywords:
+  - kubernetes
+  - operator
+  - troubleshooting
+  - diagnostics
+home: https://github.com/osagberg/cluster-gitops
+sources:
+  - https://github.com/osagberg/cluster-gitops
+maintainers:
+  - name: osagberg

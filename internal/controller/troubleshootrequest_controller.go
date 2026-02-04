@@ -24,6 +24,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -55,12 +56,26 @@ type TroubleshootRequestReconciler struct {
 func (r *TroubleshootRequestReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
+	// Record reconcile duration
+	startTime := time.Now()
+	defer func() {
+		reconcileDuration.With(prometheus.Labels{
+			"name":      req.Name,
+			"namespace": req.Namespace,
+		}).Observe(time.Since(startTime).Seconds())
+	}()
+
 	// Fetch the TroubleshootRequest
 	troubleshoot := &assistv1alpha1.TroubleshootRequest{}
 	if err := r.Get(ctx, req.NamespacedName, troubleshoot); err != nil {
 		if apierrors.IsNotFound(err) {
 			return ctrl.Result{}, nil
 		}
+		reconcileTotal.With(prometheus.Labels{
+			"name":      req.Name,
+			"namespace": req.Namespace,
+			"result":    "error",
+		}).Inc()
 		return ctrl.Result{}, err
 	}
 	// Save original for patch later
@@ -155,8 +170,23 @@ func (r *TroubleshootRequestReconciler) Reconcile(ctx context.Context, req ctrl.
 	patch := client.MergeFrom(original)
 	if err := r.Status().Patch(ctx, troubleshoot, patch); err != nil {
 		log.Error(err, "Failed to patch status")
+		reconcileTotal.With(prometheus.Labels{
+			"name":      req.Name,
+			"namespace": req.Namespace,
+			"result":    "error",
+		}).Inc()
 		return ctrl.Result{}, err
 	}
+
+	// Record success metric
+	reconcileTotal.With(prometheus.Labels{
+		"name":      req.Name,
+		"namespace": req.Namespace,
+		"result":    "success",
+	}).Inc()
+
+	// Update issues gauge by severity
+	r.updateIssuesMetrics(troubleshoot.Namespace, issues)
 
 	log.Info("Troubleshooting completed", "issues", len(issues), "summary", troubleshoot.Status.Summary)
 	return ctrl.Result{}, nil
@@ -545,6 +575,33 @@ func (r *TroubleshootRequestReconciler) setCondition(tr *assistv1alpha1.Troubles
 		Message:            message,
 		LastTransitionTime: metav1.Now(),
 	})
+}
+
+// updateIssuesMetrics updates the issues gauge metrics by severity
+func (r *TroubleshootRequestReconciler) updateIssuesMetrics(namespace string, issues []assistv1alpha1.DiagnosticIssue) {
+	// Count issues by severity
+	severityCounts := map[string]float64{
+		"Critical": 0,
+		"Warning":  0,
+		"Info":     0,
+	}
+
+	for _, issue := range issues {
+		if _, ok := severityCounts[issue.Severity]; ok {
+			severityCounts[issue.Severity]++
+		} else {
+			// Handle unknown severity as Info
+			severityCounts["Info"]++
+		}
+	}
+
+	// Update gauge for each severity
+	for severity, count := range severityCounts {
+		issuesTotal.With(prometheus.Labels{
+			"namespace": namespace,
+			"severity":  severity,
+		}).Set(count)
+	}
 }
 
 // SetupWithManager sets up the controller with the Manager.

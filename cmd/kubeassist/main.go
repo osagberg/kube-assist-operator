@@ -12,11 +12,12 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
 	"sort"
-	"strings"
+	"sync"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -41,12 +42,19 @@ const (
 )
 
 var (
-	allNamespaces bool
-	labelSelector string
-	watchMode     bool
-	outputJSON    bool
-	cleanup       bool
-	timeout       time.Duration
+	allNamespaces   bool
+	labelSelector   string
+	watchMode       bool
+	outputJSON      bool
+	outputFormat    string
+	cleanup         bool
+	timeout         time.Duration
+	workerCount     int
+)
+
+const (
+	labelManagedBy  = "app.kubernetes.io/managed-by"
+	labelTargetName = "kubeassist.io/target-name"
 )
 
 func main() {
@@ -56,10 +64,18 @@ func main() {
 	flag.StringVar(&labelSelector, "selector", "", "Label selector to filter workloads")
 	flag.BoolVar(&watchMode, "watch", false, "Continuous monitoring mode")
 	flag.BoolVar(&watchMode, "w", false, "Continuous monitoring mode")
-	flag.BoolVar(&outputJSON, "json", false, "Output as JSON")
+	flag.BoolVar(&outputJSON, "json", false, "Output as JSON (deprecated, use --output json)")
+	flag.StringVar(&outputFormat, "output", "text", "Output format: text or json")
+	flag.StringVar(&outputFormat, "o", "text", "Output format: text or json")
 	flag.BoolVar(&cleanup, "cleanup", true, "Delete TroubleshootRequests after displaying (default: true)")
 	flag.DurationVar(&timeout, "timeout", 60*time.Second, "Timeout waiting for diagnostics")
+	flag.IntVar(&workerCount, "workers", 5, "Number of parallel workers for processing deployments")
 	flag.Parse()
+
+	// Support legacy --json flag
+	if outputJSON {
+		outputFormat = "json"
+	}
 
 	namespace := "default"
 	if flag.NArg() > 0 {
@@ -109,7 +125,9 @@ func run(namespace string) error {
 		}
 	}
 
-	printHeader(namespace)
+	if outputFormat != "json" {
+		printHeader(namespace)
+	}
 
 	// List deployments
 	listOpts := metav1.ListOptions{}
@@ -140,71 +158,61 @@ func run(namespace string) error {
 		Resource: "troubleshootrequests",
 	}
 
-	var allResults []diagResult
+	// Collect all deployments to process
+	type workItem struct {
+		namespace string
+		name      string
+	}
+	var workItems []workItem
 
 	for _, ns := range namespaces {
 		// Get deployments
 		deployments, err := clientset.AppsV1().Deployments(ns).List(ctx, listOpts)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "%sWarning: failed to list deployments in %s: %v%s\n", colorYellow, ns, err, colorReset)
+			if outputFormat != "json" {
+				fmt.Fprintf(os.Stderr, "%sWarning: failed to list deployments in %s: %v%s\n", colorYellow, ns, err, colorReset)
+			}
 			continue
 		}
 
 		for _, deploy := range deployments.Items {
-			// Create TroubleshootRequest
-			trName := fmt.Sprintf("kubeassist-%s-%d", deploy.Name, time.Now().Unix())
-
-			tr := &unstructured.Unstructured{
-				Object: map[string]interface{}{
-					"apiVersion": "assist.cluster.local/v1alpha1",
-					"kind":       "TroubleshootRequest",
-					"metadata": map[string]interface{}{
-						"name":      trName,
-						"namespace": ns,
-						"labels": map[string]interface{}{
-							"app.kubernetes.io/managed-by": "kubeassist-cli",
-						},
-					},
-					"spec": map[string]interface{}{
-						"target": map[string]interface{}{
-							"kind": "Deployment",
-							"name": deploy.Name,
-						},
-						"actions":   []interface{}{"all"},
-						"tailLines": int64(50),
-					},
-				},
-			}
-
-			_, err := dynClient.Resource(trGVR).Namespace(ns).Create(ctx, tr, metav1.CreateOptions{})
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "%sWarning: failed to create diagnostic for %s/%s: %v%s\n",
-					colorYellow, ns, deploy.Name, err, colorReset)
-				continue
-			}
-
-			// Wait for completion
-			result, err := waitForDiagnostic(ctx, dynClient, trGVR, ns, trName)
-			if err != nil {
-				result = diagResult{
-					namespace: ns,
-					name:      deploy.Name,
-					phase:     "Error",
-					summary:   err.Error(),
-					issues:    nil,
-					healthy:   false,
-					critical:  0,
-					warnings:  0,
-				}
-			}
-
-			allResults = append(allResults, result)
-
-			// Cleanup if requested
-			if cleanup {
-				_ = dynClient.Resource(trGVR).Namespace(ns).Delete(ctx, trName, metav1.DeleteOptions{})
-			}
+			workItems = append(workItems, workItem{namespace: ns, name: deploy.Name})
 		}
+	}
+
+	// Set up channels for worker pool
+	jobs := make(chan workItem, len(workItems))
+	results := make(chan diagResult, len(workItems))
+
+	// Start workers
+	var wg sync.WaitGroup
+	for i := 0; i < workerCount; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for job := range jobs {
+				result := processDiagnostic(ctx, dynClient, trGVR, job.namespace, job.name, cleanup, outputFormat)
+				results <- result
+			}
+		}()
+	}
+
+	// Send work
+	for _, item := range workItems {
+		jobs <- item
+	}
+	close(jobs)
+
+	// Wait for all workers and close results
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	// Collect results
+	var allResults []diagResult
+	for result := range results {
+		allResults = append(allResults, result)
 	}
 
 	// Sort results: unhealthy first, then by namespace/name
@@ -221,10 +229,76 @@ func run(namespace string) error {
 		return allResults[i].name < allResults[j].name
 	})
 
-	printResults(allResults)
-	printSummary(allResults)
+	if outputFormat == "json" {
+		printJSONResults(allResults)
+	} else {
+		printResults(allResults)
+		printSummary(allResults)
+	}
 
 	return nil
+}
+
+// processDiagnostic creates a TroubleshootRequest and waits for its result
+func processDiagnostic(ctx context.Context, dynClient dynamic.Interface, gvr schema.GroupVersionResource, namespace, deployName string, doCleanup bool, format string) diagResult {
+	trName := fmt.Sprintf("kubeassist-%s-%d", deployName, time.Now().UnixNano())
+
+	tr := &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "assist.cluster.local/v1alpha1",
+			"kind":       "TroubleshootRequest",
+			"metadata": map[string]interface{}{
+				"name":      trName,
+				"namespace": namespace,
+				"labels": map[string]interface{}{
+					labelManagedBy:  "kubeassist-cli",
+					labelTargetName: deployName,
+				},
+			},
+			"spec": map[string]interface{}{
+				"target": map[string]interface{}{
+					"kind": "Deployment",
+					"name": deployName,
+				},
+				"actions":   []interface{}{"all"},
+				"tailLines": int64(50),
+			},
+		},
+	}
+
+	_, err := dynClient.Resource(gvr).Namespace(namespace).Create(ctx, tr, metav1.CreateOptions{})
+	if err != nil {
+		if format != "json" {
+			fmt.Fprintf(os.Stderr, "%sWarning: failed to create diagnostic for %s/%s: %v%s\n",
+				colorYellow, namespace, deployName, err, colorReset)
+		}
+		return diagResult{
+			namespace: namespace,
+			name:      deployName,
+			phase:     "Error",
+			summary:   fmt.Sprintf("failed to create diagnostic: %v", err),
+			healthy:   false,
+		}
+	}
+
+	// Wait for completion
+	result, err := waitForDiagnostic(ctx, dynClient, gvr, namespace, trName, deployName)
+	if err != nil {
+		result = diagResult{
+			namespace: namespace,
+			name:      deployName,
+			phase:     "Error",
+			summary:   err.Error(),
+			healthy:   false,
+		}
+	}
+
+	// Cleanup if requested
+	if doCleanup {
+		_ = dynClient.Resource(gvr).Namespace(namespace).Delete(ctx, trName, metav1.DeleteOptions{})
+	}
+
+	return result
 }
 
 type diagResult struct {
@@ -245,19 +319,14 @@ type issue struct {
 	Suggestion string
 }
 
-func waitForDiagnostic(ctx context.Context, client dynamic.Interface, gvr schema.GroupVersionResource, namespace, name string) (diagResult, error) {
+func waitForDiagnostic(ctx context.Context, client dynamic.Interface, gvr schema.GroupVersionResource, namespace, trName, deployName string) (diagResult, error) {
 	result := diagResult{
 		namespace: namespace,
-		name:      strings.TrimPrefix(name, "kubeassist-"),
-	}
-	// Extract actual deployment name
-	parts := strings.Split(result.name, "-")
-	if len(parts) > 1 {
-		result.name = strings.Join(parts[:len(parts)-1], "-")
+		name:      deployName,
 	}
 
 	watcher, err := client.Resource(gvr).Namespace(namespace).Watch(ctx, metav1.ListOptions{
-		FieldSelector: fmt.Sprintf("metadata.name=%s", name),
+		FieldSelector: fmt.Sprintf("metadata.name=%s", trName),
 	})
 	if err != nil {
 		return result, err
@@ -322,6 +391,56 @@ func getString(m map[string]interface{}, key string) string {
 		}
 	}
 	return ""
+}
+
+// JSON output structures
+type jsonResult struct {
+	Namespace string      `json:"namespace"`
+	Name      string      `json:"name"`
+	Healthy   bool        `json:"healthy"`
+	Phase     string      `json:"phase"`
+	Summary   string      `json:"summary,omitempty"`
+	Critical  int         `json:"critical"`
+	Warnings  int         `json:"warnings"`
+	Issues    []jsonIssue `json:"issues,omitempty"`
+}
+
+type jsonIssue struct {
+	Type       string `json:"type"`
+	Severity   string `json:"severity"`
+	Message    string `json:"message"`
+	Suggestion string `json:"suggestion,omitempty"`
+}
+
+func printJSONResults(results []diagResult) {
+	var jsonResults []jsonResult
+	for _, r := range results {
+		jr := jsonResult{
+			Namespace: r.namespace,
+			Name:      r.name,
+			Healthy:   r.healthy,
+			Phase:     r.phase,
+			Summary:   r.summary,
+			Critical:  r.critical,
+			Warnings:  r.warnings,
+		}
+		for _, iss := range r.issues {
+			jr.Issues = append(jr.Issues, jsonIssue{
+				Type:       iss.Type,
+				Severity:   iss.Severity,
+				Message:    iss.Message,
+				Suggestion: iss.Suggestion,
+			})
+		}
+		jsonResults = append(jsonResults, jr)
+	}
+
+	output, err := json.MarshalIndent(jsonResults, "", "  ")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error marshaling JSON: %v\n", err)
+		return
+	}
+	fmt.Println(string(output))
 }
 
 func printHeader(namespace string) {

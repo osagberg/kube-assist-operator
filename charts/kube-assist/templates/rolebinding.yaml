@@ -1,0 +1,17 @@
+{{- if .Values.operator.leaderElection.enabled }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "kube-assist.leaderElectionRoleName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kube-assist.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "kube-assist.leaderElectionRoleName" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "kube-assist.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

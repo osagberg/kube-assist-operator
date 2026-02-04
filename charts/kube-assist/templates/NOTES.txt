@@ -1,0 +1,34 @@
+Thank you for installing {{ .Chart.Name }}.
+
+Your release is named {{ .Release.Name }}.
+
+To learn more about the release, try:
+
+  $ helm status {{ .Release.Name }}
+  $ helm get all {{ .Release.Name }}
+
+The kube-assist operator is now running in namespace {{ .Release.Namespace }}.
+
+To create a TroubleshootRequest, apply a manifest like:
+
+  apiVersion: assist.cluster.local/v1alpha1
+  kind: TroubleshootRequest
+  metadata:
+    name: my-troubleshoot
+    namespace: default
+  spec:
+    target:
+      kind: Deployment
+      name: my-deployment
+    actions:
+      - diagnose
+      - logs
+      - events
+
+To check the operator logs:
+
+  $ kubectl logs -l app.kubernetes.io/name={{ include "kube-assist.name" . }} -n {{ .Release.Namespace }}
+
+To list TroubleshootRequests:
+
+  $ kubectl get troubleshootrequests -A
