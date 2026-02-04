@@ -247,19 +247,22 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Create shared signal handler context (can only be called once)
+	ctx := ctrl.SetupSignalHandler()
+
 	// Start dashboard server if enabled
 	if enableDashboard {
 		dashboardServer := dashboard.NewServer(mgr.GetClient(), registry, dashboardAddr)
 		go func() {
 			setupLog.Info("starting dashboard server", "addr", dashboardAddr)
-			if err := dashboardServer.Start(ctrl.SetupSignalHandler()); err != nil {
+			if err := dashboardServer.Start(ctx); err != nil {
 				setupLog.Error(err, "dashboard server error")
 			}
 		}()
 	}
 
 	setupLog.Info("starting manager")
-	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
+	if err := mgr.Start(ctx); err != nil {
 		setupLog.Error(err, "problem running manager")
 		os.Exit(1)
 	}
