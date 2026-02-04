@@ -25,6 +25,7 @@ import (
 	"sync"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -158,15 +159,19 @@ func (s *Server) runHealthChecker(ctx context.Context) {
 
 // runCheck performs a health check and broadcasts results
 func (s *Server) runCheck(ctx context.Context) {
-	// Get all namespaces (simplified - in production, use scope resolver)
-	namespaces := []string{"default", "flux-system"}
+	// Get all non-system namespaces
+	namespaces, err := s.getAllNamespaces(ctx)
+	if err != nil {
+		log.Error(err, "Failed to list namespaces")
+		namespaces = []string{"default"}
+	}
 
 	checkCtx := &checker.CheckContext{
 		Client:     s.client,
 		Namespaces: namespaces,
 	}
 
-	results := s.registry.RunAll(ctx, checkCtx, nil)
+	results := s.registry.RunAllSupported(ctx, checkCtx)
 
 	// Convert to dashboard format
 	update := &HealthUpdate{
@@ -309,4 +314,23 @@ func (s *Server) handleTriggerCheck(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html")
 	w.Write([]byte(dashboardHTML))
+}
+
+// getAllNamespaces returns all non-system namespaces
+func (s *Server) getAllNamespaces(ctx context.Context) ([]string, error) {
+	var nsList corev1.NamespaceList
+	if err := s.client.List(ctx, &nsList); err != nil {
+		return nil, err
+	}
+
+	var namespaces []string
+	for _, ns := range nsList.Items {
+		// Skip system namespaces
+		name := ns.Name
+		if name == "kube-system" || name == "kube-public" || name == "kube-node-lease" {
+			continue
+		}
+		namespaces = append(namespaces, name)
+	}
+	return namespaces, nil
 }
