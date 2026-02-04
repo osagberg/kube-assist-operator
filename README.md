@@ -20,6 +20,16 @@ KubeAssist bridges this gap by providing a declarative way to request diagnostic
 
 ## Quick Start
 
+### Install the CLI (Recommended)
+
+```sh
+# Build and install to your GOBIN
+make install-cli
+
+# Now you can run diagnostics with one command
+kubeassist my-namespace
+```
+
 ### Install CRDs
 
 ```sh
@@ -96,6 +106,48 @@ status:
 - DaemonSet
 - Pod
 - ReplicaSet
+
+## CLI Tool
+
+The `kubeassist` CLI provides instant diagnostics without manually creating CRs:
+
+```sh
+# Diagnose all workloads in a namespace
+kubeassist my-namespace
+
+# Diagnose all namespaces
+kubeassist -A
+
+# Filter by label
+kubeassist -l app=myapp my-namespace
+
+# Auto-cleanup after displaying results
+kubeassist my-namespace --cleanup
+
+# Set timeout (default 60s)
+kubeassist my-namespace --timeout=120s
+```
+
+### Sample Output
+
+```
+╔══════════════════════════════════════════════════════════════╗
+║              🔍 KubeAssist Workload Diagnostics              ║
+╚══════════════════════════════════════════════════════════════╝
+Namespace: my-namespace
+
+✗ my-namespace/crashloop-app
+   ● [Critical] Container app is waiting: CrashLoopBackOff
+     → Application is crashing. Check logs for error messages.
+   ○ [Warning] Container app has restarted 6 times
+     → Check logs for crash reasons.
+
+✓ my-namespace/healthy-app
+   All 1 pod(s) healthy - no issues found
+
+────────────────────────────────────────────────────────────────
+Summary: 1 healthy, 1 unhealthy (1 critical, 1 warnings)
+```
 
 ## License
 

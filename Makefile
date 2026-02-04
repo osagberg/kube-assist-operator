@@ -108,6 +108,14 @@ lint-config: golangci-lint ## Verify golangci-lint linter configuration
 build: manifests generate fmt vet ## Build manager binary.
 	go build -o bin/manager cmd/main.go
 
+.PHONY: build-cli
+build-cli: fmt vet ## Build kubeassist CLI binary.
+	go build -o bin/kubeassist ./cmd/kubeassist/
+
+.PHONY: install-cli
+install-cli: build-cli ## Install kubeassist CLI to GOBIN.
+	cp bin/kubeassist $(GOBIN)/kubeassist
+
 .PHONY: run
 run: manifests generate fmt vet ## Run a controller from your host.
 	go run ./cmd/main.go
