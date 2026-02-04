@@ -21,6 +21,8 @@ import (
 	"context"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/osagberg/kube-assist-operator/internal/ai"
 )
 
 // Severity levels for issues
@@ -79,6 +81,15 @@ type CheckContext struct {
 
 	// Config contains checker-specific configuration
 	Config map[string]interface{}
+
+	// AIProvider is an optional AI provider for enhanced analysis
+	AIProvider ai.Provider
+
+	// AIEnabled indicates if AI analysis should be performed
+	AIEnabled bool
+
+	// ClusterContext provides context for AI analysis
+	ClusterContext ai.ClusterContext
 }
 
 // Checker is the interface all health checkers must implement
@@ -116,4 +127,70 @@ func (r *CheckResult) HasCritical() bool {
 // TotalIssues returns the total number of issues found
 func (r *CheckResult) TotalIssues() int {
 	return len(r.Issues)
+}
+
+// EnhanceWithAI uses the AI provider to enhance issue suggestions
+func (r *CheckResult) EnhanceWithAI(ctx context.Context, checkCtx *CheckContext) error {
+	if !checkCtx.AIEnabled || checkCtx.AIProvider == nil || !checkCtx.AIProvider.Available() {
+		return nil
+	}
+
+	if len(r.Issues) == 0 {
+		return nil
+	}
+
+	// Build AI analysis request
+	sanitizer := ai.NewSanitizer()
+	issueContexts := make([]ai.IssueContext, len(r.Issues))
+
+	for i, issue := range r.Issues {
+		issueContexts[i] = ai.IssueContext{
+			Type:             issue.Type,
+			Severity:         issue.Severity,
+			Resource:         issue.Resource,
+			Namespace:        issue.Namespace,
+			Message:          issue.Message,
+			StaticSuggestion: issue.Suggestion,
+		}
+	}
+
+	request := ai.AnalysisRequest{
+		Issues:         issueContexts,
+		ClusterContext: checkCtx.ClusterContext,
+	}
+
+	// Sanitize before sending to AI
+	sanitizedRequest := sanitizer.SanitizeAnalysisRequest(request)
+
+	// Get AI analysis
+	response, err := checkCtx.AIProvider.Analyze(ctx, sanitizedRequest)
+	if err != nil {
+		// Log but don't fail - AI is optional enhancement
+		return nil
+	}
+
+	// Enhance issues with AI suggestions
+	for i := range r.Issues {
+		key := r.Issues[i].Namespace + "/" + r.Issues[i].Resource
+		if enhanced, ok := response.EnhancedSuggestions[key]; ok {
+			if enhanced.Suggestion != "" && enhanced.Confidence > 0.5 {
+				// Append AI suggestion to existing suggestion
+				if r.Issues[i].Suggestion != "" {
+					r.Issues[i].Suggestion += "\n\nAI Analysis: " + enhanced.Suggestion
+				} else {
+					r.Issues[i].Suggestion = enhanced.Suggestion
+				}
+
+				// Add root cause if available
+				if enhanced.RootCause != "" {
+					if r.Issues[i].Metadata == nil {
+						r.Issues[i].Metadata = make(map[string]string)
+					}
+					r.Issues[i].Metadata["aiRootCause"] = enhanced.RootCause
+				}
+			}
+		}
+	}
+
+	return nil
 }
