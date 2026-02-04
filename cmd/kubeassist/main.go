@@ -1,9 +1,10 @@
 /*
-kubeassist - CLI tool for quick workload diagnostics
+kubeassist - CLI tool for Kubernetes workload diagnostics and health checks
 
 Usage:
 
 	kubeassist [namespace]           # Diagnose all workloads in namespace
+	kubeassist health                # Run comprehensive health checks
 	kubeassist -A                    # Diagnose all workloads in all namespaces
 	kubeassist -l app=myapp          # Diagnose workloads matching label
 	kubeassist --watch               # Continuous monitoring mode
@@ -58,6 +59,25 @@ const (
 )
 
 func main() {
+	// Check for subcommands first
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "health":
+			if err := runHealth(os.Args[2:]); err != nil {
+				fmt.Fprintf(os.Stderr, "%sError: %v%s\n", colorRed, err, colorReset)
+				os.Exit(1)
+			}
+			return
+		case "help", "-h", "--help":
+			printUsage()
+			return
+		case "version", "--version":
+			fmt.Println("kubeassist version 0.2.0")
+			return
+		}
+	}
+
+	// Legacy behavior: workload diagnostics
 	flag.BoolVar(&allNamespaces, "A", true, "Diagnose workloads in all namespaces (default: true)")
 	flag.BoolVar(&allNamespaces, "all-namespaces", true, "Diagnose workloads in all namespaces (default: true)")
 	flag.StringVar(&labelSelector, "l", "", "Label selector to filter workloads")
@@ -89,6 +109,44 @@ func main() {
 		fmt.Fprintf(os.Stderr, "%sError: %v%s\n", colorRed, err, colorReset)
 		os.Exit(1)
 	}
+}
+
+func printUsage() {
+	fmt.Print(`kubeassist - Kubernetes workload diagnostics and health checks
+
+Usage:
+  kubeassist [OPTIONS] [NAMESPACE]    Diagnose workloads (legacy mode)
+  kubeassist health [OPTIONS]         Run comprehensive health checks
+
+Commands:
+  health      Run Team Health checks across resources
+  help        Show this help message
+  version     Show version information
+
+Legacy Options (workload diagnostics):
+  -A, --all-namespaces    Diagnose all namespaces (default: true)
+  -l, --selector          Label selector to filter workloads
+  -w, --watch             Continuous monitoring mode
+  -o, --output            Output format: text or json
+  --timeout               Timeout waiting for diagnostics
+  --cleanup               Delete requests after displaying (default: true)
+  --workers               Number of parallel workers (default: 5)
+
+Examples:
+  # Diagnose all workloads
+  kubeassist
+
+  # Run comprehensive health checks
+  kubeassist health
+
+  # Health check specific namespaces
+  kubeassist health -n frontend,backend
+
+  # Health check with specific checks
+  kubeassist health --checks workloads,helmreleases,secrets
+
+Use "kubeassist health --help" for more information about health checks.
+`)
 }
 
 func run(namespace string) error {

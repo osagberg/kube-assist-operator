@@ -151,9 +151,9 @@ func (c *GitRepositoryChecker) checkGitRepository(gr *sourcev1.GitRepository) []
 				Message:    fmt.Sprintf("GitRepository last reconciled %s ago", staleDuration.Round(time.Minute)),
 				Suggestion: "Check if source-controller is running and healthy",
 				Metadata: map[string]string{
-					"repository":     gr.Name,
-					"lastReconcile":  lastReconcile.Format(time.RFC3339),
-					"staleDuration":  staleDuration.String(),
+					"repository":    gr.Name,
+					"lastReconcile": lastReconcile.Format(time.RFC3339),
+					"staleDuration": staleDuration.String(),
 				},
 			})
 		}

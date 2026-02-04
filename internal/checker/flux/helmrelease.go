@@ -192,13 +192,13 @@ func (c *HelmReleaseChecker) checkHelmRelease(hr *helmv2.HelmRelease) []checker.
 // getSuggestionForHelmReason returns a suggestion based on the HelmRelease reason
 func getSuggestionForHelmReason(reason string) string {
 	suggestions := map[string]string{
-		"UpgradeFailed":        "Check HelmRelease events and Helm controller logs for details. Verify values and chart compatibility.",
-		"InstallFailed":        "Verify chart exists and values are valid. Check for conflicting resources.",
-		"UninstallFailed":      "Check for finalizers or resources blocking deletion.",
-		"ArtifactFailed":       "Verify the HelmRepository or GitRepository source is accessible.",
-		"ChartPullFailed":      "Check chart repository authentication and network access.",
-		"ReconciliationFailed": "Check HelmRelease status conditions and controller logs.",
-		"DependencyNotReady":   "Wait for dependent HelmReleases to become ready.",
+		"UpgradeFailed":          "Check HelmRelease events and Helm controller logs for details. Verify values and chart compatibility.",
+		"InstallFailed":          "Verify chart exists and values are valid. Check for conflicting resources.",
+		"UninstallFailed":        "Check for finalizers or resources blocking deletion.",
+		"ArtifactFailed":         "Verify the HelmRepository or GitRepository source is accessible.",
+		"ChartPullFailed":        "Check chart repository authentication and network access.",
+		"ReconciliationFailed":   "Check HelmRelease status conditions and controller logs.",
+		"DependencyNotReady":     "Wait for dependent HelmReleases to become ready.",
 		"ValuesValidationFailed": "Check HelmRelease values against chart schema.",
 	}
 

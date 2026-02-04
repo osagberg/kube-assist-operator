@@ -144,10 +144,10 @@ func TestAnthropicProvider_Analyze_NotConfigured(t *testing.T) {
 
 func TestNewProvider(t *testing.T) {
 	tests := []struct {
-		name         string
-		provider     string
-		wantName     string
-		wantErr      bool
+		name     string
+		provider string
+		wantName string
+		wantErr  bool
 	}{
 		{"noop", "noop", "noop", false},
 		{"empty", "", "noop", false},

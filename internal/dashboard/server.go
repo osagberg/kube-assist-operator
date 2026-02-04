@@ -35,10 +35,10 @@ var log = logf.Log.WithName("dashboard")
 
 // HealthUpdate represents a health check update sent via SSE
 type HealthUpdate struct {
-	Timestamp   time.Time              `json:"timestamp"`
-	Namespaces  []string               `json:"namespaces"`
-	Results     map[string]CheckResult `json:"results"`
-	Summary     Summary                `json:"summary"`
+	Timestamp  time.Time              `json:"timestamp"`
+	Namespaces []string               `json:"namespaces"`
+	Results    map[string]CheckResult `json:"results"`
+	Summary    Summary                `json:"summary"`
 }
 
 // CheckResult is a simplified result for the dashboard
@@ -70,14 +70,14 @@ type Summary struct {
 
 // Server is the dashboard web server
 type Server struct {
-	client    client.Client
-	registry  *checker.Registry
-	addr      string
-	mu        sync.RWMutex
-	clients   map[chan HealthUpdate]bool
-	latest    *HealthUpdate
-	running   bool
-	stopCh    chan struct{}
+	client   client.Client
+	registry *checker.Registry
+	addr     string
+	mu       sync.RWMutex
+	clients  map[chan HealthUpdate]bool
+	latest   *HealthUpdate
+	running  bool
+	stopCh   chan struct{}
 }
 
 // NewServer creates a new dashboard server

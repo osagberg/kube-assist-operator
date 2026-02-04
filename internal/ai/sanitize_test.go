@@ -25,9 +25,9 @@ func TestSanitizer_SanitizeString(t *testing.T) {
 	s := NewSanitizer()
 
 	tests := []struct {
-		name     string
-		input    string
-		contains string
+		name        string
+		input       string
+		contains    string
 		notContains string
 	}{
 		{

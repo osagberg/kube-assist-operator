@@ -150,9 +150,9 @@ func (c *KustomizationChecker) checkKustomization(ks *kustomizev1.Kustomization)
 					Message:    fmt.Sprintf("Kustomization last reconciled %s ago", staleDuration.Round(time.Minute)),
 					Suggestion: "Check if Kustomize controller is running and healthy",
 					Metadata: map[string]string{
-						"kustomization":  ks.Name,
-						"lastReconcile":  lastReconcile.Format(time.RFC3339),
-						"staleDuration":  staleDuration.String(),
+						"kustomization": ks.Name,
+						"lastReconcile": lastReconcile.Format(time.RFC3339),
+						"staleDuration": staleDuration.String(),
 					},
 				})
 			}
@@ -170,9 +170,9 @@ func (c *KustomizationChecker) checkKustomization(ks *kustomizev1.Kustomization)
 				Message:    fmt.Sprintf("Kustomization has pending changes from %s to %s", ks.Status.LastAppliedRevision, ks.Status.LastAttemptedRevision),
 				Suggestion: "Check Kustomization status for reconciliation progress",
 				Metadata: map[string]string{
-					"kustomization":  ks.Name,
-					"fromRevision":   ks.Status.LastAppliedRevision,
-					"toRevision":     ks.Status.LastAttemptedRevision,
+					"kustomization": ks.Name,
+					"fromRevision":  ks.Status.LastAppliedRevision,
+					"toRevision":    ks.Status.LastAttemptedRevision,
 				},
 			})
 		}
