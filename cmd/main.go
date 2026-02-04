@@ -45,6 +45,7 @@ import (
 	"github.com/osagberg/kube-assist-operator/internal/checker/flux"
 	"github.com/osagberg/kube-assist-operator/internal/checker/workload"
 	"github.com/osagberg/kube-assist-operator/internal/controller"
+	"github.com/osagberg/kube-assist-operator/internal/dashboard"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -74,9 +75,15 @@ func main() {
 	var probeAddr string
 	var secureMetrics bool
 	var enableHTTP2 bool
+	var enableDashboard bool
+	var dashboardAddr string
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
+	flag.BoolVar(&enableDashboard, "enable-dashboard", false,
+		"Enable the Team Health Dashboard web server.")
+	flag.StringVar(&dashboardAddr, "dashboard-bind-address", ":9090",
+		"The address the dashboard server binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
@@ -233,6 +240,17 @@ func main() {
 	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
 		setupLog.Error(err, "unable to set up ready check")
 		os.Exit(1)
+	}
+
+	// Start dashboard server if enabled
+	if enableDashboard {
+		dashboardServer := dashboard.NewServer(mgr.GetClient(), registry, dashboardAddr)
+		go func() {
+			setupLog.Info("starting dashboard server", "addr", dashboardAddr)
+			if err := dashboardServer.Start(ctrl.SetupSignalHandler()); err != nil {
+				setupLog.Error(err, "dashboard server error")
+			}
+		}()
 	}
 
 	setupLog.Info("starting manager")
