@@ -2,10 +2,11 @@
 kubeassist - CLI tool for quick workload diagnostics
 
 Usage:
-  kubeassist [namespace]           # Diagnose all workloads in namespace
-  kubeassist -A                    # Diagnose all workloads in all namespaces
-  kubeassist -l app=myapp          # Diagnose workloads matching label
-  kubeassist --watch               # Continuous monitoring mode
+
+	kubeassist [namespace]           # Diagnose all workloads in namespace
+	kubeassist -A                    # Diagnose all workloads in all namespaces
+	kubeassist -l app=myapp          # Diagnose workloads matching label
+	kubeassist --watch               # Continuous monitoring mode
 */
 package main
 
@@ -49,14 +50,14 @@ var (
 )
 
 func main() {
-	flag.BoolVar(&allNamespaces, "A", false, "Diagnose workloads in all namespaces")
-	flag.BoolVar(&allNamespaces, "all-namespaces", false, "Diagnose workloads in all namespaces")
+	flag.BoolVar(&allNamespaces, "A", true, "Diagnose workloads in all namespaces (default: true)")
+	flag.BoolVar(&allNamespaces, "all-namespaces", true, "Diagnose workloads in all namespaces (default: true)")
 	flag.StringVar(&labelSelector, "l", "", "Label selector to filter workloads")
 	flag.StringVar(&labelSelector, "selector", "", "Label selector to filter workloads")
 	flag.BoolVar(&watchMode, "watch", false, "Continuous monitoring mode")
 	flag.BoolVar(&watchMode, "w", false, "Continuous monitoring mode")
 	flag.BoolVar(&outputJSON, "json", false, "Output as JSON")
-	flag.BoolVar(&cleanup, "cleanup", false, "Delete TroubleshootRequests after displaying results")
+	flag.BoolVar(&cleanup, "cleanup", true, "Delete TroubleshootRequests after displaying (default: true)")
 	flag.DurationVar(&timeout, "timeout", 60*time.Second, "Timeout waiting for diagnostics")
 	flag.Parse()
 
@@ -123,8 +124,8 @@ func run(namespace string) error {
 			return fmt.Errorf("failed to list namespaces: %w", err)
 		}
 		for _, ns := range nsList.Items {
-			// Skip system namespaces
-			if strings.HasPrefix(ns.Name, "kube-") || ns.Name == "flux-system" {
+			// Skip Kubernetes system namespaces (but not kube-assist-*)
+			if ns.Name == "kube-system" || ns.Name == "kube-public" || ns.Name == "kube-node-lease" || ns.Name == "flux-system" {
 				continue
 			}
 			namespaces = append(namespaces, ns.Name)
@@ -186,14 +187,14 @@ func run(namespace string) error {
 			result, err := waitForDiagnostic(ctx, dynClient, trGVR, ns, trName)
 			if err != nil {
 				result = diagResult{
-					namespace:  ns,
-					name:       deploy.Name,
-					phase:      "Error",
-					summary:    err.Error(),
-					issues:     nil,
-					healthy:    false,
-					critical:   0,
-					warnings:   0,
+					namespace: ns,
+					name:      deploy.Name,
+					phase:     "Error",
+					summary:   err.Error(),
+					issues:    nil,
+					healthy:   false,
+					critical:  0,
+					warnings:  0,
 				}
 			}
 
