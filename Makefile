@@ -256,3 +256,23 @@ endef
 define gomodver
 $(shell go list -m -f '{{if .Replace}}{{.Replace.Version}}{{else}}{{.Version}}{{end}}' $(1) 2>/dev/null)
 endef
+
+##@ Demo
+
+DEMO_MANIFEST ?= https://raw.githubusercontent.com/osagberg/cluster-gitops/main/deploy/kube-assist-demo/problematic-workloads.yaml
+
+.PHONY: demo-up
+demo-up: ## Deploy demo workloads with various issues to test the operator
+	@echo "Deploying demo workloads..."
+	"$(KUBECTL)" apply -f $(DEMO_MANIFEST)
+	@echo "Demo workloads deployed. Run 'kubeassist' or 'make demo-test' to diagnose."
+
+.PHONY: demo-down
+demo-down: ## Remove demo workloads
+	@echo "Removing demo workloads..."
+	"$(KUBECTL)" delete namespace kube-assist-demo --ignore-not-found
+	@echo "Demo workloads removed."
+
+.PHONY: demo-test
+demo-test: ## Run kubeassist on demo namespace
+	./bin/kubeassist kube-assist-demo

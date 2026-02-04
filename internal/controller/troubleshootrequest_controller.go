@@ -63,6 +63,8 @@ func (r *TroubleshootRequestReconciler) Reconcile(ctx context.Context, req ctrl.
 		}
 		return ctrl.Result{}, err
 	}
+	// Save original for patch later
+	original := troubleshoot.DeepCopy()
 
 	// Skip if already completed or failed
 	if troubleshoot.Status.Phase == assistv1alpha1.PhaseCompleted ||
@@ -70,24 +72,12 @@ func (r *TroubleshootRequestReconciler) Reconcile(ctx context.Context, req ctrl.
 		return ctrl.Result{}, nil
 	}
 
-	// Initialize status if needed
-	if troubleshoot.Status.Phase == "" {
-		troubleshoot.Status.Phase = assistv1alpha1.PhasePending
+	// Initialize timestamps if needed (will be saved at end)
+	if troubleshoot.Status.StartedAt == nil {
 		now := metav1.Now()
 		troubleshoot.Status.StartedAt = &now
-		if err := r.Status().Update(ctx, troubleshoot); err != nil {
-			return ctrl.Result{}, err
-		}
-		return ctrl.Result{Requeue: true}, nil
 	}
-
-	// Set to running
-	if troubleshoot.Status.Phase == assistv1alpha1.PhasePending {
-		troubleshoot.Status.Phase = assistv1alpha1.PhaseRunning
-		if err := r.Status().Update(ctx, troubleshoot); err != nil {
-			return ctrl.Result{}, err
-		}
-	}
+	troubleshoot.Status.Phase = assistv1alpha1.PhaseRunning
 
 	log.Info("Troubleshooting workload", "target", troubleshoot.Spec.Target.Name)
 
@@ -157,7 +147,10 @@ func (r *TroubleshootRequestReconciler) Reconcile(ctx context.Context, req ctrl.
 	r.setCondition(troubleshoot, assistv1alpha1.ConditionComplete, metav1.ConditionTrue,
 		"Complete", "Troubleshooting completed")
 
-	if err := r.Status().Update(ctx, troubleshoot); err != nil {
+	// Use patch for status update to avoid conflicts
+	patch := client.MergeFrom(original)
+	if err := r.Status().Patch(ctx, troubleshoot, patch); err != nil {
+		log.Error(err, "Failed to patch status")
 		return ctrl.Result{}, err
 	}
 
@@ -287,14 +280,55 @@ func (r *TroubleshootRequestReconciler) diagnosePodsDetailed(pods []corev1.Pod) 
 			}
 		}
 
-		// Check resource usage (basic)
+		// Check resource usage and best practices
 		for _, container := range pod.Spec.Containers {
+			// Memory limit
 			if container.Resources.Limits.Memory().IsZero() {
 				issues = append(issues, assistv1alpha1.DiagnosticIssue{
 					Type:       "NoMemoryLimit",
 					Severity:   "Warning",
 					Message:    fmt.Sprintf("Container %s has no memory limit set", container.Name),
 					Suggestion: "Set memory limits to prevent OOM issues and ensure fair resource sharing.",
+				})
+			}
+
+			// CPU limit
+			if container.Resources.Limits.Cpu().IsZero() {
+				issues = append(issues, assistv1alpha1.DiagnosticIssue{
+					Type:       "NoCPULimit",
+					Severity:   "Info",
+					Message:    fmt.Sprintf("Container %s has no CPU limit set", container.Name),
+					Suggestion: "Consider setting CPU limits for predictable performance.",
+				})
+			}
+
+			// Resource requests
+			if container.Resources.Requests.Memory().IsZero() && container.Resources.Requests.Cpu().IsZero() {
+				issues = append(issues, assistv1alpha1.DiagnosticIssue{
+					Type:       "NoResourceRequests",
+					Severity:   "Warning",
+					Message:    fmt.Sprintf("Container %s has no resource requests set", container.Name),
+					Suggestion: "Set resource requests to help the scheduler place pods appropriately.",
+				})
+			}
+
+			// Liveness probe
+			if container.LivenessProbe == nil {
+				issues = append(issues, assistv1alpha1.DiagnosticIssue{
+					Type:       "NoLivenessProbe",
+					Severity:   "Info",
+					Message:    fmt.Sprintf("Container %s has no liveness probe configured", container.Name),
+					Suggestion: "Add a liveness probe to enable automatic container restart on failure.",
+				})
+			}
+
+			// Readiness probe
+			if container.ReadinessProbe == nil {
+				issues = append(issues, assistv1alpha1.DiagnosticIssue{
+					Type:       "NoReadinessProbe",
+					Severity:   "Info",
+					Message:    fmt.Sprintf("Container %s has no readiness probe configured", container.Name),
+					Suggestion: "Add a readiness probe to prevent traffic being sent to unready pods.",
 				})
 			}
 		}
