@@ -92,6 +92,10 @@ KubeAssist automatically detects and explains these common problems:
 | Pending (Unschedulable) | Critical | "Check node resources, taints/tolerations, and affinity rules." |
 | High Restart Count | Warning | "Check logs for crash reasons. Consider increasing resource limits." |
 | No Memory Limit | Warning | "Set memory limits to prevent OOM issues and ensure fair resource sharing." |
+| No CPU Limit | Info | "Consider setting CPU limits for predictable performance." |
+| No Resource Requests | Warning | "Set resource requests to help the scheduler place pods appropriately." |
+| No Liveness Probe | Info | "Add a liveness probe to enable automatic container restart on failure." |
+| No Readiness Probe | Info | "Add a readiness probe to prevent traffic being sent to unready pods." |
 
 ## CLI Usage
 
@@ -175,6 +179,28 @@ status:
   startedAt: "2024-01-15T10:30:00Z"
   completedAt: "2024-01-15T10:30:02Z"
 ```
+
+## Demo
+
+Test the operator with sample problematic workloads:
+
+```sh
+# Deploy demo workloads with various issues
+make demo-up
+
+# Run diagnostics
+kubeassist
+
+# Clean up when done
+make demo-down
+```
+
+The demo deploys workloads that demonstrate:
+- `crashloop-app` - Application that crashes immediately
+- `imagepull-app` - References a non-existent image
+- `oom-app` - Exceeds memory limits
+- `nolimit-app` - Missing resource limits and probes
+- `healthy-app` - A properly configured healthy workload
 
 ## Development
 
