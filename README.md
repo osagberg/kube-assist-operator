@@ -1,102 +1,130 @@
 # KubeAssist Operator
 
-A Kubernetes operator that simplifies workload troubleshooting for developers who may not have deep Kubernetes expertise. Create a simple `TroubleshootRequest` CR and get automated diagnostics, logs, and events without needing direct cluster access.
+[![Go Version](https://img.shields.io/badge/Go-1.22+-00ADD8?style=flat&logo=go)](https://go.dev/)
+[![Kubernetes](https://img.shields.io/badge/Kubernetes-1.28+-326CE5?style=flat&logo=kubernetes)](https://kubernetes.io/)
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+
+**One command to diagnose your entire Kubernetes cluster.**
+
+KubeAssist is a Kubernetes operator that simplifies workload troubleshooting. Instead of running multiple `kubectl` commands and interpreting cryptic error messages, just run `kubeassist` and get instant, actionable diagnostics.
+
+```
+╔══════════════════════════════════════════════════════════════╗
+║              🔍 KubeAssist Workload Diagnostics              ║
+╚══════════════════════════════════════════════════════════════╝
+
+✗ production/api-server
+   ● [Critical] Container app is waiting: CrashLoopBackOff
+     → Application is crashing. Check logs for error messages.
+   ○ [Warning] Container app has restarted 12 times
+     → Check logs for crash reasons.
+
+✗ production/worker
+   ● [Critical] Container worker is waiting: ImagePullBackOff
+     → Check if the image exists and credentials are configured correctly.
+
+✓ production/redis
+   All 1 pod(s) healthy - no issues found
+
+────────────────────────────────────────────────────────────────
+Summary: 1 healthy, 2 unhealthy (2 critical, 1 warnings)
+```
 
 ## Why KubeAssist?
 
-In enterprise environments with strict AKS/EKS/GKE clusters, developers often:
-- Lack direct kubectl access for security reasons
-- Don't have time to learn Kubernetes troubleshooting
-- Need quick answers: "Why isn't my deployment working?"
+In enterprise Kubernetes environments, developers often:
+- **Lack direct cluster access** - Security policies restrict kubectl usage
+- **Don't have K8s expertise** - They just want to know why their app isn't working
+- **Waste time on troubleshooting** - Jumping between pods, logs, events, and descriptions
 
-KubeAssist bridges this gap by providing a declarative way to request diagnostics.
-
-## Features
-
-- **Pod Diagnostics**: Detects common issues like CrashLoopBackOff, OOMKilled, ImagePullBackOff
-- **Log Collection**: Gathers logs from target pods into ConfigMaps
-- **Event Collection**: Captures relevant Kubernetes events
-- **Actionable Suggestions**: Provides fix recommendations for detected issues
+KubeAssist solves this by providing:
+- **One-command diagnostics** - `kubeassist` scans your entire cluster
+- **Actionable suggestions** - Not just "CrashLoopBackOff" but "Application is crashing. Check logs."
+- **Collected evidence** - Logs and events stored in ConfigMaps for later analysis
 
 ## Quick Start
 
-### Install the CLI (Recommended)
+### Option 1: CLI Tool (Recommended)
 
 ```sh
-# Build and install to your GOBIN
+# Clone and build
+git clone https://github.com/osagberg/kube-assist-operator.git
+cd kube-assist-operator
 make install-cli
 
-# Now you can run diagnostics with one command
-kubeassist my-namespace
+# Run diagnostics on entire cluster
+kubeassist
 ```
 
-### Install CRDs
+### Option 2: Deploy as Operator
 
 ```sh
-make install
-```
-
-### Run Locally (development)
-
-```sh
-make run
-```
-
-### Deploy to Cluster
-
-```sh
+# Install CRDs and deploy operator
 make deploy IMG=ghcr.io/osagberg/kube-assist-operator:latest
-```
 
-## Usage
-
-Create a `TroubleshootRequest` to diagnose a workload:
-
-```yaml
+# Create a TroubleshootRequest
+kubectl apply -f - <<EOF
 apiVersion: assist.cluster.local/v1alpha1
 kind: TroubleshootRequest
 metadata:
-  name: troubleshoot-my-app
-  namespace: my-namespace
+  name: diagnose-my-app
+  namespace: default
 spec:
   target:
-    kind: Deployment  # Deployment, StatefulSet, DaemonSet, or Pod
     name: my-app
-  actions:
-    - all            # diagnose, logs, events, or all
-  tailLines: 200     # Number of log lines to collect
+  actions: [all]
+EOF
+
+# Check results
+kubectl get troubleshootrequest diagnose-my-app -o yaml
 ```
 
-Check results:
+## Detected Issues
+
+KubeAssist automatically detects and explains these common problems:
+
+| Issue | Severity | Example Suggestion |
+|-------|----------|-------------------|
+| CrashLoopBackOff | Critical | "Application is crashing. Check logs for error messages." |
+| ImagePullBackOff | Critical | "Check if the image exists and credentials are configured correctly." |
+| OOMKilled | Critical | "Container exceeded memory limit. Increase memory limit or optimize usage." |
+| CreateContainerConfigError | Critical | "Check ConfigMaps and Secrets referenced by the pod." |
+| Pending (Unschedulable) | Critical | "Check node resources, taints/tolerations, and affinity rules." |
+| High Restart Count | Warning | "Check logs for crash reasons. Consider increasing resource limits." |
+| No Memory Limit | Warning | "Set memory limits to prevent OOM issues and ensure fair resource sharing." |
+
+## CLI Usage
 
 ```sh
-kubectl get troubleshootrequest troubleshoot-my-app -o yaml
+# Scan entire cluster (default)
+kubeassist
+
+# Scan specific namespace
+kubeassist production
+
+# Filter by label
+kubeassist -l app=api
+
+# Keep TroubleshootRequests after scan (default: auto-cleanup)
+kubeassist --cleanup=false
 ```
 
-The status will contain:
-- `phase`: Pending -> Running -> Completed/Failed
-- `summary`: Brief overview (e.g., "2 critical, 1 warning issue(s) found")
-- `issues`: List of detected problems with severity and suggestions
-- `logsConfigMap`: Name of ConfigMap containing collected logs
-- `eventsConfigMap`: Name of ConfigMap containing events
+## Architecture
 
-## Example Output
-
-```yaml
-status:
-  phase: Completed
-  summary: "1 critical, 1 warning issue(s) found"
-  issues:
-    - type: ContainerNotReady
-      severity: Critical
-      message: "Container app is waiting: CrashLoopBackOff - back-off 5m0s restarting failed container"
-      suggestion: "Application is crashing. Check logs for error messages."
-    - type: HighRestartCount
-      severity: Warning
-      message: "Container app has restarted 12 times"
-      suggestion: "Check logs for crash reasons. Consider increasing resource limits or fixing application bugs."
-  logsConfigMap: troubleshoot-my-app-logs
-  eventsConfigMap: troubleshoot-my-app-events
+```
+┌─────────────────┐     ┌──────────────────────┐     ┌─────────────────┐
+│   kubeassist    │────▶│  TroubleshootRequest │────▶│    Operator     │
+│     (CLI)       │     │        (CR)          │     │   Controller    │
+└─────────────────┘     └──────────────────────┘     └────────┬────────┘
+                                                              │
+                        ┌─────────────────────────────────────┼─────────────────────────────────────┐
+                        │                                     ▼                                     │
+                        │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  │
+                        │  │    Pods      │  │    Logs      │  │   Events     │  │  ConfigMaps  │  │
+                        │  │  (diagnose)  │  │  (collect)   │  │  (collect)   │  │   (store)    │  │
+                        │  └──────────────┘  └──────────────┘  └──────────────┘  └──────────────┘  │
+                        │                                Kubernetes API                             │
+                        └───────────────────────────────────────────────────────────────────────────┘
 ```
 
 ## Supported Workload Types
@@ -104,49 +132,61 @@ status:
 - Deployment
 - StatefulSet
 - DaemonSet
-- Pod
 - ReplicaSet
+- Pod
 
-## CLI Tool
+## TroubleshootRequest Spec
 
-The `kubeassist` CLI provides instant diagnostics without manually creating CRs:
+```yaml
+apiVersion: assist.cluster.local/v1alpha1
+kind: TroubleshootRequest
+metadata:
+  name: diagnose-my-app
+  namespace: default
+spec:
+  target:
+    kind: Deployment    # Deployment, StatefulSet, DaemonSet, Pod, ReplicaSet
+    name: my-app        # Name of the workload
+  actions:
+    - diagnose          # Analyze pod status and conditions
+    - logs              # Collect container logs
+    - events            # Collect related events
+    # Or use "all" for everything
+  tailLines: 100        # Number of log lines to collect (default: 100)
+```
+
+## Status Output
+
+```yaml
+status:
+  phase: Completed
+  summary: "2 critical, 1 warning issue(s) found"
+  issues:
+    - type: ContainerNotReady
+      severity: Critical
+      message: "Container app is waiting: CrashLoopBackOff"
+      suggestion: "Application is crashing. Check logs for error messages."
+    - type: HighRestartCount
+      severity: Warning
+      message: "Container app has restarted 12 times"
+      suggestion: "Check logs for crash reasons."
+  logsConfigMap: diagnose-my-app-logs
+  eventsConfigMap: diagnose-my-app-events
+  startedAt: "2024-01-15T10:30:00Z"
+  completedAt: "2024-01-15T10:30:02Z"
+```
+
+## Development
 
 ```sh
-# Diagnose all workloads in a namespace
-kubeassist my-namespace
+# Run tests
+make test
 
-# Diagnose all namespaces
-kubeassist -A
+# Run locally against current kubeconfig
+make run
 
-# Filter by label
-kubeassist -l app=myapp my-namespace
-
-# Auto-cleanup after displaying results
-kubeassist my-namespace --cleanup
-
-# Set timeout (default 60s)
-kubeassist my-namespace --timeout=120s
-```
-
-### Sample Output
-
-```
-╔══════════════════════════════════════════════════════════════╗
-║              🔍 KubeAssist Workload Diagnostics              ║
-╚══════════════════════════════════════════════════════════════╝
-Namespace: my-namespace
-
-✗ my-namespace/crashloop-app
-   ● [Critical] Container app is waiting: CrashLoopBackOff
-     → Application is crashing. Check logs for error messages.
-   ○ [Warning] Container app has restarted 6 times
-     → Check logs for crash reasons.
-
-✓ my-namespace/healthy-app
-   All 1 pod(s) healthy - no issues found
-
-────────────────────────────────────────────────────────────────
-Summary: 1 healthy, 1 unhealthy (1 critical, 1 warnings)
+# Build container image
+make docker-build IMG=my-registry/kube-assist-operator:dev
 ```
 
 ## License
