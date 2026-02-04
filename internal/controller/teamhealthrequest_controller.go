@@ -36,6 +36,14 @@ import (
 	"github.com/osagberg/kube-assist-operator/internal/scope"
 )
 
+const (
+	// DefaultCheckerTimeout is the default timeout for running all checkers
+	DefaultCheckerTimeout = 2 * time.Minute
+
+	// MaxNamespaces limits the number of namespaces that can be checked at once
+	MaxNamespaces = 50
+)
+
 // TeamHealthRequestReconciler reconciles a TeamHealthRequest object
 type TeamHealthRequestReconciler struct {
 	client.Client
@@ -102,6 +110,12 @@ func (r *TeamHealthRequestReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		return r.setFailed(ctx, original, healthReq, "No namespaces found matching scope")
 	}
 
+	// Limit namespace count to prevent resource exhaustion
+	if len(namespaces) > MaxNamespaces {
+		log.Info("Limiting namespaces", "requested", len(namespaces), "max", MaxNamespaces)
+		namespaces = namespaces[:MaxNamespaces]
+	}
+
 	healthReq.Status.NamespacesChecked = namespaces
 	r.setCondition(healthReq, assistv1alpha1.TeamHealthConditionNamespacesResolved, metav1.ConditionTrue,
 		"Resolved", fmt.Sprintf("Found %d namespace(s)", len(namespaces)))
@@ -116,8 +130,13 @@ func (r *TeamHealthRequestReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		Config:     r.buildCheckerConfig(healthReq.Spec.Config),
 	}
 
-	// Run checkers
-	results := r.Registry.RunAll(ctx, checkCtx, checkerNames)
+	// Create timeout context for checker execution
+	checkerCtx, cancelCheckers := context.WithTimeout(ctx, DefaultCheckerTimeout)
+	defer cancelCheckers()
+
+	// Run checkers with timeout
+	log.Info("Running checkers", "checkers", checkerNames, "namespaces", len(namespaces))
+	results := r.Registry.RunAll(checkerCtx, checkCtx, checkerNames)
 
 	// Convert results to API format
 	totalHealthy := 0
@@ -130,21 +149,41 @@ func (r *TeamHealthRequestReconciler) Reconcile(ctx context.Context, req ctrl.Re
 			Healthy: int32(result.Healthy),
 		}
 
+		// Track resources checked per checker
+		teamHealthResourcesChecked.With(prometheus.Labels{
+			"checker": name,
+		}).Set(float64(result.Healthy + len(result.Issues)))
+
 		if result.Error != nil {
 			apiResult.Error = result.Error.Error()
+			log.Error(result.Error, "Checker failed", "checker", name)
 		} else {
 			apiResult.Issues = checker.ToAPIIssues(result.Issues)
 			totalHealthy += result.Healthy
 			totalIssues += len(result.Issues)
 
+			// Track issues by checker and severity
+			checkerCritical := 0
+			checkerWarning := 0
 			for _, issue := range result.Issues {
 				switch issue.Severity {
 				case checker.SeverityCritical:
 					criticalCount++
+					checkerCritical++
 				case checker.SeverityWarning:
 					warningCount++
+					checkerWarning++
 				}
 			}
+
+			teamHealthIssues.With(prometheus.Labels{
+				"checker":  name,
+				"severity": "critical",
+			}).Set(float64(checkerCritical))
+			teamHealthIssues.With(prometheus.Labels{
+				"checker":  name,
+				"severity": "warning",
+			}).Set(float64(checkerWarning))
 		}
 
 		healthReq.Status.Results[name] = apiResult

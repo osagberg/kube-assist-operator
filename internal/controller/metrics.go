@@ -49,6 +49,34 @@ var (
 		},
 		[]string{"namespace", "severity"},
 	)
+
+	// teamHealthCheckDuration tracks duration of team health checks by checker
+	teamHealthCheckDuration = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "kubeassist_teamhealth_check_duration_seconds",
+			Help:    "Duration of individual checker execution in seconds",
+			Buckets: []float64{0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10},
+		},
+		[]string{"checker"},
+	)
+
+	// teamHealthIssues tracks issues found by checker and severity
+	teamHealthIssues = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "kubeassist_teamhealth_issues",
+			Help: "Number of issues found by Team Health checks",
+		},
+		[]string{"checker", "severity"},
+	)
+
+	// teamHealthResourcesChecked tracks number of resources checked per checker
+	teamHealthResourcesChecked = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "kubeassist_teamhealth_resources_checked",
+			Help: "Number of resources checked by Team Health checks",
+		},
+		[]string{"checker"},
+	)
 )
 
 func init() {
@@ -56,4 +84,7 @@ func init() {
 	metrics.Registry.MustRegister(reconcileTotal)
 	metrics.Registry.MustRegister(reconcileDuration)
 	metrics.Registry.MustRegister(issuesTotal)
+	metrics.Registry.MustRegister(teamHealthCheckDuration)
+	metrics.Registry.MustRegister(teamHealthIssues)
+	metrics.Registry.MustRegister(teamHealthResourcesChecked)
 }
