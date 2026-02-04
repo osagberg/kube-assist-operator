@@ -51,6 +51,13 @@ operator:
   # Metrics bind address (set to "0" to disable)
   metricsBindAddress: ":8080"
 
+# Dashboard settings
+dashboard:
+  # Enable the Team Health Dashboard web server
+  enabled: false
+  # Dashboard bind address
+  bindAddress: ":9090"
+
 resources:
   limits:
     cpu: 500m

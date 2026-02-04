@@ -50,6 +50,10 @@ spec:
             {{- if .Values.operator.metricsBindAddress }}
             - --metrics-bind-address={{ .Values.operator.metricsBindAddress }}
             {{- end }}
+            {{- if .Values.dashboard.enabled }}
+            - --enable-dashboard
+            - --dashboard-bind-address={{ .Values.dashboard.bindAddress }}
+            {{- end }}
           {{- with .Values.env }}
           env:
             {{- toYaml . | nindent 12 }}
@@ -61,6 +65,11 @@ spec:
             {{- if and .Values.operator.metricsBindAddress (ne .Values.operator.metricsBindAddress "0") }}
             - name: metrics
               containerPort: 8080
+              protocol: TCP
+            {{- end }}
+            {{- if .Values.dashboard.enabled }}
+            - name: dashboard
+              containerPort: 9090
               protocol: TCP
             {{- end }}
           {{- with .Values.securityContext }}
