@@ -269,8 +269,14 @@ func waitForDiagnostic(ctx context.Context, client dynamic.Interface, gvr schema
 		case <-ctx.Done():
 			return result, fmt.Errorf("timeout waiting for diagnostic")
 		case event := <-watcher.ResultChan():
+			if event.Type == watch.Error {
+				return result, fmt.Errorf("watch error")
+			}
 			if event.Type == watch.Modified || event.Type == watch.Added {
-				obj := event.Object.(*unstructured.Unstructured)
+				obj, ok := event.Object.(*unstructured.Unstructured)
+				if !ok {
+					continue
+				}
 				status, found, _ := unstructured.NestedMap(obj.Object, "status")
 				if !found {
 					continue
@@ -283,7 +289,10 @@ func waitForDiagnostic(ctx context.Context, client dynamic.Interface, gvr schema
 
 					issuesRaw, _, _ := unstructured.NestedSlice(status, "issues")
 					for _, issueRaw := range issuesRaw {
-						issueMap := issueRaw.(map[string]interface{})
+						issueMap, ok := issueRaw.(map[string]interface{})
+						if !ok {
+							continue
+						}
 						iss := issue{
 							Type:       getString(issueMap, "type"),
 							Severity:   getString(issueMap, "severity"),

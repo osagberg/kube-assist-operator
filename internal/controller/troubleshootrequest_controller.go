@@ -84,12 +84,16 @@ func (r *TroubleshootRequestReconciler) Reconcile(ctx context.Context, req ctrl.
 	// Find the target workload
 	pods, err := r.findTargetPods(ctx, troubleshoot)
 	if err != nil {
-		r.setFailed(ctx, troubleshoot, fmt.Sprintf("Failed to find target: %v", err))
+		if patchErr := r.setFailed(ctx, original, troubleshoot, fmt.Sprintf("Failed to find target: %v", err)); patchErr != nil {
+			return ctrl.Result{}, patchErr
+		}
 		return ctrl.Result{}, nil
 	}
 
 	if len(pods) == 0 {
-		r.setFailed(ctx, troubleshoot, "No pods found for target workload")
+		if patchErr := r.setFailed(ctx, original, troubleshoot, "No pods found for target workload"); patchErr != nil {
+			return ctrl.Result{}, patchErr
+		}
 		return ctrl.Result{}, nil
 	}
 
@@ -391,10 +395,10 @@ func (r *TroubleshootRequestReconciler) collectLogs(ctx context.Context, tr *ass
 				data[fmt.Sprintf("%s-%s", pod.Name, container.Name)] = fmt.Sprintf("Error getting logs: %v", err)
 				continue
 			}
-			defer stream.Close()
 
 			buf := new(bytes.Buffer)
 			_, err = io.Copy(buf, stream)
+			stream.Close() // Close immediately, not defer
 			if err != nil {
 				data[fmt.Sprintf("%s-%s", pod.Name, container.Name)] = fmt.Sprintf("Error reading logs: %v", err)
 				continue
@@ -411,6 +415,9 @@ func (r *TroubleshootRequestReconciler) collectLogs(ctx context.Context, tr *ass
 			Labels: map[string]string{
 				"app.kubernetes.io/managed-by": "kube-assist",
 				"assist.cluster.local/request": tr.Name,
+			},
+			OwnerReferences: []metav1.OwnerReference{
+				*metav1.NewControllerRef(tr, assistv1alpha1.GroupVersion.WithKind("TroubleshootRequest")),
 			},
 		},
 		Data: data,
@@ -470,6 +477,9 @@ func (r *TroubleshootRequestReconciler) collectEvents(ctx context.Context, tr *a
 				"app.kubernetes.io/managed-by": "kube-assist",
 				"assist.cluster.local/request": tr.Name,
 			},
+			OwnerReferences: []metav1.OwnerReference{
+				*metav1.NewControllerRef(tr, assistv1alpha1.GroupVersion.WithKind("TroubleshootRequest")),
+			},
 		},
 		Data: map[string]string{
 			"events": strings.Join(relevantEvents, "\n"),
@@ -517,12 +527,13 @@ func (r *TroubleshootRequestReconciler) generateSummary(pods []corev1.Pod, issue
 	return fmt.Sprintf("%d warning issue(s) found", warning)
 }
 
-func (r *TroubleshootRequestReconciler) setFailed(ctx context.Context, tr *assistv1alpha1.TroubleshootRequest, message string) {
+func (r *TroubleshootRequestReconciler) setFailed(ctx context.Context, original, tr *assistv1alpha1.TroubleshootRequest, message string) error {
 	tr.Status.Phase = assistv1alpha1.PhaseFailed
 	tr.Status.Summary = message
 	now := metav1.Now()
 	tr.Status.CompletedAt = &now
-	r.Status().Update(ctx, tr)
+	patch := client.MergeFrom(original)
+	return r.Status().Patch(ctx, tr, patch)
 }
 
 func (r *TroubleshootRequestReconciler) setCondition(tr *assistv1alpha1.TroubleshootRequest, condType string, status metav1.ConditionStatus, reason, message string) {
