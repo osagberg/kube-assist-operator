@@ -36,8 +36,13 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
+	helmv2 "github.com/fluxcd/helm-controller/api/v2"
+	kustomizev1 "github.com/fluxcd/kustomize-controller/api/v1"
+	sourcev1 "github.com/fluxcd/source-controller/api/v1"
+
 	assistv1alpha1 "github.com/osagberg/kube-assist-operator/api/v1alpha1"
 	"github.com/osagberg/kube-assist-operator/internal/checker"
+	"github.com/osagberg/kube-assist-operator/internal/checker/flux"
 	"github.com/osagberg/kube-assist-operator/internal/checker/workload"
 	"github.com/osagberg/kube-assist-operator/internal/controller"
 	// +kubebuilder:scaffold:imports
@@ -52,6 +57,11 @@ func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 
 	utilruntime.Must(assistv1alpha1.AddToScheme(scheme))
+
+	// Flux CRDs for health checking
+	utilruntime.Must(helmv2.AddToScheme(scheme))
+	utilruntime.Must(kustomizev1.AddToScheme(scheme))
+	utilruntime.Must(sourcev1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 
@@ -191,6 +201,9 @@ func main() {
 	// Initialize checker registry with available checkers
 	registry := checker.NewRegistry()
 	registry.MustRegister(workload.New())
+	registry.MustRegister(flux.NewHelmReleaseChecker())
+	registry.MustRegister(flux.NewKustomizationChecker())
+	registry.MustRegister(flux.NewGitRepositoryChecker())
 	setupLog.Info("Registered checkers", "checkers", registry.List())
 
 	if err := (&controller.TroubleshootRequestReconciler{
