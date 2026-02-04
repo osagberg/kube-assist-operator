@@ -130,6 +130,130 @@ TroubleshootRequest CR  -->  Operator Controller
                  Status       ConfigMap       ConfigMap
 ```
 
+## Roadmap: Team Health Dashboard
+
+KubeAssist is evolving into a **complete team health dashboard** - one command to see everything your team cares about.
+
+### Vision
+
+```
+┌────────────────────────────────────────────────────────────────────────────┐
+│                    KubeAssist Team Health Dashboard                        │
+├────────────────────────────────────────────────────────────────────────────┤
+│                                                                            │
+│  Namespace: [team-frontend ▼]              Last check: 2 minutes ago  [⟳] │
+│                                                                            │
+│  ┌──────────────┐ ┌──────────────┐ ┌──────────────┐ ┌──────────────┐      │
+│  │  Workloads   │ │    Helm      │ │   GitOps     │ │   Secrets    │      │
+│  │    12 ✓      │ │  3 ✓   1 ✗   │ │    5 ✓       │ │  8 ✓   1 ⚠   │      │
+│  └──────────────┘ └──────────────┘ └──────────────┘ └──────────────┘      │
+│                                                                            │
+│  ┌──────────────┐ ┌──────────────┐ ┌──────────────┐                       │
+│  │   Storage    │ │    Quotas    │ │   Network    │                       │
+│  │    4 ✓       │ │   78% used   │ │  2 policies  │                       │
+│  └──────────────┘ └──────────────┘ └──────────────┘                       │
+│                                                                            │
+│  ══════════════════════════════════════════════════════════════════════   │
+│                                                                            │
+│  ✗ CRITICAL  helmrelease/redis                                            │
+│    Helm upgrade failed: values validation error                           │
+│    ┌────────────────────────────────────────────────────────────────┐     │
+│    │ 🤖 AI: The 'persistence.size' value changed from 10Gi to 5Gi. │     │
+│    │    Helm won't shrink PVCs. Keep at 10Gi or delete the PVC.    │     │
+│    └────────────────────────────────────────────────────────────────┘     │
+│                                                                            │
+│  ⚠ WARNING  secret/tls-cert                                               │
+│    TLS certificate expires in 14 days                                     │
+│    → Renew certificate before expiry                                      │
+│                                                                            │
+└────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Planned Features
+
+| Feature | Status | Description |
+|---------|--------|-------------|
+| **Workload Diagnostics** | ✅ Done | Pod health, crashes, resource issues |
+| **Flux HelmReleases** | 🔜 Planned | Failed upgrades, suspended, stale |
+| **Flux Kustomizations** | 🔜 Planned | Sync failures, drift detection |
+| **Flux GitRepositories** | 🔜 Planned | Fetch errors, auth failures |
+| **Secret Health** | 🔜 Planned | Cert expiry, missing references |
+| **PVC Status** | 🔜 Planned | Pending, capacity warnings |
+| **ResourceQuotas** | 🔜 Planned | Usage warnings, exceeded limits |
+| **NetworkPolicies** | 🔜 Planned | Missing policy detection |
+| **Web Dashboard** | 🔜 Planned | Real-time UI with SSE updates |
+| **AI Analysis** | 🔜 Planned | Context-aware suggestions |
+
+### Namespace Scoping
+
+Support for multi-tenant clusters - scope checks to your team's namespaces:
+
+```yaml
+apiVersion: assist.cluster.local/v1alpha1
+kind: TeamHealthRequest
+metadata:
+  name: frontend-team
+spec:
+  scope:
+    namespaces: [team-frontend, team-shared]
+    # Or use label selector:
+    # namespaceSelector:
+    #   matchLabels:
+    #     team: frontend
+  checks: [workloads, helmreleases, secrets, quotas]
+```
+
+### AI-Powered Analysis
+
+Optional integration with OpenAI or Anthropic for intelligent suggestions:
+
+```
+Static:  "Container exceeded memory limit. Increase limit."
+
+AI:      "The api-server container is OOMKilled at 256Mi. Based on the
+         logs, it loads a 180MB ML model at startup. Increase memory
+         to 512Mi in deploy/production/api-server/deployment.yaml"
+```
+
+**Providers:** OpenAI (gpt-4o) | Anthropic (Claude) | None (static fallback)
+
+### Architecture Evolution
+
+```
+Current:                              Future:
+────────                              ──────
+
+TroubleshootRequest                   TeamHealthRequest
+       │                                     │
+       v                                     v
+  ┌─────────┐                         ┌─────────────┐
+  │Reconcile│                         │  Checkers   │
+  │  (pods) │                         ├─────────────┤
+  └─────────┘                         │ Workloads   │
+                                      │ HelmRelease │
+                                      │ Kustomize   │
+                                      │ Secrets     │
+                                      │ Quotas      │
+                                      │ PVCs        │
+                                      └──────┬──────┘
+                                             │
+                                      ┌──────▼──────┐
+                                      │ AI Provider │ (optional)
+                                      │ ┌─────────┐ │
+                                      │ │ OpenAI  │ │
+                                      │ │ Claude  │ │
+                                      │ │  None   │ │
+                                      │ └─────────┘ │
+                                      └──────┬──────┘
+                                             │
+                                      ┌──────▼──────┐
+                                      │  Dashboard  │
+                                      │  (Web UI)   │
+                                      └─────────────┘
+```
+
+---
+
 ## Development
 
 ```sh
