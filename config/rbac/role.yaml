@@ -21,6 +21,7 @@ rules:
 - apiGroups:
   - ""
   resources:
+  - namespaces
   - nodes
   verbs:
   - get
@@ -40,6 +41,7 @@ rules:
 - apiGroups:
   - assist.cluster.local
   resources:
+  - teamhealthrequests
   - troubleshootrequests
   verbs:
   - create
@@ -52,12 +54,14 @@ rules:
 - apiGroups:
   - assist.cluster.local
   resources:
+  - teamhealthrequests/finalizers
   - troubleshootrequests/finalizers
   verbs:
   - update
 - apiGroups:
   - assist.cluster.local
   resources:
+  - teamhealthrequests/status
   - troubleshootrequests/status
   verbs:
   - get
