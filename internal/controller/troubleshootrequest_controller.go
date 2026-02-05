@@ -97,7 +97,10 @@ func (r *TroubleshootRequestReconciler) Reconcile(ctx context.Context, req ctrl.
 	}
 	troubleshoot.Status.Phase = assistv1alpha1.PhaseRunning
 
-	log.Info("Troubleshooting workload", "target", troubleshoot.Spec.Target.Name)
+	log.Info("Troubleshooting workload",
+		"target", troubleshoot.Spec.Target.Name,
+		"kind", troubleshoot.Spec.Target.Kind,
+		"actions", troubleshoot.Spec.Actions)
 
 	// Find the target workload
 	pods, err := r.findTargetPods(ctx, troubleshoot)
@@ -288,10 +291,12 @@ func (r *TroubleshootRequestReconciler) diagnosePodsDetailed(pods []corev1.Pod) 
 			// Check restart count
 			if cs.RestartCount > 3 {
 				issues = append(issues, assistv1alpha1.DiagnosticIssue{
-					Type:       "HighRestartCount",
-					Severity:   "Warning",
-					Message:    fmt.Sprintf("Container %s has restarted %d times", cs.Name, cs.RestartCount),
-					Suggestion: "Check logs for crash reasons. Consider increasing resource limits or fixing application bugs.",
+					Type:     "HighRestartCount",
+					Severity: "Warning",
+					Message:  fmt.Sprintf("Container %s has restarted %d times", cs.Name, cs.RestartCount),
+					Suggestion: fmt.Sprintf("Check previous logs: kubectl logs %s -c %s --previous -n %s. "+
+						"Common causes: OOM kills, liveness probe failures, or application crashes.",
+						pod.Name, cs.Name, pod.Namespace),
 				})
 			}
 		}
@@ -302,10 +307,13 @@ func (r *TroubleshootRequestReconciler) diagnosePodsDetailed(pods []corev1.Pod) 
 				switch cond.Type {
 				case corev1.PodScheduled:
 					issues = append(issues, assistv1alpha1.DiagnosticIssue{
-						Type:       "SchedulingFailed",
-						Severity:   "Critical",
-						Message:    fmt.Sprintf("Pod %s failed to schedule: %s", pod.Name, cond.Message),
-						Suggestion: "Check node resources, taints/tolerations, and affinity rules.",
+						Type:     "SchedulingFailed",
+						Severity: "Critical",
+						Message:  fmt.Sprintf("Pod %s failed to schedule: %s", pod.Name, cond.Message),
+						Suggestion: fmt.Sprintf("Check node capacity: kubectl describe nodes | grep -A5 'Allocated resources'. "+
+							"Verify taints/tolerations: kubectl get nodes -o custom-columns=NAME:.metadata.name,TAINTS:.spec.taints. "+
+							"Check pod affinity: kubectl get pod %s -n %s -o jsonpath='{.spec.affinity}'.",
+							pod.Name, pod.Namespace),
 					})
 				case corev1.PodReady:
 					if cond.Reason == "ContainersNotReady" {
@@ -326,50 +334,56 @@ func (r *TroubleshootRequestReconciler) diagnosePodsDetailed(pods []corev1.Pod) 
 			// Memory limit
 			if container.Resources.Limits.Memory().IsZero() {
 				issues = append(issues, assistv1alpha1.DiagnosticIssue{
-					Type:       "NoMemoryLimit",
-					Severity:   "Warning",
-					Message:    fmt.Sprintf("Container %s has no memory limit set", container.Name),
-					Suggestion: "Set memory limits to prevent OOM issues and ensure fair resource sharing.",
+					Type:     "NoMemoryLimit",
+					Severity: "Warning",
+					Message:  fmt.Sprintf("Container %s has no memory limit set", container.Name),
+					Suggestion: "Set a memory limit to prevent OOM issues and ensure fair resource sharing. " +
+						"Check current usage: kubectl top pod " + pod.Name + " -n " + pod.Namespace + ". " +
+						"See Kubernetes docs on resource management for containers.",
 				})
 			}
 
 			// CPU limit
 			if container.Resources.Limits.Cpu().IsZero() {
 				issues = append(issues, assistv1alpha1.DiagnosticIssue{
-					Type:       "NoCPULimit",
-					Severity:   "Info",
-					Message:    fmt.Sprintf("Container %s has no CPU limit set", container.Name),
-					Suggestion: "Consider setting CPU limits for predictable performance.",
+					Type:     "NoCPULimit",
+					Severity: "Info",
+					Message:  fmt.Sprintf("Container %s has no CPU limit set", container.Name),
+					Suggestion: "Consider setting CPU limits for predictable performance. " +
+						"Note: some teams intentionally omit CPU limits to avoid throttling.",
 				})
 			}
 
 			// Resource requests
 			if container.Resources.Requests.Memory().IsZero() && container.Resources.Requests.Cpu().IsZero() {
 				issues = append(issues, assistv1alpha1.DiagnosticIssue{
-					Type:       "NoResourceRequests",
-					Severity:   "Warning",
-					Message:    fmt.Sprintf("Container %s has no resource requests set", container.Name),
-					Suggestion: "Set resource requests to help the scheduler place pods appropriately.",
+					Type:     "NoResourceRequests",
+					Severity: "Warning",
+					Message:  fmt.Sprintf("Container %s has no resource requests set", container.Name),
+					Suggestion: "Set resource requests so the scheduler can place pods on nodes with sufficient capacity. " +
+						"Without requests, pods get BestEffort QoS and are evicted first under memory pressure.",
 				})
 			}
 
 			// Liveness probe
 			if container.LivenessProbe == nil {
 				issues = append(issues, assistv1alpha1.DiagnosticIssue{
-					Type:       "NoLivenessProbe",
-					Severity:   "Info",
-					Message:    fmt.Sprintf("Container %s has no liveness probe configured", container.Name),
-					Suggestion: "Add a liveness probe to enable automatic container restart on failure.",
+					Type:     "NoLivenessProbe",
+					Severity: "Info",
+					Message:  fmt.Sprintf("Container %s has no liveness probe configured", container.Name),
+					Suggestion: "Add a liveness probe to enable automatic container restart when the application " +
+						"becomes unresponsive. See Kubernetes docs on configure liveness, readiness and startup probes.",
 				})
 			}
 
 			// Readiness probe
 			if container.ReadinessProbe == nil {
 				issues = append(issues, assistv1alpha1.DiagnosticIssue{
-					Type:       "NoReadinessProbe",
-					Severity:   "Info",
-					Message:    fmt.Sprintf("Container %s has no readiness probe configured", container.Name),
-					Suggestion: "Add a readiness probe to prevent traffic being sent to unready pods.",
+					Type:     "NoReadinessProbe",
+					Severity: "Info",
+					Message:  fmt.Sprintf("Container %s has no readiness probe configured", container.Name),
+					Suggestion: "Add a readiness probe to prevent traffic from being sent to pods that are not ready. " +
+						"This is especially important for services behind a Service/Ingress.",
 				})
 			}
 		}
@@ -549,10 +563,17 @@ func (r *TroubleshootRequestReconciler) generateSummary(pods []corev1.Pod, issue
 }
 
 func (r *TroubleshootRequestReconciler) setFailed(ctx context.Context, original, tr *assistv1alpha1.TroubleshootRequest, message string) error {
+	log := logf.FromContext(ctx)
+	log.Info("Troubleshooting failed", "reason", message, "target", tr.Spec.Target.Name)
+
 	tr.Status.Phase = assistv1alpha1.PhaseFailed
 	tr.Status.Summary = message
 	now := metav1.Now()
 	tr.Status.CompletedAt = &now
+
+	r.setCondition(tr, assistv1alpha1.ConditionComplete, metav1.ConditionFalse,
+		"Failed", message)
+
 	patch := client.MergeFrom(original)
 	return r.Status().Patch(ctx, tr, patch)
 }

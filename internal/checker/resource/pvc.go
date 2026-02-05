@@ -85,7 +85,10 @@ func (c *PVCChecker) checkPVC(pvc *corev1.PersistentVolumeClaim) []checker.Issue
 	switch pvc.Status.Phase {
 	case corev1.ClaimPending:
 		message := fmt.Sprintf("PVC %s is in Pending state", pvc.Name)
-		suggestion := "Check if there are available PersistentVolumes that match the PVC requirements"
+		suggestion := "Check if matching PersistentVolumes exist: kubectl get pv. " +
+			"Verify the StorageClass exists and has a provisioner: kubectl get storageclass. " +
+			"Check events: kubectl describe pvc " + pvc.Name + " -n " + pvc.Namespace + ". " +
+			"Common causes: no available PVs, StorageClass misconfiguration, or quota limits."
 
 		// Try to provide more context based on conditions
 		for _, condition := range pvc.Status.Conditions {
@@ -111,12 +114,14 @@ func (c *PVCChecker) checkPVC(pvc *corev1.PersistentVolumeClaim) []checker.Issue
 
 	case corev1.ClaimLost:
 		issues = append(issues, checker.Issue{
-			Type:       "PVCLost",
-			Severity:   checker.SeverityCritical,
-			Resource:   resourceRef,
-			Namespace:  pvc.Namespace,
-			Message:    fmt.Sprintf("PVC %s has lost its bound PersistentVolume", pvc.Name),
-			Suggestion: "The underlying PV may have been deleted. Check PV status and consider recreating the PVC",
+			Type:      "PVCLost",
+			Severity:  checker.SeverityCritical,
+			Resource:  resourceRef,
+			Namespace: pvc.Namespace,
+			Message:   fmt.Sprintf("PVC %s has lost its bound PersistentVolume", pvc.Name),
+			Suggestion: "The bound PersistentVolume has been lost. Check PV status: kubectl get pv " + pvc.Spec.VolumeName + ". " +
+				"If the PV was deleted, the data may be unrecoverable depending on the reclaim policy. " +
+				"To recover: recreate the PV pointing to the same storage, or restore from backup.",
 			Metadata: map[string]string{
 				"pvc":          pvc.Name,
 				"volumeName":   pvc.Spec.VolumeName,
@@ -130,12 +135,15 @@ func (c *PVCChecker) checkPVC(pvc *corev1.PersistentVolumeClaim) []checker.Issue
 		if condition.Type == corev1.PersistentVolumeClaimFileSystemResizePending {
 			if condition.Status == corev1.ConditionTrue {
 				issues = append(issues, checker.Issue{
-					Type:       "PVCResizePending",
-					Severity:   checker.SeverityInfo,
-					Resource:   resourceRef,
-					Namespace:  pvc.Namespace,
-					Message:    "PVC filesystem resize is pending - requires pod restart",
-					Suggestion: "Restart the pod using this PVC to complete the resize",
+					Type:      "PVCResizePending",
+					Severity:  checker.SeverityInfo,
+					Resource:  resourceRef,
+					Namespace: pvc.Namespace,
+					Message:   "PVC filesystem resize is pending - requires pod restart",
+					Suggestion: "PVC filesystem resize requires a pod restart to complete. " +
+						"Delete the pod using this PVC (it will be recreated by its controller): " +
+						"kubectl delete pod <pod-name> -n " + pvc.Namespace + ". " +
+						"Find the pod: kubectl get pods -n " + pvc.Namespace + " -o json | grep " + pvc.Name + ".",
 					Metadata: map[string]string{
 						"pvc": pvc.Name,
 					},

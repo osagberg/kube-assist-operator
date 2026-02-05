@@ -19,6 +19,10 @@ spec:
       jsonPath: .spec.target.name
       name: Target
       type: string
+    - description: Target kind
+      jsonPath: .spec.target.kind
+      name: Kind
+      type: string
     - description: Current phase
       jsonPath: .status.phase
       name: Phase
@@ -26,6 +30,7 @@ spec:
     - description: Brief summary
       jsonPath: .status.summary
       name: Summary
+      priority: 1
       type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age

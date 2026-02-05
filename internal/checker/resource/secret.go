@@ -130,12 +130,14 @@ func (c *SecretChecker) checkSecretWith(secret *corev1.Secret, certExpiryWarning
 		// Skip service account tokens and other auto-generated secrets
 		if secret.Type != corev1.SecretTypeServiceAccountToken {
 			issues = append(issues, checker.Issue{
-				Type:       "EmptySecret",
-				Severity:   checker.SeverityWarning,
-				Resource:   resourceRef,
-				Namespace:  secret.Namespace,
-				Message:    fmt.Sprintf("Secret %s has no data", secret.Name),
-				Suggestion: "Verify this secret should be empty or add required data",
+				Type:      "EmptySecret",
+				Severity:  checker.SeverityWarning,
+				Resource:  resourceRef,
+				Namespace: secret.Namespace,
+				Message:   fmt.Sprintf("Secret %s has no data", secret.Name),
+				Suggestion: "This secret has no data keys. If it should contain data, populate it with: " +
+					"kubectl create secret generic " + secret.Name + " --from-literal=key=value -n " + secret.Namespace + " --dry-run=client -o yaml | kubectl apply -f -. " +
+					"Check if any workloads reference this secret: kubectl get pods -n " + secret.Namespace + " -o json | grep " + secret.Name + ".",
 				Metadata: map[string]string{
 					"secret": secret.Name,
 					"type":   string(secret.Type),
@@ -195,12 +197,15 @@ func (c *SecretChecker) checkTLSCertificateWith(secret *corev1.Secret, resourceR
 	// Check if certificate is expired
 	if now.After(cert.NotAfter) {
 		issues = append(issues, checker.Issue{
-			Type:       "CertExpired",
-			Severity:   checker.SeverityCritical,
-			Resource:   resourceRef,
-			Namespace:  secret.Namespace,
-			Message:    fmt.Sprintf("TLS certificate expired on %s", cert.NotAfter.Format("2006-01-02")),
-			Suggestion: "Renew the certificate immediately",
+			Type:      "CertExpired",
+			Severity:  checker.SeverityCritical,
+			Resource:  resourceRef,
+			Namespace: secret.Namespace,
+			Message:   fmt.Sprintf("TLS certificate expired on %s", cert.NotAfter.Format("2006-01-02")),
+			Suggestion: "This TLS certificate has expired and must be renewed immediately. " +
+				"If using cert-manager, check the Certificate resource: kubectl get certificate -n " + secret.Namespace + ". " +
+				"Force renewal: kubectl delete secret " + secret.Name + " -n " + secret.Namespace + " (cert-manager will recreate it). " +
+				"If manually managed, generate and apply a new certificate.",
 			Metadata: map[string]string{
 				"secret":  secret.Name,
 				"expiry":  cert.NotAfter.Format(time.RFC3339),
@@ -212,12 +217,14 @@ func (c *SecretChecker) checkTLSCertificateWith(secret *corev1.Secret, resourceR
 		// Check if certificate is expiring soon
 		daysUntilExpiry := int(cert.NotAfter.Sub(now).Hours() / 24)
 		issues = append(issues, checker.Issue{
-			Type:       "CertExpiringSoon",
-			Severity:   checker.SeverityWarning,
-			Resource:   resourceRef,
-			Namespace:  secret.Namespace,
-			Message:    fmt.Sprintf("TLS certificate expires in %d days (on %s)", daysUntilExpiry, cert.NotAfter.Format("2006-01-02")),
-			Suggestion: "Plan to renew the certificate before expiry",
+			Type:      "CertExpiringSoon",
+			Severity:  checker.SeverityWarning,
+			Resource:  resourceRef,
+			Namespace: secret.Namespace,
+			Message:   fmt.Sprintf("TLS certificate expires in %d days (on %s)", daysUntilExpiry, cert.NotAfter.Format("2006-01-02")),
+			Suggestion: "This TLS certificate is expiring soon. Plan renewal before expiry to avoid downtime. " +
+				"If using cert-manager: kubectl get certificate -n " + secret.Namespace + " to check auto-renewal status. " +
+				"If manually managed, generate a new certificate and update the secret.",
 			Metadata: map[string]string{
 				"secret":        secret.Name,
 				"expiry":        cert.NotAfter.Format(time.RFC3339),

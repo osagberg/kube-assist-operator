@@ -9,7 +9,7 @@ To learn more about the release, try:
 
 The kube-assist operator is now running in namespace {{ .Release.Namespace }}.
 
-To create a TroubleshootRequest, apply a manifest like:
+To create a TroubleshootRequest:
 
   apiVersion: assist.cluster.local/v1alpha1
   kind: TroubleshootRequest
@@ -25,10 +25,37 @@ To create a TroubleshootRequest, apply a manifest like:
       - logs
       - events
 
+To create a TeamHealthRequest:
+
+  apiVersion: assist.cluster.local/v1alpha1
+  kind: TeamHealthRequest
+  metadata:
+    name: my-health-check
+    namespace: default
+  spec:
+    namespaces:
+      - default
+      - my-app
+
+{{- if .Values.dashboard.enabled }}
+
+The dashboard is enabled. To access it:
+
+  $ kubectl port-forward svc/{{ include "kube-assist.fullname" . }}-dashboard -n {{ .Release.Namespace }} {{ .Values.dashboard.service.port | default 9090 }}:{{ .Values.dashboard.service.port | default 9090 }}
+
+Then open http://localhost:{{ .Values.dashboard.service.port | default 9090 }} in your browser.
+{{- end }}
+
+{{- if .Values.ai.enabled }}
+
+AI-powered suggestions are enabled (provider: {{ .Values.ai.provider }}).
+{{- end }}
+
 To check the operator logs:
 
   $ kubectl logs -l app.kubernetes.io/name={{ include "kube-assist.name" . }} -n {{ .Release.Namespace }}
 
-To list TroubleshootRequests:
+To list resources:
 
   $ kubectl get troubleshootrequests -A
+  $ kubectl get teamhealthrequests -A

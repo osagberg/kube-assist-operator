@@ -17,6 +17,7 @@ limitations under the License.
 package dashboard
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -26,7 +27,13 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
+	"github.com/osagberg/kube-assist-operator/internal/ai"
 	"github.com/osagberg/kube-assist-operator/internal/checker"
+)
+
+const (
+	providerNoop      = "noop"
+	providerAnthropic = "anthropic"
 )
 
 func TestServer_HandleDashboard(t *testing.T) {
@@ -231,5 +238,250 @@ func TestHealthUpdate_JSON(t *testing.T) {
 	}
 	if decoded.Summary.CriticalCount != 1 {
 		t.Errorf("CriticalCount = %d, want 1", decoded.Summary.CriticalCount)
+	}
+}
+
+func TestServer_HandleGetAISettings_Default(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+
+	server := NewServer(client, registry, ":8080")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/settings/ai", nil)
+	rr := httptest.NewRecorder()
+
+	server.handleAISettings(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("GET /api/settings/ai status = %d, want %d", rr.Code, http.StatusOK)
+	}
+
+	var resp AISettingsResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("GET /api/settings/ai returned invalid JSON: %v", err)
+	}
+
+	if resp.Enabled {
+		t.Error("expected AI disabled by default")
+	}
+	if resp.Provider != providerNoop {
+		t.Errorf("expected default provider 'noop', got %q", resp.Provider)
+	}
+	if resp.HasAPIKey {
+		t.Error("expected no API key by default")
+	}
+}
+
+func TestServer_HandleGetAISettings_WithProvider(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+
+	server := NewServer(client, registry, ":8080")
+	server.WithAI(ai.NewNoOpProvider(), true)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/settings/ai", nil)
+	rr := httptest.NewRecorder()
+
+	server.handleAISettings(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("GET /api/settings/ai status = %d, want %d", rr.Code, http.StatusOK)
+	}
+
+	var resp AISettingsResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("GET /api/settings/ai returned invalid JSON: %v", err)
+	}
+
+	if !resp.Enabled {
+		t.Error("expected AI enabled")
+	}
+	if resp.Provider != providerNoop {
+		t.Errorf("expected provider 'noop', got %q", resp.Provider)
+	}
+	if !resp.ProviderReady {
+		t.Error("expected provider ready for noop")
+	}
+}
+
+func TestServer_HandlePostAISettings(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+
+	server := NewServer(client, registry, ":8080")
+
+	body := AISettingsRequest{
+		Enabled:  true,
+		Provider: providerNoop,
+	}
+	data, _ := json.Marshal(body)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/settings/ai", bytes.NewReader(data))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	server.handleAISettings(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("POST /api/settings/ai status = %d, want %d", rr.Code, http.StatusOK)
+	}
+
+	var resp AISettingsResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("POST /api/settings/ai returned invalid JSON: %v", err)
+	}
+
+	if !resp.Enabled {
+		t.Error("expected AI enabled after POST")
+	}
+	if resp.Provider != providerNoop {
+		t.Errorf("expected provider 'noop', got %q", resp.Provider)
+	}
+
+	// Verify the server state was actually updated
+	if !server.aiEnabled {
+		t.Error("server.aiEnabled should be true after POST")
+	}
+}
+
+func TestServer_HandlePostAISettings_InvalidProvider(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+
+	server := NewServer(client, registry, ":8080")
+
+	body := AISettingsRequest{
+		Enabled:  true,
+		Provider: "invalid-provider",
+	}
+	data, _ := json.Marshal(body)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/settings/ai", bytes.NewReader(data))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	server.handleAISettings(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("POST /api/settings/ai with invalid provider status = %d, want %d", rr.Code, http.StatusBadRequest)
+	}
+}
+
+func TestServer_HandlePostAISettings_InvalidJSON(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+
+	server := NewServer(client, registry, ":8080")
+
+	req := httptest.NewRequest(http.MethodPost, "/api/settings/ai", bytes.NewReader([]byte("not json")))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	server.handleAISettings(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("POST /api/settings/ai with invalid JSON status = %d, want %d", rr.Code, http.StatusBadRequest)
+	}
+}
+
+func TestServer_HandleAISettings_MethodNotAllowed(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+
+	server := NewServer(client, registry, ":8080")
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/settings/ai", nil)
+	rr := httptest.NewRecorder()
+
+	server.handleAISettings(rr, req)
+
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Errorf("DELETE /api/settings/ai status = %d, want %d", rr.Code, http.StatusMethodNotAllowed)
+	}
+}
+
+func TestServer_HandlePostAISettings_WithModel(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+
+	server := NewServer(client, registry, ":8080")
+
+	body := AISettingsRequest{
+		Enabled:  true,
+		Provider: providerAnthropic,
+		APIKey:   "sk-test-key",
+		Model:    "claude-sonnet-4-5-20250929",
+	}
+	data, _ := json.Marshal(body)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/settings/ai", bytes.NewReader(data))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	server.handleAISettings(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("POST /api/settings/ai status = %d, want %d", rr.Code, http.StatusOK)
+	}
+
+	var resp AISettingsResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("returned invalid JSON: %v", err)
+	}
+
+	if resp.Provider != providerAnthropic {
+		t.Errorf("expected provider 'anthropic', got %q", resp.Provider)
+	}
+	if resp.Model != "claude-sonnet-4-5-20250929" {
+		t.Errorf("expected model 'claude-sonnet-4-5-20250929', got %q", resp.Model)
+	}
+	if !resp.HasAPIKey {
+		t.Error("expected hasApiKey to be true after setting key")
+	}
+
+	// Now GET should reflect the updated settings
+	req2 := httptest.NewRequest(http.MethodGet, "/api/settings/ai", nil)
+	rr2 := httptest.NewRecorder()
+	server.handleAISettings(rr2, req2)
+
+	var resp2 AISettingsResponse
+	if err := json.Unmarshal(rr2.Body.Bytes(), &resp2); err != nil {
+		t.Fatalf("GET returned invalid JSON: %v", err)
+	}
+	if resp2.Provider != providerAnthropic {
+		t.Errorf("GET after POST: expected provider 'anthropic', got %q", resp2.Provider)
+	}
+	if !resp2.HasAPIKey {
+		t.Error("GET after POST: expected hasApiKey true")
+	}
+}
+
+func TestServer_WithAI(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+
+	server := NewServer(client, registry, ":8080")
+	provider := ai.NewNoOpProvider()
+	result := server.WithAI(provider, true)
+
+	if result != server {
+		t.Error("WithAI should return the server for chaining")
+	}
+	if !server.aiEnabled {
+		t.Error("WithAI should set aiEnabled")
+	}
+	if server.aiProvider != provider {
+		t.Error("WithAI should set aiProvider")
+	}
+	if server.aiConfig.Provider != providerNoop {
+		t.Errorf("WithAI should set aiConfig.Provider to provider name, got %q", server.aiConfig.Provider)
 	}
 }

@@ -2,22 +2,50 @@ name: Lint
 
 on:
   push:
+    branches: [main]
+    tags-ignore: ['v*']
   pull_request:
 
+concurrency:
+  group: lint-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  lint:
-    name: Run on Ubuntu
+  go-lint:
+    name: Go Lint
     runs-on: ubuntu-latest
     steps:
-      - name: Clone the code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Go
-        uses: actions/setup-go@v5
+      - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
 
-      - name: Run linter
-        uses: golangci/golangci-lint-action@v8
+      - uses: golangci/golangci-lint-action@v8
         with:
           version: v2.7.2
+
+  helm-lint:
+    name: Helm Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.17.0
+
+      - name: Lint Helm chart
+        run: helm lint charts/kube-assist/
+
+      - name: Template Helm chart (default values)
+        run: helm template test charts/kube-assist/
+
+      - name: Template Helm chart (all features enabled)
+        run: |
+          helm template test charts/kube-assist/ \
+            --set dashboard.enabled=true \
+            --set ai.enabled=true \
+            --set ai.provider=anthropic \
+            --set ai.apiKeySecretRef.name=ai-secret \
+            --set networkPolicy.enabled=true

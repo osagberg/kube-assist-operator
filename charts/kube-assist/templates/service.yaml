@@ -7,9 +7,9 @@ metadata:
   labels:
     {{- include "kube-assist.labels" . | nindent 4 }}
 spec:
-  type: ClusterIP
+  type: {{ .Values.dashboard.service.type | default "ClusterIP" }}
   ports:
-    - port: 9090
+    - port: {{ .Values.dashboard.service.port | default 9090 }}
       targetPort: dashboard
       protocol: TCP
       name: dashboard

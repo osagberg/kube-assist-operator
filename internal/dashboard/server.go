@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -70,6 +71,23 @@ type Summary struct {
 	InfoCount     int `json:"infoCount"`
 }
 
+// AISettingsRequest is the JSON body for POST /api/settings/ai
+type AISettingsRequest struct {
+	Enabled  bool   `json:"enabled"`
+	Provider string `json:"provider"`
+	APIKey   string `json:"apiKey,omitempty"`
+	Model    string `json:"model,omitempty"`
+}
+
+// AISettingsResponse is the JSON response for GET /api/settings/ai
+type AISettingsResponse struct {
+	Enabled       bool   `json:"enabled"`
+	Provider      string `json:"provider"`
+	Model         string `json:"model,omitempty"`
+	HasAPIKey     bool   `json:"hasApiKey"`
+	ProviderReady bool   `json:"providerReady"`
+}
+
 // Server is the dashboard web server
 type Server struct {
 	client     client.Client
@@ -77,6 +95,7 @@ type Server struct {
 	addr       string
 	aiProvider ai.Provider
 	aiEnabled  bool
+	aiConfig   ai.Config
 	mu         sync.RWMutex
 	clients    map[chan HealthUpdate]bool
 	latest     *HealthUpdate
@@ -90,6 +109,7 @@ func NewServer(cl client.Client, registry *checker.Registry, addr string) *Serve
 		client:   cl,
 		registry: registry,
 		addr:     addr,
+		aiConfig: ai.DefaultConfig(),
 		clients:  make(map[chan HealthUpdate]bool),
 		stopCh:   make(chan struct{}),
 	}
@@ -99,6 +119,9 @@ func NewServer(cl client.Client, registry *checker.Registry, addr string) *Serve
 func (s *Server) WithAI(provider ai.Provider, enabled bool) *Server {
 	s.aiProvider = provider
 	s.aiEnabled = enabled
+	if provider != nil {
+		s.aiConfig.Provider = provider.Name()
+	}
 	return s
 }
 
@@ -110,6 +133,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/api/health", s.handleHealth)
 	mux.HandleFunc("/api/events", s.handleSSE)
 	mux.HandleFunc("/api/check", s.handleTriggerCheck)
+	mux.HandleFunc("/api/settings/ai", s.handleAISettings)
 
 	// Dashboard UI
 	mux.HandleFunc("/", s.handleDashboard)
@@ -176,11 +200,16 @@ func (s *Server) runCheck(ctx context.Context) {
 		namespaces = []string{"default"}
 	}
 
+	s.mu.RLock()
+	provider := s.aiProvider
+	enabled := s.aiEnabled
+	s.mu.RUnlock()
+
 	checkCtx := &checker.CheckContext{
 		Client:     s.client,
 		Namespaces: namespaces,
-		AIProvider: s.aiProvider,
-		AIEnabled:  s.aiEnabled,
+		AIProvider: provider,
+		AIEnabled:  enabled,
 	}
 
 	results := s.registry.RunAllSupported(ctx, checkCtx)
@@ -320,6 +349,118 @@ func (s *Server) handleTriggerCheck(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "check triggered"})
+}
+
+// handleAISettings handles GET and POST for /api/settings/ai
+func (s *Server) handleAISettings(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		s.handleGetAISettings(w, r)
+	case http.MethodPost:
+		s.handlePostAISettings(w, r)
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// handleGetAISettings returns current AI configuration (API key masked)
+func (s *Server) handleGetAISettings(w http.ResponseWriter, _ *http.Request) {
+	s.mu.RLock()
+	resp := AISettingsResponse{
+		Enabled:       s.aiEnabled,
+		Provider:      s.aiConfig.Provider,
+		Model:         s.aiConfig.Model,
+		HasAPIKey:     s.aiConfig.APIKey != "",
+		ProviderReady: s.aiProvider != nil && s.aiProvider.Available(),
+	}
+	s.mu.RUnlock()
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// handlePostAISettings updates AI configuration at runtime
+func (s *Server) handlePostAISettings(w http.ResponseWriter, r *http.Request) {
+	var req AISettingsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid JSON body", http.StatusBadRequest)
+		return
+	}
+
+	// Validate provider name
+	providerName := strings.ToLower(req.Provider)
+	if providerName != "" && providerName != "noop" && providerName != "openai" && providerName != "anthropic" {
+		http.Error(w, "Invalid provider: must be one of noop, openai, anthropic", http.StatusBadRequest)
+		return
+	}
+
+	s.mu.Lock()
+
+	s.aiEnabled = req.Enabled
+
+	// Update config - only update fields that are provided
+	if providerName != "" {
+		s.aiConfig.Provider = providerName
+	}
+	if req.APIKey != "" {
+		s.aiConfig.APIKey = req.APIKey
+	}
+	if req.Model != "" {
+		s.aiConfig.Model = req.Model
+	}
+
+	// If the provider is an ai.Manager, use Reconfigure() so the controller's
+	// AI provider is also updated (Manager is shared between dashboard and controllers).
+	if mgr, ok := s.aiProvider.(*ai.Manager); ok {
+		s.mu.Unlock()
+		mgr.SetEnabled(req.Enabled)
+		if providerName != "" {
+			if err := mgr.Reconfigure(s.aiConfig.Provider, s.aiConfig.APIKey, s.aiConfig.Model); err != nil {
+				log.Error(err, "Failed to reconfigure AI provider", "provider", s.aiConfig.Provider)
+				http.Error(w, "Failed to reconfigure AI provider: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
+		s.mu.RLock()
+		resp := AISettingsResponse{
+			Enabled:       req.Enabled,
+			Provider:      s.aiConfig.Provider,
+			Model:         s.aiConfig.Model,
+			HasAPIKey:     s.aiConfig.APIKey != "",
+			ProviderReady: mgr.Available(),
+		}
+		s.mu.RUnlock()
+		log.Info("AI settings updated via dashboard (Manager)", "provider", resp.Provider, "enabled", resp.Enabled)
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(resp); err != nil {
+			log.Error(err, "Failed to encode AI settings response")
+		}
+		return
+	}
+
+	// Fallback: recreate provider directly (no Manager available)
+	provider, err := ai.NewProvider(s.aiConfig)
+	if err != nil {
+		s.mu.Unlock()
+		log.Error(err, "Failed to create AI provider", "provider", s.aiConfig.Provider)
+		http.Error(w, "Failed to create AI provider: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.aiProvider = provider
+
+	resp := AISettingsResponse{
+		Enabled:       s.aiEnabled,
+		Provider:      s.aiConfig.Provider,
+		Model:         s.aiConfig.Model,
+		HasAPIKey:     s.aiConfig.APIKey != "",
+		ProviderReady: provider.Available(),
+	}
+	s.mu.Unlock()
+
+	log.Info("AI settings updated via dashboard", "provider", resp.Provider, "enabled", resp.Enabled)
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 // handleDashboard serves the dashboard HTML
