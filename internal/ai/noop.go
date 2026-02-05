@@ -47,8 +47,9 @@ func (p *NoOpProvider) Analyze(ctx context.Context, request AnalysisRequest) (*A
 	for _, issue := range request.Issues {
 		key := issue.Namespace + "/" + issue.Resource
 		response.EnhancedSuggestions[key] = EnhancedSuggestion{
-			Suggestion: issue.StaticSuggestion,
-			Confidence: 0, // No AI confidence
+			Suggestion: "[NoOp AI] " + issue.StaticSuggestion,
+			RootCause:  "This is a test suggestion from the NoOp AI provider.",
+			Confidence: 1.0, // Full confidence for testing
 		}
 	}
 

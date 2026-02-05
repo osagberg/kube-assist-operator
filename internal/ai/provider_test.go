@@ -67,8 +67,12 @@ func TestNoOpProvider_Analyze(t *testing.T) {
 		return
 	}
 
-	if suggestion.Suggestion != "Check logs" {
-		t.Errorf("Suggestion = %s, want 'Check logs'", suggestion.Suggestion)
+	wantSuggestion := "[NoOp AI] Check logs"
+	if suggestion.Suggestion != wantSuggestion {
+		t.Errorf("Suggestion = %s, want %q", suggestion.Suggestion, wantSuggestion)
+	}
+	if suggestion.Confidence != 1.0 {
+		t.Errorf("Confidence = %f, want 1.0", suggestion.Confidence)
 	}
 }
 

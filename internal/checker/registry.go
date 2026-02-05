@@ -107,6 +107,12 @@ func (r *Registry) RunAll(ctx context.Context, checkCtx *CheckContext, names []s
 			}
 			continue
 		}
+
+		// Enhance with AI suggestions if enabled
+		if checkCtx.AIEnabled && checkCtx.AIProvider != nil && len(result.Issues) > 0 {
+			_ = result.EnhanceWithAI(ctx, checkCtx)
+		}
+
 		results[name] = result
 	}
 
@@ -146,6 +152,11 @@ func (r *Registry) RunConcurrent(ctx context.Context, checkCtx *CheckContext, na
 					CheckerName: checkerName,
 					Error:       err,
 				}
+			}
+
+			// Enhance with AI suggestions if enabled
+			if checkCtx.AIEnabled && checkCtx.AIProvider != nil && result.Error == nil && len(result.Issues) > 0 {
+				_ = result.EnhanceWithAI(ctx, checkCtx)
 			}
 
 			resultsChan <- struct {

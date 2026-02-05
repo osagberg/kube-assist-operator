@@ -293,7 +293,8 @@ func main() {
 
 	// Start dashboard server if enabled
 	if enableDashboard {
-		dashboardServer := dashboard.NewServer(mgr.GetClient(), registry, dashboardAddr)
+		dashboardServer := dashboard.NewServer(mgr.GetClient(), registry, dashboardAddr).
+			WithAI(aiProv, enableAI)
 		go func() {
 			setupLog.Info("starting dashboard server", "addr", dashboardAddr)
 			if err := dashboardServer.Start(ctx); err != nil {

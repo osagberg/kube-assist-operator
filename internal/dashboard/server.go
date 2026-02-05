@@ -29,6 +29,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
+	"github.com/osagberg/kube-assist-operator/internal/ai"
 	"github.com/osagberg/kube-assist-operator/internal/checker"
 )
 
@@ -71,14 +72,16 @@ type Summary struct {
 
 // Server is the dashboard web server
 type Server struct {
-	client   client.Client
-	registry *checker.Registry
-	addr     string
-	mu       sync.RWMutex
-	clients  map[chan HealthUpdate]bool
-	latest   *HealthUpdate
-	running  bool
-	stopCh   chan struct{}
+	client     client.Client
+	registry   *checker.Registry
+	addr       string
+	aiProvider ai.Provider
+	aiEnabled  bool
+	mu         sync.RWMutex
+	clients    map[chan HealthUpdate]bool
+	latest     *HealthUpdate
+	running    bool
+	stopCh     chan struct{}
 }
 
 // NewServer creates a new dashboard server
@@ -90,6 +93,13 @@ func NewServer(cl client.Client, registry *checker.Registry, addr string) *Serve
 		clients:  make(map[chan HealthUpdate]bool),
 		stopCh:   make(chan struct{}),
 	}
+}
+
+// WithAI configures AI provider for enhanced suggestions
+func (s *Server) WithAI(provider ai.Provider, enabled bool) *Server {
+	s.aiProvider = provider
+	s.aiEnabled = enabled
+	return s
 }
 
 // Start starts the dashboard server
@@ -169,6 +179,8 @@ func (s *Server) runCheck(ctx context.Context) {
 	checkCtx := &checker.CheckContext{
 		Client:     s.client,
 		Namespaces: namespaces,
+		AIProvider: s.aiProvider,
+		AIEnabled:  s.aiEnabled,
 	}
 
 	results := s.registry.RunAllSupported(ctx, checkCtx)
