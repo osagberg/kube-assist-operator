@@ -203,7 +203,7 @@ const (
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase",description="Current phase"
 // +kubebuilder:printcolumn:name="Summary",type="string",JSONPath=".status.summary",description="Brief summary"
-// +kubebuilder:printcolumn:name="Namespaces",type="integer",JSONPath=".status.namespacesChecked",description="Namespaces checked"
+// +kubebuilder:printcolumn:name="Namespaces",type="string",JSONPath=".status.namespacesChecked",description="Namespaces checked"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
 // TeamHealthRequest is the Schema for the teamhealthrequests API

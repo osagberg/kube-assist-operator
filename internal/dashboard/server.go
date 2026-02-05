@@ -265,7 +265,7 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	// Same-origin only; no CORS header needed for internal dashboard
 
 	// Create client channel
 	clientCh := make(chan HealthUpdate, 10)
@@ -316,7 +316,7 @@ func (s *Server) handleTriggerCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	go s.runCheck(r.Context())
+	go s.runCheck(context.Background())
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "check triggered"})

@@ -1324,6 +1324,19 @@ const dashboardHTML = `<!DOCTYPE html>
 
     <script>
         // ========================================
+        // HTML Escaping (XSS Prevention)
+        // ========================================
+        function escapeHTML(str) {
+            if (typeof str !== 'string') return str;
+            return str
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
+        // ========================================
         // State Management
         // ========================================
         const state = {
@@ -1839,7 +1852,7 @@ const dashboardHTML = `<!DOCTYPE html>
         function renderNamespaces(namespaces) {
             const container = document.getElementById('namespaceList');
             container.innerHTML = namespaces.length > 0
-                ? namespaces.map(ns => ` + "`" + `<span class="namespace-tag">${ns}</span>` + "`" + `).join('')
+                ? namespaces.map(ns => ` + "`" + `<span class="namespace-tag">${escapeHTML(ns)}</span>` + "`" + `).join('')
                 : '<span class="namespace-tag">none</span>';
         }
 
@@ -1879,10 +1892,10 @@ const dashboardHTML = `<!DOCTYPE html>
             const icon = getCheckerIcon(name);
 
             card.innerHTML = ` + "`" + `
-                <div class="checker-header" onclick="toggleChecker('${name}')">
+                <div class="checker-header" onclick="toggleChecker('${escapeHTML(name)}')">
                     <div class="checker-header-left">
                         <div class="checker-icon">${icon}</div>
-                        <span class="checker-name">${name}</span>
+                        <span class="checker-name">${escapeHTML(name)}</span>
                     </div>
                     <div style="display: flex; align-items: center; gap: 0.75rem;">
                         <div class="checker-stats">
@@ -1961,11 +1974,11 @@ const dashboardHTML = `<!DOCTYPE html>
             return ` + "`" + `
                 <div class="issue">
                     <div class="issue-header">
-                        <span class="severity-badge ${severityLower}">${issue.severity}</span>
-                        <span class="issue-type">${issue.type}</span>
+                        <span class="severity-badge ${severityLower}">${escapeHTML(issue.severity)}</span>
+                        <span class="issue-type">${escapeHTML(issue.type)}</span>
                     </div>
-                    <div class="issue-resource">${issue.namespace}/${issue.resource}</div>
-                    <div class="issue-message">${issue.message}</div>
+                    <div class="issue-resource">${escapeHTML(issue.namespace)}/${escapeHTML(issue.resource)}</div>
+                    <div class="issue-message">${escapeHTML(issue.message)}</div>
                     ${issue.suggestion ? ` + "`" + `
                         <div class="issue-suggestion">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -1973,7 +1986,7 @@ const dashboardHTML = `<!DOCTYPE html>
                                 <line x1="12" y1="16" x2="12" y2="12"></line>
                                 <line x1="12" y1="8" x2="12.01" y2="8"></line>
                             </svg>
-                            ${issue.suggestion}
+                            ${escapeHTML(issue.suggestion)}
                         </div>
                     ` + "`" + ` : ''}
                 </div>

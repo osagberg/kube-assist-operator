@@ -74,13 +74,15 @@ func (c *SecretChecker) Check(ctx context.Context, checkCtx *checker.CheckContex
 		Issues:      []checker.Issue{},
 	}
 
-	// Get config if available
+	// Read config into local variables to avoid mutating shared state
+	certExpiryWarningDays := c.certExpiryWarningDays
+	checkCertExpiry := c.checkCertExpiry
 	if checkCtx.Config != nil {
 		if days, ok := checkCtx.Config["certExpiryWarningDays"].(int); ok {
-			c.certExpiryWarningDays = days
+			certExpiryWarningDays = days
 		}
-		if checkExpiry, ok := checkCtx.Config["checkCertExpiry"].(bool); ok {
-			c.checkCertExpiry = checkExpiry
+		if expiry, ok := checkCtx.Config["checkCertExpiry"].(bool); ok {
+			checkCertExpiry = expiry
 		}
 	}
 
@@ -91,7 +93,7 @@ func (c *SecretChecker) Check(ctx context.Context, checkCtx *checker.CheckContex
 		}
 
 		for _, secret := range secretList.Items {
-			issues := c.checkSecret(&secret)
+			issues := c.checkSecretWith(&secret, certExpiryWarningDays, checkCertExpiry)
 			if len(issues) == 0 {
 				result.Healthy++
 			} else {
@@ -103,22 +105,22 @@ func (c *SecretChecker) Check(ctx context.Context, checkCtx *checker.CheckContex
 	return result, nil
 }
 
-// checkSecret analyzes a single Secret
-func (c *SecretChecker) checkSecret(secret *corev1.Secret) []checker.Issue {
+// checkSecretWith analyzes a single Secret using the provided config values
+func (c *SecretChecker) checkSecretWith(secret *corev1.Secret, certExpiryWarningDays int, checkCertExpiry bool) []checker.Issue {
 	var issues []checker.Issue
 	resourceRef := fmt.Sprintf("secret/%s", secret.Name)
 
 	// Check TLS secrets for certificate expiry
-	if c.checkCertExpiry && secret.Type == corev1.SecretTypeTLS {
-		certIssues := c.checkTLSCertificate(secret, resourceRef)
+	if checkCertExpiry && secret.Type == corev1.SecretTypeTLS {
+		certIssues := c.checkTLSCertificateWith(secret, resourceRef, certExpiryWarningDays)
 		issues = append(issues, certIssues...)
 	}
 
 	// Check for kubernetes.io/tls type secrets that might have cert data
-	if c.checkCertExpiry && secret.Type == corev1.SecretTypeOpaque {
+	if checkCertExpiry && secret.Type == corev1.SecretTypeOpaque {
 		// Check if it looks like a TLS cert secret
 		if _, hasCert := secret.Data["tls.crt"]; hasCert {
-			certIssues := c.checkTLSCertificate(secret, resourceRef)
+			certIssues := c.checkTLSCertificateWith(secret, resourceRef, certExpiryWarningDays)
 			issues = append(issues, certIssues...)
 		}
 	}
@@ -145,8 +147,8 @@ func (c *SecretChecker) checkSecret(secret *corev1.Secret) []checker.Issue {
 	return issues
 }
 
-// checkTLSCertificate parses and validates TLS certificates
-func (c *SecretChecker) checkTLSCertificate(secret *corev1.Secret, resourceRef string) []checker.Issue {
+// checkTLSCertificateWith parses and validates TLS certificates using the provided warning threshold
+func (c *SecretChecker) checkTLSCertificateWith(secret *corev1.Secret, resourceRef string, certExpiryWarningDays int) []checker.Issue {
 	var issues []checker.Issue
 
 	certData, ok := secret.Data["tls.crt"]
@@ -188,7 +190,7 @@ func (c *SecretChecker) checkTLSCertificate(secret *corev1.Secret, resourceRef s
 	}
 
 	now := time.Now()
-	warningThreshold := now.AddDate(0, 0, c.certExpiryWarningDays)
+	warningThreshold := now.AddDate(0, 0, certExpiryWarningDays)
 
 	// Check if certificate is expired
 	if now.After(cert.NotAfter) {

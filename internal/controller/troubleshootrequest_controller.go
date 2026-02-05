@@ -65,7 +65,6 @@ func (r *TroubleshootRequestReconciler) Reconcile(ctx context.Context, req ctrl.
 	startTime := time.Now()
 	defer func() {
 		reconcileDuration.With(prometheus.Labels{
-			"name":      req.Name,
 			"namespace": req.Namespace,
 		}).Observe(time.Since(startTime).Seconds())
 	}()
@@ -77,7 +76,6 @@ func (r *TroubleshootRequestReconciler) Reconcile(ctx context.Context, req ctrl.
 			return ctrl.Result{}, nil
 		}
 		reconcileTotal.With(prometheus.Labels{
-			"name":      req.Name,
 			"namespace": req.Namespace,
 			"result":    "error",
 		}).Inc()
@@ -125,7 +123,7 @@ func (r *TroubleshootRequestReconciler) Reconcile(ctx context.Context, req ctrl.
 
 	for _, action := range troubleshoot.Spec.Actions {
 		switch action {
-		case assistv1alpha1.ActionDiagnose, assistv1alpha1.ActionAll:
+		case assistv1alpha1.ActionDiagnose, assistv1alpha1.ActionAll, assistv1alpha1.ActionDescribe:
 			diagIssues := r.diagnosePodsDetailed(pods)
 			issues = append(issues, diagIssues...)
 		}
@@ -133,7 +131,7 @@ func (r *TroubleshootRequestReconciler) Reconcile(ctx context.Context, req ctrl.
 
 	// Collect logs if requested
 	for _, action := range troubleshoot.Spec.Actions {
-		if action == assistv1alpha1.ActionLogs || action == assistv1alpha1.ActionAll {
+		if action == assistv1alpha1.ActionLogs || action == assistv1alpha1.ActionAll || action == assistv1alpha1.ActionDescribe {
 			cmName, err := r.collectLogs(ctx, troubleshoot, pods)
 			if err != nil {
 				log.Error(err, "Failed to collect logs")
@@ -148,7 +146,7 @@ func (r *TroubleshootRequestReconciler) Reconcile(ctx context.Context, req ctrl.
 
 	// Collect events if requested
 	for _, action := range troubleshoot.Spec.Actions {
-		if action == assistv1alpha1.ActionEvents || action == assistv1alpha1.ActionAll {
+		if action == assistv1alpha1.ActionEvents || action == assistv1alpha1.ActionAll || action == assistv1alpha1.ActionDescribe {
 			cmName, err := r.collectEvents(ctx, troubleshoot, pods)
 			if err != nil {
 				log.Error(err, "Failed to collect events")
@@ -176,7 +174,6 @@ func (r *TroubleshootRequestReconciler) Reconcile(ctx context.Context, req ctrl.
 	if err := r.Status().Patch(ctx, troubleshoot, patch); err != nil {
 		log.Error(err, "Failed to patch status")
 		reconcileTotal.With(prometheus.Labels{
-			"name":      req.Name,
 			"namespace": req.Namespace,
 			"result":    "error",
 		}).Inc()
@@ -185,7 +182,6 @@ func (r *TroubleshootRequestReconciler) Reconcile(ctx context.Context, req ctrl.
 
 	// Record success metric
 	reconcileTotal.With(prometheus.Labels{
-		"name":      req.Name,
 		"namespace": req.Namespace,
 		"result":    "success",
 	}).Inc()
@@ -220,6 +216,12 @@ func (r *TroubleshootRequestReconciler) findTargetPods(ctx context.Context, tr *
 			return nil, err
 		}
 		selector = ds.Spec.Selector
+	case "ReplicaSet":
+		rs := &appsv1.ReplicaSet{}
+		if err := r.Get(ctx, client.ObjectKey{Namespace: tr.Namespace, Name: tr.Spec.Target.Name}, rs); err != nil {
+			return nil, err
+		}
+		selector = rs.Spec.Selector
 	case "Pod":
 		pod := &corev1.Pod{}
 		if err := r.Get(ctx, client.ObjectKey{Namespace: tr.Namespace, Name: tr.Spec.Target.Name}, pod); err != nil {
