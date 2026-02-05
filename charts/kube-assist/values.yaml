@@ -58,6 +58,21 @@ dashboard:
   # Dashboard bind address
   bindAddress: ":9090"
 
+# AI-powered suggestions settings
+ai:
+  # Enable AI-powered suggestions for health check issues
+  enabled: false
+  # AI provider: anthropic, openai, or noop
+  provider: "noop"
+  # AI model to use (provider default if empty)
+  model: ""
+  # API key secret reference (recommended over plain text)
+  apiKeySecretRef:
+    # Name of the secret containing the API key
+    name: ""
+    # Key in the secret containing the API key
+    key: "api-key"
+
 resources:
   limits:
     cpu: 500m

@@ -31,6 +31,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	assistv1alpha1 "github.com/osagberg/kube-assist-operator/api/v1alpha1"
+	"github.com/osagberg/kube-assist-operator/internal/ai"
 	"github.com/osagberg/kube-assist-operator/internal/checker"
 	"github.com/osagberg/kube-assist-operator/internal/checker/workload"
 	"github.com/osagberg/kube-assist-operator/internal/scope"
@@ -47,8 +48,10 @@ const (
 // TeamHealthRequestReconciler reconciles a TeamHealthRequest object
 type TeamHealthRequestReconciler struct {
 	client.Client
-	Scheme   *runtime.Scheme
-	Registry *checker.Registry
+	Scheme     *runtime.Scheme
+	Registry   *checker.Registry
+	AIProvider ai.Provider
+	AIEnabled  bool
 }
 
 // +kubebuilder:rbac:groups=assist.cluster.local,resources=teamhealthrequests,verbs=get;list;watch;create;update;patch;delete
@@ -128,6 +131,8 @@ func (r *TeamHealthRequestReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		Client:     r.Client,
 		Namespaces: namespaces,
 		Config:     r.buildCheckerConfig(healthReq.Spec.Config),
+		AIProvider: r.AIProvider,
+		AIEnabled:  r.AIEnabled,
 	}
 
 	// Create timeout context for checker execution
@@ -232,8 +237,8 @@ func (r *TeamHealthRequestReconciler) getCheckerNames(checks []assistv1alpha1.Ch
 }
 
 // buildCheckerConfig converts API config to checker config map
-func (r *TeamHealthRequestReconciler) buildCheckerConfig(cfg assistv1alpha1.CheckerConfig) map[string]interface{} {
-	config := make(map[string]interface{})
+func (r *TeamHealthRequestReconciler) buildCheckerConfig(cfg assistv1alpha1.CheckerConfig) map[string]any {
+	config := make(map[string]any)
 
 	if cfg.Workloads != nil {
 		if cfg.Workloads.RestartThreshold > 0 {
@@ -262,7 +267,13 @@ func (r *TeamHealthRequestReconciler) generateSummary(healthy, issues, critical,
 }
 
 // setFailed updates the status to Failed phase
-func (r *TeamHealthRequestReconciler) setFailed(ctx context.Context, original, hr *assistv1alpha1.TeamHealthRequest, message string) (ctrl.Result, error) {
+//
+//nolint:unparam // result is part of the API signature for consistency
+func (r *TeamHealthRequestReconciler) setFailed(
+	ctx context.Context,
+	original, hr *assistv1alpha1.TeamHealthRequest,
+	message string,
+) (ctrl.Result, error) {
 	hr.Status.Phase = assistv1alpha1.TeamHealthPhaseFailed
 	hr.Status.Summary = message
 	now := metav1.Now()

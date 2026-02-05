@@ -54,10 +54,24 @@ spec:
             - --enable-dashboard
             - --dashboard-bind-address={{ .Values.dashboard.bindAddress }}
             {{- end }}
-          {{- with .Values.env }}
+            {{- if .Values.ai.enabled }}
+            - --enable-ai
+            - --ai-provider={{ .Values.ai.provider }}
+            {{- if .Values.ai.model }}
+            - --ai-model={{ .Values.ai.model }}
+            {{- end }}
+            {{- end }}
           env:
+            {{- if and .Values.ai.enabled .Values.ai.apiKeySecretRef.name }}
+            - name: KUBE_ASSIST_AI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.ai.apiKeySecretRef.name }}
+                  key: {{ .Values.ai.apiKeySecretRef.key | default "api-key" }}
+            {{- end }}
+            {{- with .Values.env }}
             {{- toYaml . | nindent 12 }}
-          {{- end }}
+            {{- end }}
           ports:
             - name: health
               containerPort: 8081

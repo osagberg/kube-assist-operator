@@ -41,6 +41,7 @@ import (
 	sourcev1 "github.com/fluxcd/source-controller/api/v1"
 
 	assistv1alpha1 "github.com/osagberg/kube-assist-operator/api/v1alpha1"
+	"github.com/osagberg/kube-assist-operator/internal/ai"
 	"github.com/osagberg/kube-assist-operator/internal/checker"
 	"github.com/osagberg/kube-assist-operator/internal/checker/flux"
 	"github.com/osagberg/kube-assist-operator/internal/checker/resource"
@@ -78,6 +79,10 @@ func main() {
 	var enableHTTP2 bool
 	var enableDashboard bool
 	var dashboardAddr string
+	var enableAI bool
+	var aiProvider string
+	var aiAPIKey string
+	var aiModel string
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
@@ -85,6 +90,14 @@ func main() {
 		"Enable the Team Health Dashboard web server.")
 	flag.StringVar(&dashboardAddr, "dashboard-bind-address", ":9090",
 		"The address the dashboard server binds to.")
+	flag.BoolVar(&enableAI, "enable-ai", false,
+		"Enable AI-powered suggestions for health check issues.")
+	flag.StringVar(&aiProvider, "ai-provider", "noop",
+		"AI provider to use: anthropic, openai, or noop (default: noop).")
+	flag.StringVar(&aiAPIKey, "ai-api-key", "",
+		"API key for AI provider (or use KUBE_ASSIST_AI_API_KEY env var).")
+	flag.StringVar(&aiModel, "ai-model", "",
+		"AI model to use (provider default if empty).")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
@@ -218,6 +231,32 @@ func main() {
 	registry.MustRegister(resource.NewNetworkPolicyChecker())
 	setupLog.Info("Registered checkers", "checkers", registry.List())
 
+	// Initialize AI provider
+	var aiProv ai.Provider
+	if enableAI {
+		aiConfig := ai.Config{
+			Provider: aiProvider,
+			APIKey:   aiAPIKey,
+			Model:    aiModel,
+		}
+		// Fall back to environment variables if API key not provided via flag
+		if aiConfig.APIKey == "" {
+			aiConfig = ai.ConfigFromEnv()
+			if aiConfig.Provider == "" {
+				aiConfig.Provider = aiProvider
+			}
+		}
+		var aiErr error
+		aiProv, aiErr = ai.NewProvider(aiConfig)
+		if aiErr != nil {
+			setupLog.Error(aiErr, "failed to create AI provider")
+			os.Exit(1)
+		}
+		setupLog.Info("AI provider initialized",
+			"provider", aiProv.Name(),
+			"available", aiProv.Available())
+	}
+
 	if err := (&controller.TroubleshootRequestReconciler{
 		Client:    mgr.GetClient(),
 		Scheme:    mgr.GetScheme(),
@@ -229,9 +268,11 @@ func main() {
 	}
 
 	if err := (&controller.TeamHealthRequestReconciler{
-		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
-		Registry: registry,
+		Client:     mgr.GetClient(),
+		Scheme:     mgr.GetScheme(),
+		Registry:   registry,
+		AIProvider: aiProv,
+		AIEnabled:  enableAI,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "TeamHealthRequest")
 		os.Exit(1)
