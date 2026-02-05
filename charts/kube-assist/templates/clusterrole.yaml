@@ -24,9 +24,11 @@ rules:
   - apiGroups:
       - ""
     resources:
+      - configmaps
       - events
     verbs:
       - create
+      - update
       - patch
   - apiGroups:
       - ""

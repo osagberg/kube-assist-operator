@@ -239,12 +239,13 @@ func main() {
 			APIKey:   aiAPIKey,
 			Model:    aiModel,
 		}
-		// Fall back to environment variables if API key not provided via flag
+		// Fall back to environment variables for individual fields not set via flags
+		envConfig := ai.ConfigFromEnv()
 		if aiConfig.APIKey == "" {
-			aiConfig = ai.ConfigFromEnv()
-			if aiConfig.Provider == "" {
-				aiConfig.Provider = aiProvider
-			}
+			aiConfig.APIKey = envConfig.APIKey
+		}
+		if aiConfig.Model == "" {
+			aiConfig.Model = envConfig.Model
 		}
 		var aiErr error
 		aiProv, aiErr = ai.NewProvider(aiConfig)

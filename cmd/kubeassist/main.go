@@ -51,6 +51,9 @@ const (
 	severityWarning  = "Warning"
 )
 
+// Version is set via ldflags at build time: -ldflags "-X main.Version=vX.Y.Z"
+var Version = "dev"
+
 var (
 	allNamespaces bool
 	labelSelector string
@@ -81,7 +84,7 @@ func main() {
 			printUsage()
 			return
 		case "version", "--version":
-			fmt.Println("kubeassist version 0.2.0")
+			fmt.Printf("kubeassist version %s\n", Version)
 			return
 		}
 	}

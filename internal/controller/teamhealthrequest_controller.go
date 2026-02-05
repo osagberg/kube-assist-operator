@@ -71,7 +71,6 @@ func (r *TeamHealthRequestReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	startTime := time.Now()
 	defer func() {
 		reconcileDuration.With(prometheus.Labels{
-			"name":      req.Name,
 			"namespace": req.Namespace,
 		}).Observe(time.Since(startTime).Seconds())
 	}()

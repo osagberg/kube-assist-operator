@@ -28,7 +28,7 @@ import (
 
 const (
 	defaultOpenAIEndpoint = "https://api.openai.com/v1/chat/completions"
-	defaultOpenAIModel    = "gpt-4"
+	defaultOpenAIModel    = "gpt-4o"
 )
 
 // OpenAIProvider implements the Provider interface for OpenAI
@@ -158,13 +158,17 @@ func (p *OpenAIProvider) Analyze(ctx context.Context, request AnalysisRequest) (
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(respBody))
+		body := string(respBody)
+		if len(body) > 500 {
+			body = body[:500] + "...(truncated)"
+		}
+		return nil, fmt.Errorf("API error (status %d): %s", resp.StatusCode, body)
 	}
 
 	var openAIResp openAIResponse

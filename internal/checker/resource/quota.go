@@ -69,10 +69,11 @@ func (c *QuotaChecker) Check(ctx context.Context, checkCtx *checker.CheckContext
 		Issues:      []checker.Issue{},
 	}
 
-	// Get config if available
+	// Read config into local variable to avoid mutating shared state
+	warningPercent := c.warningPercent
 	if checkCtx.Config != nil {
 		if percent, ok := checkCtx.Config["usageWarningPercent"].(int); ok {
-			c.warningPercent = percent
+			warningPercent = percent
 		}
 	}
 
@@ -83,7 +84,7 @@ func (c *QuotaChecker) Check(ctx context.Context, checkCtx *checker.CheckContext
 		}
 
 		for _, quota := range quotaList.Items {
-			issues := c.checkQuota(&quota)
+			issues := c.checkQuotaWith(&quota, warningPercent)
 			if len(issues) == 0 {
 				result.Healthy++
 			} else {
@@ -95,8 +96,8 @@ func (c *QuotaChecker) Check(ctx context.Context, checkCtx *checker.CheckContext
 	return result, nil
 }
 
-// checkQuota analyzes a single ResourceQuota
-func (c *QuotaChecker) checkQuota(quota *corev1.ResourceQuota) []checker.Issue {
+// checkQuotaWith analyzes a single ResourceQuota using the provided warning threshold
+func (c *QuotaChecker) checkQuotaWith(quota *corev1.ResourceQuota, warningPercent int) []checker.Issue {
 	var issues []checker.Issue
 	resourceRef := fmt.Sprintf("resourcequota/%s", quota.Name)
 
@@ -134,7 +135,7 @@ func (c *QuotaChecker) checkQuota(quota *corev1.ResourceQuota) []checker.Issue {
 					"usagePercent": fmt.Sprintf("%.1f", usagePercent),
 				},
 			})
-		} else if usagePercent >= float64(c.warningPercent) {
+		} else if usagePercent >= float64(warningPercent) {
 			// Near quota limit
 			issues = append(issues, checker.Issue{
 				Type:       "QuotaNearLimit",
@@ -142,7 +143,7 @@ func (c *QuotaChecker) checkQuota(quota *corev1.ResourceQuota) []checker.Issue {
 				Resource:   resourceRef,
 				Namespace:  quota.Namespace,
 				Message:    fmt.Sprintf("ResourceQuota %s: %s is at %.0f%% (%s/%s)", quota.Name, resourceName, usagePercent, used.String(), hardLimit.String()),
-				Suggestion: fmt.Sprintf("Consider requesting a quota increase before reaching the limit (warning threshold: %d%%)", c.warningPercent),
+				Suggestion: fmt.Sprintf("Consider requesting a quota increase before reaching the limit (warning threshold: %d%%)", warningPercent),
 				Metadata: map[string]string{
 					"quota":        quota.Name,
 					"resource":     string(resourceName),
