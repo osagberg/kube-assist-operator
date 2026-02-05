@@ -118,3 +118,8 @@ priorityClassName: ""
 
 # Termination grace period
 terminationGracePeriodSeconds: 10
+
+# Network policy settings
+networkPolicy:
+  # Enable network policy for the operator pod
+  enabled: false
