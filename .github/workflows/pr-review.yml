@@ -1,0 +1,47 @@
+name: PR Review
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  # Auto-review every PR on open/update
+  review:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            Review this Kubernetes operator PR (Go). Focus on:
+            1. Bugs: nil pointers, resource leaks, logic errors
+            2. K8s patterns: reconcile idempotency, status updates, RBAC
+            3. Security: secret handling, XSS, injection, CORS
+            4. Concurrency: shared state, context usage, goroutine safety
+            5. Tests: are new code paths covered?
+
+            Be concise. Only flag real issues, not style nitpicks.
+            For each issue, suggest a specific fix with code.
+            If the PR looks good, say so briefly.
+
+  # Respond to @claude mentions in PR comments - can fix code
+  fix:
+    if: >
+      github.event_name == 'issue_comment' ||
+      github.event_name == 'pull_request_review_comment'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          trigger_phrase: "@claude"
