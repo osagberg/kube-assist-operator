@@ -29,6 +29,12 @@ import (
 	"github.com/osagberg/kube-assist-operator/internal/checker"
 )
 
+// Test issue types
+const (
+	testIssueTypeSuspended           = "Suspended"
+	testIssueTypeStaleReconciliation = "StaleReconciliation"
+)
+
 func TestKustomizationChecker_Name(t *testing.T) {
 	c := NewKustomizationChecker()
 	if c.Name() != KustomizationCheckerName {
@@ -87,7 +93,7 @@ func TestKustomizationChecker_CheckHealthyKustomization(t *testing.T) {
 	}
 }
 
-func TestKustomizationChecker_CheckSuspendedKustomization(t *testing.T) {
+func TestKustomizationChecker_ChecktestIssueTypeSuspendedKustomization(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = kustomizev1.AddToScheme(scheme)
 
@@ -119,13 +125,13 @@ func TestKustomizationChecker_CheckSuspendedKustomization(t *testing.T) {
 
 	found := false
 	for _, issue := range result.Issues {
-		if issue.Type == "Suspended" && issue.Severity == checker.SeverityWarning {
+		if issue.Type == testIssueTypeSuspended && issue.Severity == checker.SeverityWarning {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Errorf("Check() did not find expected Suspended issue")
+		t.Errorf("Check() did not find expected testIssueTypeSuspended issue")
 	}
 }
 
@@ -303,7 +309,7 @@ func TestKustomizationChecker_CheckPendingChanges(t *testing.T) {
 	}
 }
 
-func TestKustomizationChecker_CheckStaleReconciliation(t *testing.T) {
+func TestKustomizationChecker_ChecktestIssueTypeStaleReconciliation(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = kustomizev1.AddToScheme(scheme)
 
@@ -349,13 +355,13 @@ func TestKustomizationChecker_CheckStaleReconciliation(t *testing.T) {
 
 	found := false
 	for _, issue := range result.Issues {
-		if issue.Type == "StaleReconciliation" && issue.Severity == checker.SeverityWarning {
+		if issue.Type == testIssueTypeStaleReconciliation && issue.Severity == checker.SeverityWarning {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Errorf("Check() did not find expected StaleReconciliation issue")
+		t.Errorf("Check() did not find expected testIssueTypeStaleReconciliation issue")
 	}
 }
 

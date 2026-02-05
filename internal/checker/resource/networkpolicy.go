@@ -19,6 +19,7 @@ package resource
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	networkingv1 "k8s.io/api/networking/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -134,13 +135,7 @@ func (c *NetworkPolicyChecker) checkNetworkPolicy(np *networkingv1.NetworkPolicy
 // isAllowAll checks if a NetworkPolicy allows all traffic
 func (c *NetworkPolicyChecker) isAllowAll(np *networkingv1.NetworkPolicy) bool {
 	// Check ingress
-	hasIngressPolicy := false
-	for _, ptype := range np.Spec.PolicyTypes {
-		if ptype == networkingv1.PolicyTypeIngress {
-			hasIngressPolicy = true
-			break
-		}
-	}
+	hasIngressPolicy := slices.Contains(np.Spec.PolicyTypes, networkingv1.PolicyTypeIngress)
 
 	if hasIngressPolicy {
 		// If ingress rules are empty, it denies all ingress
@@ -153,13 +148,7 @@ func (c *NetworkPolicyChecker) isAllowAll(np *networkingv1.NetworkPolicy) bool {
 	}
 
 	// Check egress
-	hasEgressPolicy := false
-	for _, ptype := range np.Spec.PolicyTypes {
-		if ptype == networkingv1.PolicyTypeEgress {
-			hasEgressPolicy = true
-			break
-		}
-	}
+	hasEgressPolicy := slices.Contains(np.Spec.PolicyTypes, networkingv1.PolicyTypeEgress)
 
 	if hasEgressPolicy {
 		for _, egress := range np.Spec.Egress {

@@ -407,7 +407,7 @@ func DiagnosePods(pods []corev1.Pod, namespace, resourceRef string, restartThres
 }
 
 // getRestartThreshold extracts the restart threshold from config
-func getRestartThreshold(config map[string]interface{}) int {
+func getRestartThreshold(config map[string]any) int {
 	if config == nil {
 		return DefaultRestartThreshold
 	}

@@ -80,7 +80,7 @@ type CheckContext struct {
 	Namespaces []string
 
 	// Config contains checker-specific configuration
-	Config map[string]interface{}
+	Config map[string]any
 
 	// AIProvider is an optional AI provider for enhanced analysis
 	AIProvider ai.Provider
@@ -102,7 +102,7 @@ type Checker interface {
 
 	// Supports returns true if this checker can run in the current environment
 	// (e.g., HelmReleaseChecker returns false if Flux CRDs are not installed)
-	Supports(ctx context.Context, client client.Client) bool
+	Supports(ctx context.Context, cl client.Client) bool
 }
 
 // CountBySeverity returns a count of issues grouped by severity

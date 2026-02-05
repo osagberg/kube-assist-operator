@@ -73,9 +73,12 @@ func NewOpenAIProvider(config Config) *OpenAIProvider {
 	}
 }
 
+// ProviderNameOpenAI is the constant for the OpenAI provider name
+const ProviderNameOpenAI = "openai"
+
 // Name returns the provider identifier
 func (p *OpenAIProvider) Name() string {
-	return "openai"
+	return ProviderNameOpenAI
 }
 
 // Available returns true if API key is configured
@@ -153,7 +156,7 @@ func (p *OpenAIProvider) Analyze(ctx context.Context, request AnalysisRequest) (
 	if err != nil {
 		return nil, fmt.Errorf("failed to send request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -177,7 +180,7 @@ func (p *OpenAIProvider) Analyze(ctx context.Context, request AnalysisRequest) (
 		return nil, fmt.Errorf("no response from API")
 	}
 
-	return p.parseResponse(openAIResp.Choices[0].Message.Content, openAIResp.Usage.TotalTokens)
+	return p.parseResponse(openAIResp.Choices[0].Message.Content, openAIResp.Usage.TotalTokens), nil
 }
 
 func (p *OpenAIProvider) buildPrompt(request AnalysisRequest) string {
@@ -195,7 +198,7 @@ Issues:
 Provide a JSON response with enhanced suggestions for each issue.`, contextJSON, issuesJSON)
 }
 
-func (p *OpenAIProvider) parseResponse(content string, tokensUsed int) (*AnalysisResponse, error) {
+func (p *OpenAIProvider) parseResponse(content string, tokensUsed int) *AnalysisResponse {
 	// Try to parse as JSON
 	var result struct {
 		Suggestions map[string]EnhancedSuggestion `json:"suggestions"`
@@ -208,14 +211,14 @@ func (p *OpenAIProvider) parseResponse(content string, tokensUsed int) (*Analysi
 			EnhancedSuggestions: make(map[string]EnhancedSuggestion),
 			Summary:             content,
 			TokensUsed:          tokensUsed,
-		}, nil
+		}
 	}
 
 	return &AnalysisResponse{
 		EnhancedSuggestions: result.Suggestions,
 		Summary:             result.Summary,
 		TokensUsed:          tokensUsed,
-	}, nil
+	}
 }
 
 const systemPrompt = `You are a Kubernetes troubleshooting expert. You analyze health check issues from Kubernetes clusters and provide actionable suggestions.

@@ -30,7 +30,7 @@ func NewNoOpProvider() *NoOpProvider {
 
 // Name returns the provider identifier
 func (p *NoOpProvider) Name() string {
-	return "noop"
+	return ProviderNameNoop
 }
 
 // Available always returns true for NoOp

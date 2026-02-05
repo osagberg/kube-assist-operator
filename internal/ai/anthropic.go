@@ -74,9 +74,12 @@ func NewAnthropicProvider(config Config) *AnthropicProvider {
 	}
 }
 
+// ProviderNameAnthropic is the constant for the Anthropic provider name
+const ProviderNameAnthropic = "anthropic"
+
 // Name returns the provider identifier
 func (p *AnthropicProvider) Name() string {
-	return "anthropic"
+	return ProviderNameAnthropic
 }
 
 // Available returns true if API key is configured
@@ -152,7 +155,7 @@ func (p *AnthropicProvider) Analyze(ctx context.Context, request AnalysisRequest
 	if err != nil {
 		return nil, fmt.Errorf("failed to send request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -186,7 +189,7 @@ func (p *AnthropicProvider) Analyze(ctx context.Context, request AnalysisRequest
 	}
 
 	tokensUsed := anthropicResp.Usage.InputTokens + anthropicResp.Usage.OutputTokens
-	return p.parseResponse(textContent, tokensUsed)
+	return p.parseResponse(textContent, tokensUsed), nil
 }
 
 func (p *AnthropicProvider) buildPrompt(request AnalysisRequest) string {
@@ -204,7 +207,7 @@ Issues:
 Provide a JSON response with enhanced suggestions for each issue.`, contextJSON, issuesJSON)
 }
 
-func (p *AnthropicProvider) parseResponse(content string, tokensUsed int) (*AnalysisResponse, error) {
+func (p *AnthropicProvider) parseResponse(content string, tokensUsed int) *AnalysisResponse {
 	// Try to parse as JSON
 	var result struct {
 		Suggestions map[string]EnhancedSuggestion `json:"suggestions"`
@@ -217,12 +220,12 @@ func (p *AnthropicProvider) parseResponse(content string, tokensUsed int) (*Anal
 			EnhancedSuggestions: make(map[string]EnhancedSuggestion),
 			Summary:             content,
 			TokensUsed:          tokensUsed,
-		}, nil
+		}
 	}
 
 	return &AnalysisResponse{
 		EnhancedSuggestions: result.Suggestions,
 		Summary:             result.Summary,
 		TokensUsed:          tokensUsed,
-	}, nil
+	}
 }

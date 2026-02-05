@@ -19,6 +19,7 @@ package resource
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -175,12 +176,12 @@ func formatAccessModes(modes []corev1.PersistentVolumeAccessMode) string {
 	if len(modes) == 0 {
 		return ""
 	}
-	result := ""
+	var sb strings.Builder
 	for i, mode := range modes {
 		if i > 0 {
-			result += ","
+			sb.WriteByte(',')
 		}
-		result += string(mode)
+		sb.WriteString(string(mode))
 	}
-	return result
+	return sb.String()
 }

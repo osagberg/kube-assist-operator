@@ -342,7 +342,7 @@ func TestFindCondition(t *testing.T) {
 	// Test found
 	cond := findCondition(conditions, "Ready")
 	if cond == nil {
-		t.Error("findCondition() returned nil for existing condition")
+		t.Fatal("findCondition() returned nil for existing condition")
 	}
 	if cond.Type != "Ready" {
 		t.Errorf("findCondition() returned wrong condition type: %s", cond.Type)

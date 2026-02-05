@@ -416,7 +416,7 @@ func (r *TroubleshootRequestReconciler) collectLogs(ctx context.Context, tr *ass
 
 			buf := new(bytes.Buffer)
 			_, err = io.Copy(buf, stream)
-			stream.Close() // Close immediately, not defer
+			_ = stream.Close() // Close immediately, not defer
 			if err != nil {
 				data[fmt.Sprintf("%s-%s", pod.Name, container.Name)] = fmt.Sprintf("Error reading logs: %v", err)
 				continue
@@ -532,9 +532,10 @@ func (r *TroubleshootRequestReconciler) generateSummary(pods []corev1.Pod, issue
 	critical := 0
 	warning := 0
 	for _, issue := range issues {
-		if issue.Severity == "Critical" {
+		switch issue.Severity {
+		case "Critical":
 			critical++
-		} else if issue.Severity == "Warning" {
+		case "Warning":
 			warning++
 		}
 	}
@@ -554,6 +555,7 @@ func (r *TroubleshootRequestReconciler) setFailed(ctx context.Context, original,
 	return r.Status().Patch(ctx, tr, patch)
 }
 
+//nolint:unparam // status is part of the API signature for consistency
 func (r *TroubleshootRequestReconciler) setCondition(tr *assistv1alpha1.TroubleshootRequest, condType string, status metav1.ConditionStatus, reason, message string) {
 	meta.SetStatusCondition(&tr.Status.Conditions, metav1.Condition{
 		Type:               condType,

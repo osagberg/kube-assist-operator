@@ -42,6 +42,15 @@ const (
 	colorDim    = "\033[2m"
 )
 
+// Output format and severity constants
+const (
+	outputFormatJSON = "json"
+	outputFormatText = "text"
+	namespaceDefault = "default"
+	severityCritical = "Critical"
+	severityWarning  = "Warning"
+)
+
 var (
 	allNamespaces bool
 	labelSelector string
@@ -94,10 +103,10 @@ func main() {
 
 	// Support legacy --json flag
 	if outputJSON {
-		outputFormat = "json"
+		outputFormat = outputFormatJSON
 	}
 
-	namespace := "default"
+	namespace := namespaceDefault
 	if flag.NArg() > 0 {
 		namespace = flag.Arg(0)
 	}
@@ -179,11 +188,11 @@ func run(namespace string) error {
 		if err == nil && ns != "" {
 			namespace = ns
 		} else {
-			namespace = "default"
+			namespace = namespaceDefault
 		}
 	}
 
-	if outputFormat != "json" {
+	if outputFormat != outputFormatJSON {
 		printHeader(namespace)
 	}
 
@@ -244,15 +253,13 @@ func run(namespace string) error {
 
 	// Start workers
 	var wg sync.WaitGroup
-	for i := 0; i < workerCount; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range workerCount {
+		wg.Go(func() {
 			for job := range jobs {
 				result := processDiagnostic(ctx, dynClient, trGVR, job.namespace, job.name, cleanup, outputFormat)
 				results <- result
 			}
-		}()
+		})
 	}
 
 	// Send work
@@ -268,7 +275,7 @@ func run(namespace string) error {
 	}()
 
 	// Collect results
-	var allResults []diagResult
+	allResults := make([]diagResult, 0, len(workItems))
 	for result := range results {
 		allResults = append(allResults, result)
 	}
@@ -287,7 +294,7 @@ func run(namespace string) error {
 		return allResults[i].name < allResults[j].name
 	})
 
-	if outputFormat == "json" {
+	if outputFormat == outputFormatJSON {
 		printJSONResults(allResults)
 	} else {
 		printResults(allResults)
@@ -298,27 +305,30 @@ func run(namespace string) error {
 }
 
 // processDiagnostic creates a TroubleshootRequest and waits for its result
-func processDiagnostic(ctx context.Context, dynClient dynamic.Interface, gvr schema.GroupVersionResource, namespace, deployName string, doCleanup bool, format string) diagResult {
+func processDiagnostic(
+	ctx context.Context, dynClient dynamic.Interface, gvr schema.GroupVersionResource,
+	namespace, deployName string, doCleanup bool, format string,
+) diagResult {
 	trName := fmt.Sprintf("kubeassist-%s-%d", deployName, time.Now().UnixNano())
 
 	tr := &unstructured.Unstructured{
-		Object: map[string]interface{}{
+		Object: map[string]any{
 			"apiVersion": "assist.cluster.local/v1alpha1",
 			"kind":       "TroubleshootRequest",
-			"metadata": map[string]interface{}{
+			"metadata": map[string]any{
 				"name":      trName,
 				"namespace": namespace,
-				"labels": map[string]interface{}{
+				"labels": map[string]any{
 					labelManagedBy:  "kubeassist-cli",
 					labelTargetName: deployName,
 				},
 			},
-			"spec": map[string]interface{}{
-				"target": map[string]interface{}{
+			"spec": map[string]any{
+				"target": map[string]any{
 					"kind": "Deployment",
 					"name": deployName,
 				},
-				"actions":   []interface{}{"all"},
+				"actions":   []any{"all"},
 				"tailLines": int64(50),
 			},
 		},
@@ -326,7 +336,7 @@ func processDiagnostic(ctx context.Context, dynClient dynamic.Interface, gvr sch
 
 	_, err := dynClient.Resource(gvr).Namespace(namespace).Create(ctx, tr, metav1.CreateOptions{})
 	if err != nil {
-		if format != "json" {
+		if format != outputFormatJSON {
 			fmt.Fprintf(os.Stderr, "%sWarning: failed to create diagnostic for %s/%s: %v%s\n",
 				colorYellow, namespace, deployName, err, colorReset)
 		}
@@ -377,13 +387,16 @@ type issue struct {
 	Suggestion string
 }
 
-func waitForDiagnostic(ctx context.Context, client dynamic.Interface, gvr schema.GroupVersionResource, namespace, trName, deployName string) (diagResult, error) {
+func waitForDiagnostic(
+	ctx context.Context, cl dynamic.Interface, gvr schema.GroupVersionResource,
+	namespace, trName, deployName string,
+) (diagResult, error) {
 	result := diagResult{
 		namespace: namespace,
 		name:      deployName,
 	}
 
-	watcher, err := client.Resource(gvr).Namespace(namespace).Watch(ctx, metav1.ListOptions{
+	watcher, err := cl.Resource(gvr).Namespace(namespace).Watch(ctx, metav1.ListOptions{
 		FieldSelector: fmt.Sprintf("metadata.name=%s", trName),
 	})
 	if err != nil {
@@ -416,7 +429,7 @@ func waitForDiagnostic(ctx context.Context, client dynamic.Interface, gvr schema
 
 					issuesRaw, _, _ := unstructured.NestedSlice(status, "issues")
 					for _, issueRaw := range issuesRaw {
-						issueMap, ok := issueRaw.(map[string]interface{})
+						issueMap, ok := issueRaw.(map[string]any)
 						if !ok {
 							continue
 						}
@@ -427,9 +440,10 @@ func waitForDiagnostic(ctx context.Context, client dynamic.Interface, gvr schema
 							Suggestion: getString(issueMap, "suggestion"),
 						}
 						result.issues = append(result.issues, iss)
-						if iss.Severity == "Critical" {
+						switch iss.Severity {
+						case severityCritical:
 							result.critical++
-						} else if iss.Severity == "Warning" {
+						case severityWarning:
 							result.warnings++
 						}
 					}
@@ -442,7 +456,7 @@ func waitForDiagnostic(ctx context.Context, client dynamic.Interface, gvr schema
 	}
 }
 
-func getString(m map[string]interface{}, key string) string {
+func getString(m map[string]any, key string) string {
 	if v, ok := m[key]; ok {
 		if s, ok := v.(string); ok {
 			return s
@@ -471,7 +485,7 @@ type jsonIssue struct {
 }
 
 func printJSONResults(results []diagResult) {
-	var jsonResults []jsonResult
+	jsonResults := make([]jsonResult, 0, len(results))
 	for _, r := range results {
 		jr := jsonResult{
 			Namespace: r.namespace,
@@ -483,12 +497,7 @@ func printJSONResults(results []diagResult) {
 			Warnings:  r.warnings,
 		}
 		for _, iss := range r.issues {
-			jr.Issues = append(jr.Issues, jsonIssue{
-				Type:       iss.Type,
-				Severity:   iss.Severity,
-				Message:    iss.Message,
-				Suggestion: iss.Suggestion,
-			})
+			jr.Issues = append(jr.Issues, jsonIssue(iss))
 		}
 		jsonResults = append(jsonResults, jr)
 	}
@@ -502,9 +511,11 @@ func printJSONResults(results []diagResult) {
 }
 
 func printHeader(namespace string) {
-	fmt.Printf("\n%s%s╔══════════════════════════════════════════════════════════════╗%s\n", colorBold, colorCyan, colorReset)
-	fmt.Printf("%s%s║              🔍 KubeAssist Workload Diagnostics              ║%s\n", colorBold, colorCyan, colorReset)
-	fmt.Printf("%s%s╚══════════════════════════════════════════════════════════════╝%s\n", colorBold, colorCyan, colorReset)
+	boxLine := "══════════════════════════════════════════════════════════════"
+	fmt.Printf("\n%s%s╔%s╗%s\n", colorBold, colorCyan, boxLine, colorReset)
+	fmt.Printf("%s%s║              🔍 KubeAssist Workload Diagnostics              ║%s\n",
+		colorBold, colorCyan, colorReset)
+	fmt.Printf("%s%s╚%s╝%s\n", colorBold, colorCyan, boxLine, colorReset)
 	if namespace != "" {
 		fmt.Printf("%sNamespace: %s%s\n", colorDim, namespace, colorReset)
 	} else {

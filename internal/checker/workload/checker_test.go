@@ -17,6 +17,7 @@ limitations under the License.
 package workload
 
 import (
+	"context"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -24,6 +25,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/osagberg/kube-assist-operator/internal/checker"
+)
+
+// Test issue types
+const (
+	testIssueTypeContainerNotReady = "ContainerNotReady"
+	testIssueTypeHighRestartCount  = "HighRestartCount"
 )
 
 func TestChecker_Name(t *testing.T) {
@@ -36,7 +43,7 @@ func TestChecker_Name(t *testing.T) {
 func TestChecker_Supports(t *testing.T) {
 	c := New()
 	// Workload checker always supports
-	if !c.Supports(nil, nil) {
+	if !c.Supports(context.TODO(), nil) {
 		t.Error("Supports() = false, want true")
 	}
 }
@@ -164,7 +171,7 @@ func TestDiagnosePods_CrashLoopBackOff(t *testing.T) {
 
 	issues := DiagnosePods(pods, "default", "deployment/test", DefaultRestartThreshold)
 
-	// Should have ContainerNotReady and HighRestartCount
+	// Should have testIssueTypeContainerNotReady and testIssueTypeHighRestartCount
 	if len(issues) < 2 {
 		t.Errorf("DiagnosePods() found %d issues, want at least 2", len(issues))
 	}
@@ -172,25 +179,25 @@ func TestDiagnosePods_CrashLoopBackOff(t *testing.T) {
 	hasNotReady := false
 	hasHighRestart := false
 	for _, issue := range issues {
-		if issue.Type == "ContainerNotReady" {
+		if issue.Type == testIssueTypeContainerNotReady {
 			hasNotReady = true
 			if issue.Severity != checker.SeverityCritical {
-				t.Errorf("ContainerNotReady severity = %s, want Critical", issue.Severity)
+				t.Errorf("testIssueTypeContainerNotReady severity = %s, want Critical", issue.Severity)
 			}
 		}
-		if issue.Type == "HighRestartCount" {
+		if issue.Type == testIssueTypeHighRestartCount {
 			hasHighRestart = true
 			if issue.Severity != checker.SeverityWarning {
-				t.Errorf("HighRestartCount severity = %s, want Warning", issue.Severity)
+				t.Errorf("testIssueTypeHighRestartCount severity = %s, want Warning", issue.Severity)
 			}
 		}
 	}
 
 	if !hasNotReady {
-		t.Error("Expected ContainerNotReady issue")
+		t.Error("Expected testIssueTypeContainerNotReady issue")
 	}
 	if !hasHighRestart {
-		t.Error("Expected HighRestartCount issue")
+		t.Error("Expected testIssueTypeHighRestartCount issue")
 	}
 }
 
@@ -223,14 +230,14 @@ func TestDiagnosePods_ImagePullBackOff(t *testing.T) {
 
 	issues := DiagnosePods(pods, "default", "deployment/test", DefaultRestartThreshold)
 
-	// Should have PodNotRunning and ContainerNotReady
+	// Should have PodNotRunning and testIssueTypeContainerNotReady
 	hasPodNotRunning := false
 	hasContainerNotReady := false
 	for _, issue := range issues {
 		if issue.Type == "PodNotRunning" {
 			hasPodNotRunning = true
 		}
-		if issue.Type == "ContainerNotReady" {
+		if issue.Type == testIssueTypeContainerNotReady {
 			hasContainerNotReady = true
 			if issue.Metadata["reason"] != "ImagePullBackOff" {
 				t.Errorf("Expected reason=ImagePullBackOff in metadata, got %s", issue.Metadata["reason"])
@@ -242,7 +249,7 @@ func TestDiagnosePods_ImagePullBackOff(t *testing.T) {
 		t.Error("Expected PodNotRunning issue")
 	}
 	if !hasContainerNotReady {
-		t.Error("Expected ContainerNotReady issue")
+		t.Error("Expected testIssueTypeContainerNotReady issue")
 	}
 }
 
@@ -277,7 +284,7 @@ func TestDiagnosePods_OOMKilled(t *testing.T) {
 
 	hasOOMIssue := false
 	for _, issue := range issues {
-		if issue.Type == "ContainerNotReady" && issue.Metadata["reason"] == "OOMKilled" {
+		if issue.Type == testIssueTypeContainerNotReady && issue.Metadata["reason"] == "OOMKilled" {
 			hasOOMIssue = true
 			if issue.Suggestion == "" {
 				t.Error("Expected suggestion for OOMKilled")
@@ -286,7 +293,7 @@ func TestDiagnosePods_OOMKilled(t *testing.T) {
 	}
 
 	if !hasOOMIssue {
-		t.Error("Expected ContainerNotReady issue with OOMKilled reason")
+		t.Error("Expected testIssueTypeContainerNotReady issue with OOMKilled reason")
 	}
 }
 
@@ -388,28 +395,28 @@ func TestDiagnosePods_CustomRestartThreshold(t *testing.T) {
 		},
 	}
 
-	// With default threshold (3), should have HighRestartCount
+	// With default threshold (3), should have testIssueTypeHighRestartCount
 	issues := DiagnosePods(pods, "default", "deployment/test", 3)
 	hasHighRestart := false
 	for _, issue := range issues {
-		if issue.Type == "HighRestartCount" {
+		if issue.Type == testIssueTypeHighRestartCount {
 			hasHighRestart = true
 		}
 	}
 	if !hasHighRestart {
-		t.Error("Expected HighRestartCount with threshold 3")
+		t.Error("Expected testIssueTypeHighRestartCount with threshold 3")
 	}
 
-	// With higher threshold (10), should not have HighRestartCount
+	// With higher threshold (10), should not have testIssueTypeHighRestartCount
 	issues = DiagnosePods(pods, "default", "deployment/test", 10)
 	hasHighRestart = false
 	for _, issue := range issues {
-		if issue.Type == "HighRestartCount" {
+		if issue.Type == testIssueTypeHighRestartCount {
 			hasHighRestart = true
 		}
 	}
 	if hasHighRestart {
-		t.Error("Did not expect HighRestartCount with threshold 10")
+		t.Error("Did not expect testIssueTypeHighRestartCount with threshold 10")
 	}
 }
 

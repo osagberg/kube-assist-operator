@@ -22,12 +22,14 @@ import (
 	"strings"
 )
 
+// ProviderNameNoop is the constant for the NoOp provider name
+const ProviderNameNoop = "noop"
+
 // NewProvider creates a provider based on the configuration
 func NewProvider(config Config) (Provider, error) {
 	// Resolve API key from environment if it looks like an env var reference
 	apiKey := config.APIKey
-	if strings.HasPrefix(apiKey, "$") {
-		envVar := strings.TrimPrefix(apiKey, "$")
+	if envVar, found := strings.CutPrefix(apiKey, "$"); found {
 		apiKey = os.Getenv(envVar)
 	}
 
@@ -36,11 +38,11 @@ func NewProvider(config Config) (Provider, error) {
 	resolvedConfig.APIKey = apiKey
 
 	switch strings.ToLower(config.Provider) {
-	case "openai":
+	case ProviderNameOpenAI:
 		return NewOpenAIProvider(resolvedConfig), nil
-	case "anthropic":
+	case ProviderNameAnthropic:
 		return NewAnthropicProvider(resolvedConfig), nil
-	case "noop", "":
+	case ProviderNameNoop, "":
 		return NewNoOpProvider(), nil
 	default:
 		return nil, fmt.Errorf("unknown AI provider: %s", config.Provider)

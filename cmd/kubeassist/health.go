@@ -84,7 +84,7 @@ func (h *healthCmd) run() error {
 		currentNS = "default"
 	}
 
-	if h.outputFormat != "json" {
+	if h.outputFormat != outputFormatJSON {
 		h.printHeader()
 	}
 
@@ -99,13 +99,13 @@ func (h *healthCmd) run() error {
 	spec := h.buildSpec()
 
 	thr := &unstructured.Unstructured{
-		Object: map[string]interface{}{
+		Object: map[string]any{
 			"apiVersion": "assist.cluster.local/v1alpha1",
 			"kind":       "TeamHealthRequest",
-			"metadata": map[string]interface{}{
+			"metadata": map[string]any{
 				"name":      thrName,
 				"namespace": currentNS,
-				"labels": map[string]interface{}{
+				"labels": map[string]any{
 					"app.kubernetes.io/managed-by": "kubeassist-cli",
 				},
 			},
@@ -130,23 +130,23 @@ func (h *healthCmd) run() error {
 	}
 
 	// Output results
-	if h.outputFormat == "json" {
+	if h.outputFormat == outputFormatJSON {
 		return h.printJSONResults(result)
 	}
 	h.printTextResults(result)
 	return nil
 }
 
-func (h *healthCmd) buildSpec() map[string]interface{} {
-	spec := map[string]interface{}{}
+func (h *healthCmd) buildSpec() map[string]any {
+	spec := map[string]any{}
 
 	// Build scope
-	scope := map[string]interface{}{}
+	scope := map[string]any{}
 	if h.namespaceSelector != "" {
 		// Parse label selector
-		selector := map[string]interface{}{}
-		labels := map[string]interface{}{}
-		for _, part := range strings.Split(h.namespaceSelector, ",") {
+		selector := map[string]any{}
+		labels := map[string]any{}
+		for part := range strings.SplitSeq(h.namespaceSelector, ",") {
 			kv := strings.SplitN(part, "=", 2)
 			if len(kv) == 2 {
 				labels[strings.TrimSpace(kv[0])] = strings.TrimSpace(kv[1])
@@ -165,8 +165,8 @@ func (h *healthCmd) buildSpec() map[string]interface{} {
 
 	// Build checks list if specified
 	if h.checks != "" {
-		checkList := []interface{}{}
-		for _, c := range strings.Split(h.checks, ",") {
+		checkList := []any{}
+		for c := range strings.SplitSeq(h.checks, ",") {
 			checkList = append(checkList, strings.TrimSpace(c))
 		}
 		spec["checks"] = checkList
@@ -196,8 +196,10 @@ type healthIssue struct {
 	Suggestion string
 }
 
-func (h *healthCmd) waitForHealthCheck(ctx context.Context, client dynamic.Interface, gvr schema.GroupVersionResource, namespace, name string) (*healthResult, error) {
-	watcher, err := client.Resource(gvr).Namespace(namespace).Watch(ctx, metav1.ListOptions{
+func (h *healthCmd) waitForHealthCheck(
+	ctx context.Context, cl dynamic.Interface, gvr schema.GroupVersionResource, namespace, name string,
+) (*healthResult, error) {
+	watcher, err := cl.Resource(gvr).Namespace(namespace).Watch(ctx, metav1.ListOptions{
 		FieldSelector: fmt.Sprintf("metadata.name=%s", name),
 	})
 	if err != nil {
@@ -232,7 +234,7 @@ func (h *healthCmd) waitForHealthCheck(ctx context.Context, client dynamic.Inter
 	}
 }
 
-func (h *healthCmd) parseStatus(status map[string]interface{}) *healthResult {
+func (h *healthCmd) parseStatus(status map[string]any) *healthResult {
 	result := &healthResult{
 		CheckerResults: make(map[string]checkerResult),
 	}
@@ -244,7 +246,7 @@ func (h *healthCmd) parseStatus(status map[string]interface{}) *healthResult {
 	// Parse results by checker
 	results, _, _ := unstructured.NestedMap(status, "results")
 	for checkerName, checkerData := range results {
-		checkerMap, ok := checkerData.(map[string]interface{})
+		checkerMap, ok := checkerData.(map[string]any)
 		if !ok {
 			continue
 		}
@@ -255,7 +257,7 @@ func (h *healthCmd) parseStatus(status map[string]interface{}) *healthResult {
 
 		issuesRaw, _, _ := unstructured.NestedSlice(checkerMap, "issues")
 		for _, issueRaw := range issuesRaw {
-			issueMap, ok := issueRaw.(map[string]interface{})
+			issueMap, ok := issueRaw.(map[string]any)
 			if !ok {
 				continue
 			}
@@ -277,7 +279,7 @@ func (h *healthCmd) parseStatus(status map[string]interface{}) *healthResult {
 	return result
 }
 
-func getStringFromMap(m map[string]interface{}, key string) string {
+func getStringFromMap(m map[string]any, key string) string {
 	if v, ok := m[key]; ok {
 		if s, ok := v.(string); ok {
 			return s
@@ -287,9 +289,11 @@ func getStringFromMap(m map[string]interface{}, key string) string {
 }
 
 func (h *healthCmd) printHeader() {
-	fmt.Printf("\n%s%s╔══════════════════════════════════════════════════════════════╗%s\n", colorBold, colorCyan, colorReset)
-	fmt.Printf("%s%s║              🏥 KubeAssist Team Health Dashboard             ║%s\n", colorBold, colorCyan, colorReset)
-	fmt.Printf("%s%s╚══════════════════════════════════════════════════════════════╝%s\n", colorBold, colorCyan, colorReset)
+	boxLine := "══════════════════════════════════════════════════════════════"
+	fmt.Printf("\n%s%s╔%s╗%s\n", colorBold, colorCyan, boxLine, colorReset)
+	fmt.Printf("%s%s║              🏥 KubeAssist Team Health Dashboard             ║%s\n",
+		colorBold, colorCyan, colorReset)
+	fmt.Printf("%s%s╚%s╝%s\n", colorBold, colorCyan, boxLine, colorReset)
 	fmt.Println()
 }
 
@@ -302,7 +306,7 @@ func (h *healthCmd) printTextResults(result *healthResult) {
 	fmt.Println()
 
 	// Get sorted checker names
-	var checkerNames []string
+	checkerNames := make([]string, 0, len(result.CheckerResults))
 	for name := range result.CheckerResults {
 		checkerNames = append(checkerNames, name)
 	}
@@ -322,10 +326,10 @@ func (h *healthCmd) printTextResults(result *healthResult) {
 		warnings := 0
 		for _, issue := range cr.Issues {
 			switch issue.Severity {
-			case "Critical":
+			case severityCritical:
 				critical++
 				totalCritical++
-			case "Warning":
+			case severityWarning:
 				warnings++
 				totalWarnings++
 			}
@@ -358,10 +362,10 @@ func (h *healthCmd) printTextResults(result *healthResult) {
 		for _, issue := range cr.Issues {
 			var sevColor, sevIcon string
 			switch issue.Severity {
-			case "Critical":
+			case severityCritical:
 				sevColor = colorRed
 				sevIcon = "●"
-			case "Warning":
+			case severityWarning:
 				sevColor = colorYellow
 				sevIcon = "○"
 			default:
@@ -440,19 +444,12 @@ func (h *healthCmd) printJSONResults(result *healthResult) error {
 		output.Totals.Healthy += cr.Healthy
 
 		for _, issue := range cr.Issues {
-			jcr.Issues = append(jcr.Issues, jsonHealthIssue{
-				Type:       issue.Type,
-				Severity:   issue.Severity,
-				Resource:   issue.Resource,
-				Namespace:  issue.Namespace,
-				Message:    issue.Message,
-				Suggestion: issue.Suggestion,
-			})
+			jcr.Issues = append(jcr.Issues, jsonHealthIssue(issue))
 
 			switch issue.Severity {
-			case "Critical":
+			case severityCritical:
 				output.Totals.Critical++
-			case "Warning":
+			case severityWarning:
 				output.Totals.Warnings++
 			}
 		}

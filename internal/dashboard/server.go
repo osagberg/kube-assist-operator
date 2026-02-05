@@ -196,7 +196,7 @@ func (s *Server) runCheck(ctx context.Context) {
 			for _, issue := range result.Issues {
 				cr.Issues = append(cr.Issues, Issue{
 					Type:       issue.Type,
-					Severity:   string(issue.Severity),
+					Severity:   issue.Severity,
 					Resource:   issue.Resource,
 					Namespace:  issue.Namespace,
 					Message:    issue.Message,
@@ -240,11 +240,11 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	s.mu.RUnlock()
 
 	if latest == nil {
-		json.NewEncoder(w).Encode(map[string]string{"status": "initializing"})
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "initializing"})
 		return
 	}
 
-	json.NewEncoder(w).Encode(latest)
+	_ = json.NewEncoder(w).Encode(latest)
 }
 
 // handleSSE handles Server-Sent Events connections
@@ -275,7 +275,7 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	s.mu.RLock()
 	if s.latest != nil {
 		data, _ := json.Marshal(s.latest)
-		fmt.Fprintf(w, "data: %s\n\n", data)
+		_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
 		if f, ok := w.(http.Flusher); ok {
 			f.Flush()
 		}
@@ -289,7 +289,7 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 			return
 		case update := <-clientCh:
 			data, _ := json.Marshal(update)
-			fmt.Fprintf(w, "data: %s\n\n", data)
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
 			if f, ok := w.(http.Flusher); ok {
 				f.Flush()
 			}
@@ -307,13 +307,13 @@ func (s *Server) handleTriggerCheck(w http.ResponseWriter, r *http.Request) {
 	go s.runCheck(r.Context())
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "check triggered"})
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "check triggered"})
 }
 
 // handleDashboard serves the dashboard HTML
-func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleDashboard(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/html")
-	w.Write([]byte(dashboardHTML))
+	_, _ = w.Write([]byte(dashboardHTML))
 }
 
 // getAllNamespaces returns all non-system namespaces
@@ -323,7 +323,7 @@ func (s *Server) getAllNamespaces(ctx context.Context) ([]string, error) {
 		return nil, err
 	}
 
-	var namespaces []string
+	namespaces := make([]string, 0, len(nsList.Items))
 	for _, ns := range nsList.Items {
 		// Skip system namespaces
 		name := ns.Name

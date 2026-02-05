@@ -174,7 +174,7 @@ func TestRegistry_Run(t *testing.T) {
 	}
 
 	// Test error run
-	result, err = r.Run(ctx, "error", checkCtx)
+	_, err = r.Run(ctx, "error", checkCtx)
 	if err == nil {
 		t.Error("Run() expected error, got nil")
 	}

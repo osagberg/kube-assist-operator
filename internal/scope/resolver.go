@@ -35,9 +35,9 @@ type Resolver struct {
 }
 
 // NewResolver creates a new namespace resolver
-func NewResolver(client client.Client, defaultNamespace string) *Resolver {
+func NewResolver(cl client.Client, defaultNamespace string) *Resolver {
 	return &Resolver{
-		client:           client,
+		client:           cl,
 		defaultNamespace: defaultNamespace,
 	}
 }
