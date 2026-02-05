@@ -47,11 +47,18 @@ One command to diagnose your entire cluster. KubeAssist provides instant visibil
 - **Graceful degradation** — Flux checkers automatically skip if Flux isn't installed
 - **Stale reconciliation detection** — catch GitOps pipelines that stopped syncing
 
+### AI-Powered Suggestions
+- **Enhanced diagnostics** with AI-generated root cause analysis
+- **Provider options** — Anthropic Claude, OpenAI, or NoOp for testing
+- **Data sanitization** — sensitive data redacted before AI calls
+- **Configurable** via CLI flags, env vars, or Helm values
+
 ### Production Ready
 - **Leader election** for HA deployments
 - **Prometheus metrics** for observability
 - **Minimal RBAC** — read-only access to cluster resources
 - **Distroless container** — secure, minimal attack surface
+- **Network policy** template for restricted egress
 
 ---
 
@@ -442,6 +449,10 @@ helm install kube-assist charts/kube-assist \
 | `resources.requests.memory` | `64Mi` | Memory request |
 | `resources.limits.cpu` | `500m` | CPU limit |
 | `resources.limits.memory` | `128Mi` | Memory limit |
+| `ai.enabled` | `false` | Enable AI-powered suggestions |
+| `ai.provider` | `noop` | AI provider: anthropic, openai, noop |
+| `ai.apiKeySecretRef.name` | — | Secret containing API key |
+| `networkPolicy.enabled` | `false` | Enable network policy |
 
 ### Full Configuration
 
@@ -541,9 +552,16 @@ make install-cli
 
 ---
 
+## Documentation
+
+- [AI Integration Guide](docs/ai-integration.md) — Configure AI-powered suggestions
+- [Troubleshooting Guide](docs/troubleshooting.md) — Common issues and solutions
+
+---
+
 ## Roadmap
 
-- [ ] AI-powered suggestions (implementation exists, wiring in progress)
+- [x] AI-powered suggestions
 - [ ] Slack/PagerDuty alerting integration
 - [ ] Historical trend analysis
 - [ ] Custom checker plugins
