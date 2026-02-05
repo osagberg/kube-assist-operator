@@ -231,10 +231,10 @@ func main() {
 	registry.MustRegister(resource.NewNetworkPolicyChecker())
 	setupLog.Info("Registered checkers", "checkers", registry.List())
 
-	// Initialize AI provider
-	var aiProv ai.Provider
+	// Initialize AI provider with runtime-reconfigurable Manager
+	var aiConfig ai.Config
 	if enableAI {
-		aiConfig := ai.Config{
+		aiConfig = ai.Config{
 			Provider: aiProvider,
 			APIKey:   aiAPIKey,
 			Model:    aiModel,
@@ -247,16 +247,19 @@ func main() {
 		if aiConfig.Model == "" {
 			aiConfig.Model = envConfig.Model
 		}
-		var aiErr error
-		aiProv, aiErr = ai.NewProvider(aiConfig)
-		if aiErr != nil {
-			setupLog.Error(aiErr, "failed to create AI provider")
-			os.Exit(1)
-		}
-		setupLog.Info("AI provider initialized",
-			"provider", aiProv.Name(),
-			"available", aiProv.Available())
+	} else {
+		aiConfig = ai.DefaultConfig()
 	}
+	aiProv, aiErr := ai.NewProvider(aiConfig)
+	if aiErr != nil {
+		setupLog.Error(aiErr, "failed to create AI provider")
+		os.Exit(1)
+	}
+	aiManager := ai.NewManager(aiProv, enableAI)
+	setupLog.Info("AI provider initialized",
+		"provider", aiManager.Name(),
+		"enabled", enableAI,
+		"available", aiManager.Available())
 
 	if err := (&controller.TroubleshootRequestReconciler{
 		Client:    mgr.GetClient(),
@@ -272,7 +275,7 @@ func main() {
 		Client:     mgr.GetClient(),
 		Scheme:     mgr.GetScheme(),
 		Registry:   registry,
-		AIProvider: aiProv,
+		AIProvider: aiManager,
 		AIEnabled:  enableAI,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "TeamHealthRequest")
@@ -295,7 +298,7 @@ func main() {
 	// Start dashboard server if enabled
 	if enableDashboard {
 		dashboardServer := dashboard.NewServer(mgr.GetClient(), registry, dashboardAddr).
-			WithAI(aiProv, enableAI)
+			WithAI(aiManager, enableAI)
 		go func() {
 			setupLog.Info("starting dashboard server", "addr", dashboardAddr)
 			if err := dashboardServer.Start(ctx); err != nil {

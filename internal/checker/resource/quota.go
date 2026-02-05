@@ -121,12 +121,15 @@ func (c *QuotaChecker) checkQuotaWith(quota *corev1.ResourceQuota, warningPercen
 		if usagePercent >= 100 {
 			// Quota exceeded
 			issues = append(issues, checker.Issue{
-				Type:       "QuotaExceeded",
-				Severity:   checker.SeverityCritical,
-				Resource:   resourceRef,
-				Namespace:  quota.Namespace,
-				Message:    fmt.Sprintf("ResourceQuota %s: %s is at %.0f%% (%s/%s)", quota.Name, resourceName, usagePercent, used.String(), hardLimit.String()),
-				Suggestion: "Reduce resource usage or request a quota increase",
+				Type:      "QuotaExceeded",
+				Severity:  checker.SeverityCritical,
+				Resource:  resourceRef,
+				Namespace: quota.Namespace,
+				Message:   fmt.Sprintf("ResourceQuota %s: %s is at %.0f%% (%s/%s)", quota.Name, resourceName, usagePercent, used.String(), hardLimit.String()),
+				Suggestion: "Quota is fully consumed. New pods requesting this resource will fail to schedule. " +
+					"Check current usage: kubectl describe resourcequota " + quota.Name + " -n " + quota.Namespace + ". " +
+					"Options: request a quota increase from your platform team, " +
+					"or reduce usage by scaling down or optimizing resource requests.",
 				Metadata: map[string]string{
 					"quota":        quota.Name,
 					"resource":     string(resourceName),
@@ -138,12 +141,15 @@ func (c *QuotaChecker) checkQuotaWith(quota *corev1.ResourceQuota, warningPercen
 		} else if usagePercent >= float64(warningPercent) {
 			// Near quota limit
 			issues = append(issues, checker.Issue{
-				Type:       "QuotaNearLimit",
-				Severity:   checker.SeverityWarning,
-				Resource:   resourceRef,
-				Namespace:  quota.Namespace,
-				Message:    fmt.Sprintf("ResourceQuota %s: %s is at %.0f%% (%s/%s)", quota.Name, resourceName, usagePercent, used.String(), hardLimit.String()),
-				Suggestion: fmt.Sprintf("Consider requesting a quota increase before reaching the limit (warning threshold: %d%%)", warningPercent),
+				Type:      "QuotaNearLimit",
+				Severity:  checker.SeverityWarning,
+				Resource:  resourceRef,
+				Namespace: quota.Namespace,
+				Message:   fmt.Sprintf("ResourceQuota %s: %s is at %.0f%% (%s/%s)", quota.Name, resourceName, usagePercent, used.String(), hardLimit.String()),
+				Suggestion: fmt.Sprintf("Quota usage is approaching the limit (warning at %d%%). "+
+					"Review usage: kubectl describe resourcequota %s -n %s. "+
+					"Plan ahead: request a quota increase from your platform team before deployments fail.",
+					warningPercent, quota.Name, quota.Namespace),
 				Metadata: map[string]string{
 					"quota":        quota.Name,
 					"resource":     string(resourceName),

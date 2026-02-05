@@ -92,12 +92,13 @@ func (c *GitRepositoryChecker) checkGitRepository(gr *sourcev1.GitRepository) []
 	// Check if suspended
 	if gr.Spec.Suspend {
 		issues = append(issues, checker.Issue{
-			Type:       "Suspended",
-			Severity:   checker.SeverityWarning,
-			Resource:   resourceRef,
-			Namespace:  gr.Namespace,
-			Message:    fmt.Sprintf("GitRepository %s is suspended", gr.Name),
-			Suggestion: "Review why this GitRepository was suspended and resume if appropriate",
+			Type:      "Suspended",
+			Severity:  checker.SeverityWarning,
+			Resource:  resourceRef,
+			Namespace: gr.Namespace,
+			Message:   fmt.Sprintf("GitRepository %s is suspended", gr.Name),
+			Suggestion: "This GitRepository is suspended and will not fetch new revisions. " +
+				"Resume with: flux resume source git " + gr.Name + " -n " + gr.Namespace + ".",
 			Metadata: map[string]string{
 				"repository": gr.Name,
 				"url":        gr.Spec.URL,
@@ -144,12 +145,13 @@ func (c *GitRepositoryChecker) checkGitRepository(gr *sourcev1.GitRepository) []
 		staleDuration := time.Since(lastReconcile)
 		if staleDuration > c.staleThreshold {
 			issues = append(issues, checker.Issue{
-				Type:       "StaleReconciliation",
-				Severity:   checker.SeverityWarning,
-				Resource:   resourceRef,
-				Namespace:  gr.Namespace,
-				Message:    fmt.Sprintf("GitRepository last reconciled %s ago", staleDuration.Round(time.Minute)),
-				Suggestion: "Check if source-controller is running and healthy",
+				Type:      "StaleReconciliation",
+				Severity:  checker.SeverityWarning,
+				Resource:  resourceRef,
+				Namespace: gr.Namespace,
+				Message:   fmt.Sprintf("GitRepository last reconciled %s ago", staleDuration.Round(time.Minute)),
+				Suggestion: "Check if the source controller is running: kubectl get deploy -n flux-system source-controller. " +
+					"Force reconciliation: flux reconcile source git " + gr.Name + " -n " + gr.Namespace + ".",
 				Metadata: map[string]string{
 					"repository":    gr.Name,
 					"lastReconcile": lastReconcile.Format(time.RFC3339),
@@ -163,12 +165,14 @@ func (c *GitRepositoryChecker) checkGitRepository(gr *sourcev1.GitRepository) []
 	hasArtifact := gr.Status.Artifact != nil && gr.Status.Artifact.Revision != ""
 	if !hasArtifact && readyCondition != nil && readyCondition.Status == metav1.ConditionTrue {
 		issues = append(issues, checker.Issue{
-			Type:       "NoArtifact",
-			Severity:   checker.SeverityWarning,
-			Resource:   resourceRef,
-			Namespace:  gr.Namespace,
-			Message:    "GitRepository is ready but has no artifact",
-			Suggestion: "Check source-controller logs for issues with artifact storage",
+			Type:      "NoArtifact",
+			Severity:  checker.SeverityWarning,
+			Resource:  resourceRef,
+			Namespace: gr.Namespace,
+			Message:   "GitRepository is ready but has no artifact",
+			Suggestion: "GitRepository shows Ready but has no artifact. This may indicate a storage issue. " +
+				"Check source-controller logs: kubectl logs -n flux-system deploy/source-controller --tail=30 | grep " + gr.Name + ". " +
+				"Try forcing a reconciliation: flux reconcile source git " + gr.Name + " -n " + gr.Namespace + ".",
 			Metadata: map[string]string{
 				"repository": gr.Name,
 			},
@@ -178,12 +182,15 @@ func (c *GitRepositoryChecker) checkGitRepository(gr *sourcev1.GitRepository) []
 	// Check if using insecure options
 	if gr.Spec.SecretRef == nil && isPrivateRepo(gr.Spec.URL) {
 		issues = append(issues, checker.Issue{
-			Type:       "NoAuthentication",
-			Severity:   checker.SeverityWarning,
-			Resource:   resourceRef,
-			Namespace:  gr.Namespace,
-			Message:    "GitRepository appears to be private but has no secretRef configured",
-			Suggestion: "Add authentication credentials via secretRef if this is a private repository",
+			Type:      "NoAuthentication",
+			Severity:  checker.SeverityWarning,
+			Resource:  resourceRef,
+			Namespace: gr.Namespace,
+			Message:   "GitRepository appears to be private but has no secretRef configured",
+			Suggestion: "This repository uses an SSH or private URL but has no secretRef for authentication. " +
+				"Create a Secret with the credentials and reference it: " +
+				"kubectl create secret generic git-creds --from-file=identity=<key> -n " + gr.Namespace + ". " +
+				"Then add secretRef to the GitRepository spec.",
 			Metadata: map[string]string{
 				"repository": gr.Name,
 				"url":        gr.Spec.URL,
@@ -197,18 +204,32 @@ func (c *GitRepositoryChecker) checkGitRepository(gr *sourcev1.GitRepository) []
 // getSuggestionForGitRepoReason returns a suggestion based on the GitRepository reason
 func getSuggestionForGitRepoReason(reason string) string {
 	suggestions := map[string]string{
-		"GitOperationFailed":     "Check repository URL and network connectivity. Verify the repository exists.",
-		"AuthenticationFailed":   "Verify credentials in the referenced Secret. Check SSH key or token validity.",
-		"CheckoutFailed":         "Verify the branch/tag/commit reference exists in the repository.",
-		"CloneFailed":            "Check repository URL, network access, and authentication credentials.",
-		"StorageOperationFailed": "Check source-controller storage. May need to restart the controller.",
-		"ReconciliationFailed":   "Check GitRepository status and source-controller logs.",
+		"GitOperationFailed": "Git operation failed. Check the repository URL and network connectivity. " +
+			"Verify the repo exists and is accessible: kubectl describe gitrepository <name> -n <namespace>. " +
+			"If behind a proxy, check that the source-controller has proper proxy configuration.",
+		"AuthenticationFailed": "Authentication to the Git repository failed. " +
+			"Check the credentials Secret: kubectl get secret <secret-name> -n <namespace> -o yaml. " +
+			"For SSH: verify the key is not expired. For HTTPS: verify the token has repo access. " +
+			"Regenerate credentials if needed and update the Secret.",
+		"CheckoutFailed": "Git checkout failed. The branch, tag, or commit reference may not exist. " +
+			"Verify the ref: kubectl get gitrepository <name> -n <namespace> -o jsonpath='{.spec.ref}'. " +
+			"Ensure the referenced branch/tag exists in the remote repository.",
+		"CloneFailed": "Git clone failed. Check repository URL and access: " +
+			"kubectl describe gitrepository <name> -n <namespace>. " +
+			"Common causes: wrong URL, network issues, or authentication problems. " +
+			"Test access: git ls-remote <url>.",
+		"StorageOperationFailed": "Source controller storage error. This may indicate disk pressure or a bug. " +
+			"Restart the controller: kubectl rollout restart deploy/source-controller -n flux-system. " +
+			"Check disk usage on the controller pod: kubectl exec -n flux-system deploy/source-controller -- df -h.",
+		"ReconciliationFailed": "Reconciliation failed. Check controller logs: " +
+			"kubectl logs -n flux-system deploy/source-controller --tail=50 | grep <name>. " +
+			"Force reconciliation: flux reconcile source git <name> -n <namespace>.",
 	}
 
 	if s, ok := suggestions[reason]; ok {
 		return s
 	}
-	return "Check GitRepository status and events for more details"
+	return "Check GitRepository status: kubectl describe gitrepository <name> -n <namespace>"
 }
 
 // isPrivateRepo attempts to detect if a URL might be a private repository

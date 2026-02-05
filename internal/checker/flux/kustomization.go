@@ -92,12 +92,14 @@ func (c *KustomizationChecker) checkKustomization(ks *kustomizev1.Kustomization)
 	// Check if suspended
 	if ks.Spec.Suspend {
 		issues = append(issues, checker.Issue{
-			Type:       "Suspended",
-			Severity:   checker.SeverityWarning,
-			Resource:   resourceRef,
-			Namespace:  ks.Namespace,
-			Message:    fmt.Sprintf("Kustomization %s is suspended", ks.Name),
-			Suggestion: "Review why this kustomization was suspended and resume if appropriate",
+			Type:      "Suspended",
+			Severity:  checker.SeverityWarning,
+			Resource:  resourceRef,
+			Namespace: ks.Namespace,
+			Message:   fmt.Sprintf("Kustomization %s is suspended", ks.Name),
+			Suggestion: "This Kustomization is suspended and will not be reconciled. " +
+				"Resume with: flux resume kustomization " + ks.Name + " -n " + ks.Namespace + ". " +
+				"Check who suspended it: kubectl get kustomization " + ks.Name + " -n " + ks.Namespace + " -o jsonpath='{.metadata.annotations}'.",
 			Metadata: map[string]string{
 				"kustomization": ks.Name,
 			},
@@ -143,12 +145,14 @@ func (c *KustomizationChecker) checkKustomization(ks *kustomizev1.Kustomization)
 			staleDuration := time.Since(lastReconcile)
 			if staleDuration > c.staleThreshold {
 				issues = append(issues, checker.Issue{
-					Type:       "StaleReconciliation",
-					Severity:   checker.SeverityWarning,
-					Resource:   resourceRef,
-					Namespace:  ks.Namespace,
-					Message:    fmt.Sprintf("Kustomization last reconciled %s ago", staleDuration.Round(time.Minute)),
-					Suggestion: "Check if Kustomize controller is running and healthy",
+					Type:      "StaleReconciliation",
+					Severity:  checker.SeverityWarning,
+					Resource:  resourceRef,
+					Namespace: ks.Namespace,
+					Message:   fmt.Sprintf("Kustomization last reconciled %s ago", staleDuration.Round(time.Minute)),
+					Suggestion: "Check if the Kustomize controller is running: kubectl get deploy -n flux-system kustomize-controller. " +
+						"Force reconciliation: flux reconcile kustomization " + ks.Name + " -n " + ks.Namespace + ". " +
+						"Check controller logs: kubectl logs -n flux-system deploy/kustomize-controller --tail=20.",
 					Metadata: map[string]string{
 						"kustomization": ks.Name,
 						"lastReconcile": lastReconcile.Format(time.RFC3339),
@@ -163,12 +167,14 @@ func (c *KustomizationChecker) checkKustomization(ks *kustomizev1.Kustomization)
 	if ks.Status.LastAttemptedRevision != "" && ks.Status.LastAppliedRevision != "" {
 		if ks.Status.LastAttemptedRevision != ks.Status.LastAppliedRevision {
 			issues = append(issues, checker.Issue{
-				Type:       "PendingChanges",
-				Severity:   checker.SeverityInfo,
-				Resource:   resourceRef,
-				Namespace:  ks.Namespace,
-				Message:    fmt.Sprintf("Kustomization has pending changes from %s to %s", ks.Status.LastAppliedRevision, ks.Status.LastAttemptedRevision),
-				Suggestion: "Check Kustomization status for reconciliation progress",
+				Type:      "PendingChanges",
+				Severity:  checker.SeverityInfo,
+				Resource:  resourceRef,
+				Namespace: ks.Namespace,
+				Message:   fmt.Sprintf("Kustomization has pending changes from %s to %s", ks.Status.LastAppliedRevision, ks.Status.LastAttemptedRevision),
+				Suggestion: "Kustomization has unapplied changes. This can be normal during reconciliation. " +
+					"Check status: flux get kustomization " + ks.Name + " -n " + ks.Namespace + ". " +
+					"If stuck, force reconciliation: flux reconcile kustomization " + ks.Name + " -n " + ks.Namespace + ".",
 				Metadata: map[string]string{
 					"kustomization": ks.Name,
 					"fromRevision":  ks.Status.LastAppliedRevision,
@@ -182,12 +188,14 @@ func (c *KustomizationChecker) checkKustomization(ks *kustomizev1.Kustomization)
 	healthyCondition := findCondition(ks.Status.Conditions, "Healthy")
 	if healthyCondition != nil && healthyCondition.Status == metav1.ConditionFalse {
 		issues = append(issues, checker.Issue{
-			Type:       "UnhealthyResources",
-			Severity:   checker.SeverityWarning,
-			Resource:   resourceRef,
-			Namespace:  ks.Namespace,
-			Message:    truncateMessage(healthyCondition.Message, 200),
-			Suggestion: "Check the health of resources managed by this Kustomization",
+			Type:      "UnhealthyResources",
+			Severity:  checker.SeverityWarning,
+			Resource:  resourceRef,
+			Namespace: ks.Namespace,
+			Message:   truncateMessage(healthyCondition.Message, 200),
+			Suggestion: "Resources managed by this Kustomization are unhealthy. " +
+				"Check which resources are failing: kubectl describe kustomization " + ks.Name + " -n " + ks.Namespace + ". " +
+				"The health check message lists specific failing resources and their status.",
 			Metadata: map[string]string{
 				"kustomization": ks.Name,
 				"healthReason":  healthyCondition.Reason,
@@ -201,17 +209,31 @@ func (c *KustomizationChecker) checkKustomization(ks *kustomizev1.Kustomization)
 // getSuggestionForKustomizationReason returns a suggestion based on the Kustomization reason
 func getSuggestionForKustomizationReason(reason string) string {
 	suggestions := map[string]string{
-		"BuildFailed":          "Check kustomization build output. Verify kustomization.yaml and overlays are valid.",
-		"ValidationFailed":     "Validate YAML manifests against Kubernetes API. Check for schema errors.",
-		"HealthCheckFailed":    "Check the health of deployed resources. Some resources may be unhealthy.",
-		"ArtifactFailed":       "Verify the GitRepository or other source is accessible and has valid content.",
-		"ReconciliationFailed": "Check Kustomization status conditions and kustomize-controller logs.",
-		"DependencyNotReady":   "Wait for dependent Kustomizations or sources to become ready.",
-		"PruneFailed":          "Check for resources that cannot be pruned. May have finalizers or protection.",
+		"BuildFailed": "Kustomize build failed. Test locally: kustomize build <path>. " +
+			"Check controller logs: kubectl logs -n flux-system deploy/kustomize-controller --tail=50 | grep <name>. " +
+			"Common causes: missing bases, invalid patches, or YAML syntax errors.",
+		"ValidationFailed": "Manifest validation failed against the Kubernetes API schema. " +
+			"Validate locally: kubectl apply --dry-run=server -f <manifests>. " +
+			"Common causes: deprecated API versions, invalid field names, or missing required fields.",
+		"HealthCheckFailed": "Deployed resources failed health checks. Check which resources are unhealthy: " +
+			"kubectl describe kustomization <name> -n <namespace>. " +
+			"The health check message usually lists specific failing resources.",
+		"ArtifactFailed": "Source artifact is unavailable. Check source status: " +
+			"flux get sources all -n flux-system. " +
+			"Verify the GitRepository is ready: kubectl describe gitrepository <name> -n flux-system.",
+		"ReconciliationFailed": "Reconciliation failed. Check controller logs: " +
+			"kubectl logs -n flux-system deploy/kustomize-controller --tail=50 | grep <name>. " +
+			"Force reconciliation: flux reconcile kustomization <name> -n <namespace>.",
+		"DependencyNotReady": "A dependency is not ready. Check the dependency chain: " +
+			"flux get kustomizations -n <namespace>. " +
+			"Resolve the upstream dependency first before this Kustomization can proceed.",
+		"PruneFailed": "Resource pruning failed. Check for finalizers or deletion protection: " +
+			"kubectl get <resource> -o jsonpath='{.metadata.finalizers}'. " +
+			"Resources with Helm ownership or custom finalizers may block pruning.",
 	}
 
 	if s, ok := suggestions[reason]; ok {
 		return s
 	}
-	return "Check Kustomization status and events for more details"
+	return "Check Kustomization status: kubectl describe kustomization <name> -n <namespace>"
 }

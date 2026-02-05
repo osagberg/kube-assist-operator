@@ -144,8 +144,9 @@ const (
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Target",type="string",JSONPath=".spec.target.name",description="Target workload"
+// +kubebuilder:printcolumn:name="Kind",type="string",JSONPath=".spec.target.kind",description="Target kind"
 // +kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase",description="Current phase"
-// +kubebuilder:printcolumn:name="Summary",type="string",JSONPath=".status.summary",description="Brief summary"
+// +kubebuilder:printcolumn:name="Summary",type="string",JSONPath=".status.summary",description="Brief summary",priority=1
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
 // TroubleshootRequest is the Schema for the troubleshootrequests API

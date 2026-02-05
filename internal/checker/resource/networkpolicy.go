@@ -66,12 +66,15 @@ func (c *NetworkPolicyChecker) Check(ctx context.Context, checkCtx *checker.Chec
 		// Check if namespace has any network policies
 		if len(npList.Items) == 0 {
 			result.Issues = append(result.Issues, checker.Issue{
-				Type:       "NoNetworkPolicy",
-				Severity:   checker.SeverityInfo,
-				Resource:   fmt.Sprintf("namespace/%s", ns),
-				Namespace:  ns,
-				Message:    fmt.Sprintf("Namespace %s has no NetworkPolicies defined", ns),
-				Suggestion: "Consider adding NetworkPolicies to restrict pod-to-pod traffic for better security",
+				Type:      "NoNetworkPolicy",
+				Severity:  checker.SeverityInfo,
+				Resource:  fmt.Sprintf("namespace/%s", ns),
+				Namespace: ns,
+				Message:   fmt.Sprintf("Namespace %s has no NetworkPolicies defined", ns),
+				Suggestion: "No NetworkPolicies found in this namespace. Without policies, all pod-to-pod traffic is allowed. " +
+					"Consider adding a default-deny policy and then allow specific traffic. " +
+					"List current traffic patterns: kubectl get pods -n " + ns + " -o wide. " +
+					"See Kubernetes docs on network policies.",
 				Metadata: map[string]string{
 					"namespace": ns,
 				},
@@ -100,12 +103,14 @@ func (c *NetworkPolicyChecker) checkNetworkPolicy(np *networkingv1.NetworkPolicy
 	// Check for overly permissive policies
 	if c.isAllowAll(np) {
 		issues = append(issues, checker.Issue{
-			Type:       "OverlyPermissivePolicy",
-			Severity:   checker.SeverityWarning,
-			Resource:   resourceRef,
-			Namespace:  np.Namespace,
-			Message:    fmt.Sprintf("NetworkPolicy %s allows all traffic (may be intentional for default-allow patterns)", np.Name),
-			Suggestion: "Review if this policy should restrict traffic more specifically",
+			Type:      "OverlyPermissivePolicy",
+			Severity:  checker.SeverityWarning,
+			Resource:  resourceRef,
+			Namespace: np.Namespace,
+			Message:   fmt.Sprintf("NetworkPolicy %s allows all traffic (may be intentional for default-allow patterns)", np.Name),
+			Suggestion: "This policy allows all traffic without restrictions. If intentional (e.g., a default-allow baseline), this is fine. " +
+				"If not, tighten the rules: kubectl edit networkpolicy " + np.Name + " -n " + np.Namespace + ". " +
+				"See Kubernetes docs on network policies for examples of restrictive policies.",
 			Metadata: map[string]string{
 				"networkPolicy": np.Name,
 			},
@@ -117,12 +122,14 @@ func (c *NetworkPolicyChecker) checkNetworkPolicy(np *networkingv1.NetworkPolicy
 		// This isn't necessarily bad - it's a namespace-wide default policy
 		// Just note it for visibility
 		issues = append(issues, checker.Issue{
-			Type:       "NamespaceWidePolicy",
-			Severity:   checker.SeverityInfo,
-			Resource:   resourceRef,
-			Namespace:  np.Namespace,
-			Message:    fmt.Sprintf("NetworkPolicy %s applies to all pods in namespace (empty pod selector)", np.Name),
-			Suggestion: "This is a namespace-wide default policy - verify this is intentional",
+			Type:      "NamespaceWidePolicy",
+			Severity:  checker.SeverityInfo,
+			Resource:  resourceRef,
+			Namespace: np.Namespace,
+			Message:   fmt.Sprintf("NetworkPolicy %s applies to all pods in namespace (empty pod selector)", np.Name),
+			Suggestion: "This policy applies to all pods in the namespace (empty pod selector). " +
+				"This is common for default-deny or default-allow policies. " +
+				"Verify intent: kubectl get networkpolicy " + np.Name + " -n " + np.Namespace + " -o yaml.",
 			Metadata: map[string]string{
 				"networkPolicy": np.Name,
 			},

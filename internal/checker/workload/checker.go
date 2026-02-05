@@ -223,12 +223,15 @@ func (c *Checker) diagnosePod(pod *corev1.Pod, namespace, resourceRef string, re
 		// Check restart count
 		if cs.RestartCount > int32(restartThreshold) {
 			issues = append(issues, checker.Issue{
-				Type:       "HighRestartCount",
-				Severity:   checker.SeverityWarning,
-				Resource:   resourceRef,
-				Namespace:  namespace,
-				Message:    fmt.Sprintf("Container %s has restarted %d times", cs.Name, cs.RestartCount),
-				Suggestion: "Check logs for crash reasons. Consider increasing resource limits or fixing application bugs.",
+				Type:      "HighRestartCount",
+				Severity:  checker.SeverityWarning,
+				Resource:  resourceRef,
+				Namespace: namespace,
+				Message:   fmt.Sprintf("Container %s has restarted %d times (threshold: %d)", cs.Name, cs.RestartCount, restartThreshold),
+				Suggestion: fmt.Sprintf("Check previous logs: kubectl logs %s -c %s --previous -n %s. "+
+					"Common causes: OOM kills, liveness probe failures, or application crashes. "+
+					"Check exit reason: kubectl describe pod %s -n %s | grep -A5 'Last State'.",
+					pod.Name, cs.Name, namespace, pod.Name, namespace),
 				Metadata: map[string]string{
 					"pod":          pod.Name,
 					"container":    cs.Name,
@@ -244,12 +247,15 @@ func (c *Checker) diagnosePod(pod *corev1.Pod, namespace, resourceRef string, re
 			switch cond.Type {
 			case corev1.PodScheduled:
 				issues = append(issues, checker.Issue{
-					Type:       "SchedulingFailed",
-					Severity:   checker.SeverityCritical,
-					Resource:   resourceRef,
-					Namespace:  namespace,
-					Message:    fmt.Sprintf("Pod %s failed to schedule: %s", pod.Name, cond.Message),
-					Suggestion: "Check node resources, taints/tolerations, and affinity rules.",
+					Type:      "SchedulingFailed",
+					Severity:  checker.SeverityCritical,
+					Resource:  resourceRef,
+					Namespace: namespace,
+					Message:   fmt.Sprintf("Pod %s failed to schedule: %s", pod.Name, cond.Message),
+					Suggestion: "Check node capacity: kubectl describe nodes | grep -A5 'Allocated resources'. " +
+						"Verify taints/tolerations: kubectl get nodes -o custom-columns=NAME:.metadata.name,TAINTS:.spec.taints. " +
+						"Check pod affinity rules: kubectl get pod " + pod.Name + " -n " + namespace + " -o jsonpath='{.spec.affinity}'. " +
+						"See Kubernetes docs on scheduling and eviction.",
 					Metadata: map[string]string{
 						"pod":    pod.Name,
 						"reason": cond.Reason,
@@ -295,65 +301,76 @@ func (c *Checker) checkContainerBestPractices(container corev1.Container, podNam
 	// Memory limit
 	if container.Resources.Limits.Memory().IsZero() {
 		issues = append(issues, checker.Issue{
-			Type:       "NoMemoryLimit",
-			Severity:   checker.SeverityWarning,
-			Resource:   resourceRef,
-			Namespace:  namespace,
-			Message:    fmt.Sprintf("Container %s has no memory limit set", container.Name),
-			Suggestion: "Set memory limits to prevent OOM issues and ensure fair resource sharing.",
-			Metadata:   metadata,
+			Type:      "NoMemoryLimit",
+			Severity:  checker.SeverityWarning,
+			Resource:  resourceRef,
+			Namespace: namespace,
+			Message:   fmt.Sprintf("Container %s has no memory limit set", container.Name),
+			Suggestion: "Set a memory limit to prevent OOM issues and ensure fair resource sharing. " +
+				"Without a limit, the container can consume all available node memory. " +
+				"Check current usage: kubectl top pod <pod> -n " + namespace + ". " +
+				"See Kubernetes docs on resource management for containers.",
+			Metadata: metadata,
 		})
 	}
 
 	// CPU limit
 	if container.Resources.Limits.Cpu().IsZero() {
 		issues = append(issues, checker.Issue{
-			Type:       "NoCPULimit",
-			Severity:   checker.SeverityInfo,
-			Resource:   resourceRef,
-			Namespace:  namespace,
-			Message:    fmt.Sprintf("Container %s has no CPU limit set", container.Name),
-			Suggestion: "Consider setting CPU limits for predictable performance.",
-			Metadata:   metadata,
+			Type:      "NoCPULimit",
+			Severity:  checker.SeverityInfo,
+			Resource:  resourceRef,
+			Namespace: namespace,
+			Message:   fmt.Sprintf("Container %s has no CPU limit set", container.Name),
+			Suggestion: "Consider setting CPU limits for predictable performance. " +
+				"Note: some teams intentionally omit CPU limits to avoid throttling. " +
+				"Check current usage: kubectl top pod <pod> -n " + namespace + ".",
+			Metadata: metadata,
 		})
 	}
 
 	// Resource requests
 	if container.Resources.Requests.Memory().IsZero() && container.Resources.Requests.Cpu().IsZero() {
 		issues = append(issues, checker.Issue{
-			Type:       "NoResourceRequests",
-			Severity:   checker.SeverityWarning,
-			Resource:   resourceRef,
-			Namespace:  namespace,
-			Message:    fmt.Sprintf("Container %s has no resource requests set", container.Name),
-			Suggestion: "Set resource requests to help the scheduler place pods appropriately.",
-			Metadata:   metadata,
+			Type:      "NoResourceRequests",
+			Severity:  checker.SeverityWarning,
+			Resource:  resourceRef,
+			Namespace: namespace,
+			Message:   fmt.Sprintf("Container %s has no resource requests set", container.Name),
+			Suggestion: "Set resource requests so the scheduler can place pods on nodes with sufficient capacity. " +
+				"Without requests, pods get BestEffort QoS and are evicted first under memory pressure. " +
+				"See Kubernetes docs on pod QoS classes.",
+			Metadata: metadata,
 		})
 	}
 
 	// Liveness probe
 	if container.LivenessProbe == nil {
 		issues = append(issues, checker.Issue{
-			Type:       "NoLivenessProbe",
-			Severity:   checker.SeverityInfo,
-			Resource:   resourceRef,
-			Namespace:  namespace,
-			Message:    fmt.Sprintf("Container %s has no liveness probe configured", container.Name),
-			Suggestion: "Add a liveness probe to enable automatic container restart on failure.",
-			Metadata:   metadata,
+			Type:      "NoLivenessProbe",
+			Severity:  checker.SeverityInfo,
+			Resource:  resourceRef,
+			Namespace: namespace,
+			Message:   fmt.Sprintf("Container %s has no liveness probe configured", container.Name),
+			Suggestion: "Add a liveness probe to enable automatic container restart when the application " +
+				"becomes unresponsive. Use httpGet for HTTP services or exec for CLI-based checks. " +
+				"See Kubernetes docs on configure liveness, readiness and startup probes.",
+			Metadata: metadata,
 		})
 	}
 
 	// Readiness probe
 	if container.ReadinessProbe == nil {
 		issues = append(issues, checker.Issue{
-			Type:       "NoReadinessProbe",
-			Severity:   checker.SeverityInfo,
-			Resource:   resourceRef,
-			Namespace:  namespace,
-			Message:    fmt.Sprintf("Container %s has no readiness probe configured", container.Name),
-			Suggestion: "Add a readiness probe to prevent traffic being sent to unready pods.",
-			Metadata:   metadata,
+			Type:      "NoReadinessProbe",
+			Severity:  checker.SeverityInfo,
+			Resource:  resourceRef,
+			Namespace: namespace,
+			Message:   fmt.Sprintf("Container %s has no readiness probe configured", container.Name),
+			Suggestion: "Add a readiness probe to prevent traffic from being sent to pods that are not ready " +
+				"to serve requests. This is especially important for services behind a Service/Ingress. " +
+				"See Kubernetes docs on configure liveness, readiness and startup probes.",
+			Metadata: metadata,
 		})
 	}
 
@@ -363,40 +380,68 @@ func (c *Checker) checkContainerBestPractices(container corev1.Container, podNam
 // GetSuggestionForWaitingReason returns a suggestion based on container waiting reason
 func GetSuggestionForWaitingReason(reason string) string {
 	suggestions := map[string]string{
-		"ImagePullBackOff":           "Check if the image exists and credentials are configured correctly.",
-		"ErrImagePull":               "Verify image name and tag. Check registry authentication.",
-		"CrashLoopBackOff":           "Application is crashing. Check logs for error messages.",
-		"CreateContainerConfigError": "Check ConfigMaps and Secrets referenced by the pod.",
-		"ContainerCreating":          "Container is being created. If stuck, check node resources and events.",
-		"PodInitializing":            "Pod is initializing. If stuck, check init container status.",
+		"ImagePullBackOff": "The container image cannot be pulled. Common causes: typo in image name/tag, " +
+			"missing imagePullSecrets, or private registry without credentials. " +
+			"Investigate with: kubectl describe pod <pod> | grep -A5 'Events' " +
+			"and kubectl get events --field-selector reason=Failed",
+		"ErrImagePull": "Image pull failed. Verify the image exists: docker manifest inspect <image>:<tag>. " +
+			"For private registries, ensure imagePullSecrets are configured: " +
+			"kubectl get pod <pod> -o jsonpath='{.spec.imagePullSecrets}'. " +
+			"See Kubernetes docs on private registries.",
+		"CrashLoopBackOff": "The container is repeatedly crashing. Check recent logs with: " +
+			"kubectl logs <pod> --previous. Common causes: missing config/secrets, " +
+			"incorrect entrypoint, or application errors. " +
+			"If OOM-related, check: kubectl describe pod <pod> | grep -i oom",
+		"CreateContainerConfigError": "Container configuration is invalid. Usually a missing ConfigMap or Secret. " +
+			"Check which references are broken: kubectl describe pod <pod> | grep -A3 'Warning'. " +
+			"Verify referenced ConfigMaps/Secrets exist: kubectl get cm,secret -n <namespace>",
+		"ContainerCreating": "Container is being created. If stuck for more than a few minutes, " +
+			"check events: kubectl describe pod <pod>. Common causes: slow image pull, " +
+			"volume mount issues, or node resource pressure.",
+		"PodInitializing": "Init containers are running. If stuck, check init container logs: " +
+			"kubectl logs <pod> -c <init-container-name>. " +
+			"List init containers: kubectl get pod <pod> -o jsonpath='{.spec.initContainers[*].name}'",
 	}
 	if s, ok := suggestions[reason]; ok {
 		return s
 	}
-	return "Check pod events for more details."
+	return "Check pod events for more details: kubectl describe pod <pod>"
 }
 
 // GetSuggestionForTerminatedReason returns a suggestion based on container termination reason
 func GetSuggestionForTerminatedReason(reason string, exitCode int32) string {
 	if reason == "OOMKilled" {
-		return "Container exceeded memory limit. Increase memory limit or optimize memory usage."
+		return "Container exceeded its memory limit and was OOM-killed. " +
+			"Check current limits: kubectl describe pod <pod> | grep -A2 'Limits'. " +
+			"Increase the memory limit in the pod spec, or profile the application to reduce memory usage. " +
+			"See Kubernetes docs on managing resources for containers."
 	}
 	if exitCode == 137 {
-		return "Container was killed (likely OOM or SIGKILL). Check memory limits and node resources."
+		return "Container was killed with SIGKILL (exit code 137). This typically indicates OOM kill or " +
+			"an external signal. Check: kubectl describe pod <pod> | grep -i oom, and " +
+			"kubectl top pod <pod> to see current memory usage. " +
+			"Also check node memory pressure: kubectl describe node <node> | grep -A5 'Conditions'."
 	}
 	if exitCode == 143 {
-		return "Container received SIGTERM. This is normal during rolling updates or scale-downs."
+		return "Container received SIGTERM (exit code 143). This is normal during rolling updates, " +
+			"scale-downs, or pod evictions. If unexpected, check: " +
+			"kubectl get events --field-selector reason=Killing -n <namespace>."
 	}
 	if exitCode == 1 {
-		return "Application exited with error. Check application logs for details."
+		return "Application exited with error code 1. Check logs: kubectl logs <pod> --previous. " +
+			"Common causes: unhandled exceptions, missing configuration, or failed startup checks."
 	}
 	if exitCode == 126 {
-		return "Command cannot be executed. Check file permissions and binary format."
+		return "Command cannot be executed (exit code 126). The entrypoint or command exists but " +
+			"is not executable. Check file permissions in the container image and verify the binary format " +
+			"matches the container architecture (e.g., amd64 vs arm64)."
 	}
 	if exitCode == 127 {
-		return "Command not found. Check the container image and command configuration."
+		return "Command not found (exit code 127). The entrypoint or command does not exist in the container. " +
+			"Verify the image contains the expected binary: kubectl exec <pod> -- ls /path/to/binary. " +
+			"Check the container's command and args fields in the pod spec."
 	}
-	return fmt.Sprintf("Container exited with code %d. Check application logs.", exitCode)
+	return fmt.Sprintf("Container exited with code %d. Check application logs: kubectl logs <pod> --previous.", exitCode)
 }
 
 // DiagnosePods is a convenience function for diagnosing pods directly

@@ -273,10 +273,16 @@ func (r *TeamHealthRequestReconciler) setFailed(
 	original, hr *assistv1alpha1.TeamHealthRequest,
 	message string,
 ) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+	log.Info("TeamHealthRequest failed", "reason", message, "name", hr.Name)
+
 	hr.Status.Phase = assistv1alpha1.TeamHealthPhaseFailed
 	hr.Status.Summary = message
 	now := metav1.Now()
 	hr.Status.LastCheckTime = &now
+
+	r.setCondition(hr, assistv1alpha1.TeamHealthConditionComplete, metav1.ConditionFalse,
+		"Failed", message)
 
 	patch := client.MergeFrom(original)
 	if err := r.Status().Patch(ctx, hr, patch); err != nil {

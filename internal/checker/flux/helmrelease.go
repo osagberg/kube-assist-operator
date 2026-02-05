@@ -97,12 +97,14 @@ func (c *HelmReleaseChecker) checkHelmRelease(hr *helmv2.HelmRelease) []checker.
 	// Check if suspended
 	if hr.Spec.Suspend {
 		issues = append(issues, checker.Issue{
-			Type:       "Suspended",
-			Severity:   checker.SeverityWarning,
-			Resource:   resourceRef,
-			Namespace:  hr.Namespace,
-			Message:    fmt.Sprintf("HelmRelease %s is suspended", hr.Name),
-			Suggestion: "Review why this release was suspended and resume if appropriate",
+			Type:      "Suspended",
+			Severity:  checker.SeverityWarning,
+			Resource:  resourceRef,
+			Namespace: hr.Namespace,
+			Message:   fmt.Sprintf("HelmRelease %s is suspended", hr.Name),
+			Suggestion: "This HelmRelease is suspended and will not be reconciled. " +
+				"Resume with: flux resume helmrelease " + hr.Name + " -n " + hr.Namespace + ". " +
+				"Check who suspended it: kubectl get helmrelease " + hr.Name + " -n " + hr.Namespace + " -o jsonpath='{.metadata.annotations}'.",
 			Metadata: map[string]string{
 				"release": hr.Name,
 			},
@@ -147,12 +149,14 @@ func (c *HelmReleaseChecker) checkHelmRelease(hr *helmv2.HelmRelease) []checker.
 		staleDuration := time.Since(lastReconcile)
 		if staleDuration > c.staleThreshold {
 			issues = append(issues, checker.Issue{
-				Type:       "StaleReconciliation",
-				Severity:   checker.SeverityWarning,
-				Resource:   resourceRef,
-				Namespace:  hr.Namespace,
-				Message:    fmt.Sprintf("HelmRelease last reconciled %s ago", staleDuration.Round(time.Minute)),
-				Suggestion: "Check if Helm controller is running and healthy",
+				Type:      "StaleReconciliation",
+				Severity:  checker.SeverityWarning,
+				Resource:  resourceRef,
+				Namespace: hr.Namespace,
+				Message:   fmt.Sprintf("HelmRelease last reconciled %s ago", staleDuration.Round(time.Minute)),
+				Suggestion: "Check if the Helm controller is running: kubectl get deploy -n flux-system helm-controller. " +
+					"Force reconciliation: flux reconcile helmrelease " + hr.Name + " -n " + hr.Namespace + ". " +
+					"Check controller logs: kubectl logs -n flux-system deploy/helm-controller --tail=20.",
 				Metadata: map[string]string{
 					"release":       hr.Name,
 					"lastReconcile": lastReconcile.Format(time.RFC3339),
@@ -169,12 +173,14 @@ func (c *HelmReleaseChecker) checkHelmRelease(hr *helmv2.HelmRelease) []checker.
 			// Check if latest release failed
 			if latestSnapshot.Status == "failed" {
 				issues = append(issues, checker.Issue{
-					Type:       "ReleaseFailed",
-					Severity:   checker.SeverityCritical,
-					Resource:   resourceRef,
-					Namespace:  hr.Namespace,
-					Message:    fmt.Sprintf("HelmRelease %s version %d is in failed state", latestSnapshot.ChartName, latestSnapshot.Version),
-					Suggestion: "Check helm release history and logs for failure details",
+					Type:      "ReleaseFailed",
+					Severity:  checker.SeverityCritical,
+					Resource:  resourceRef,
+					Namespace: hr.Namespace,
+					Message:   fmt.Sprintf("HelmRelease %s version %d is in failed state", latestSnapshot.ChartName, latestSnapshot.Version),
+					Suggestion: "Release is in failed state. Check release history: helm history " + hr.Name + " -n " + hr.Namespace + ". " +
+						"View events: kubectl describe helmrelease " + hr.Name + " -n " + hr.Namespace + ". " +
+						"Consider rolling back: flux reconcile helmrelease " + hr.Name + " -n " + hr.Namespace + " --force.",
 					Metadata: map[string]string{
 						"release":      hr.Name,
 						"chartName":    latestSnapshot.ChartName,
@@ -192,20 +198,39 @@ func (c *HelmReleaseChecker) checkHelmRelease(hr *helmv2.HelmRelease) []checker.
 // getSuggestionForHelmReason returns a suggestion based on the HelmRelease reason
 func getSuggestionForHelmReason(reason string) string {
 	suggestions := map[string]string{
-		"UpgradeFailed":          "Check HelmRelease events and Helm controller logs for details. Verify values and chart compatibility.",
-		"InstallFailed":          "Verify chart exists and values are valid. Check for conflicting resources.",
-		"UninstallFailed":        "Check for finalizers or resources blocking deletion.",
-		"ArtifactFailed":         "Verify the HelmRepository or GitRepository source is accessible.",
-		"ChartPullFailed":        "Check chart repository authentication and network access.",
-		"ReconciliationFailed":   "Check HelmRelease status conditions and controller logs.",
-		"DependencyNotReady":     "Wait for dependent HelmReleases to become ready.",
-		"ValuesValidationFailed": "Check HelmRelease values against chart schema.",
+		"UpgradeFailed": "Helm upgrade failed. Investigate with: " +
+			"kubectl describe helmrelease <name> -n <namespace> and " +
+			"kubectl logs -n flux-system deploy/helm-controller | grep <name>. " +
+			"Common causes: incompatible values, removed/renamed chart fields, or resource conflicts. " +
+			"Check release history: helm history <name> -n <namespace>.",
+		"InstallFailed": "Helm install failed. Verify the chart exists and values are valid: " +
+			"kubectl describe helmrelease <name> -n <namespace>. " +
+			"Common causes: chart not found, invalid values, or pre-existing resources that conflict. " +
+			"Check: kubectl get events -n <namespace> --field-selector reason=InstallFailed.",
+		"UninstallFailed": "Helm uninstall blocked. Check for finalizers: " +
+			"kubectl get helmrelease <name> -n <namespace> -o jsonpath='{.metadata.finalizers}'. " +
+			"Resources with finalizers or PVCs with retain policy can block deletion.",
+		"ArtifactFailed": "Chart artifact unavailable. Verify the source: " +
+			"kubectl get helmrepository,gitrepository -n flux-system. " +
+			"Check source readiness: flux get sources all -n flux-system.",
+		"ChartPullFailed": "Chart pull failed. Check repository access: " +
+			"kubectl describe helmrepository <repo> -n flux-system. " +
+			"Verify credentials in the referenced Secret and network access to the registry.",
+		"ReconciliationFailed": "Reconciliation failed. Check controller logs: " +
+			"kubectl logs -n flux-system deploy/helm-controller --tail=50 | grep <name>. " +
+			"Force reconciliation: flux reconcile helmrelease <name> -n <namespace>.",
+		"DependencyNotReady": "A dependency is not ready. Check dependent HelmReleases: " +
+			"kubectl get helmrelease -n <namespace>. " +
+			"Resolve the upstream dependency first before this release can proceed.",
+		"ValuesValidationFailed": "Values do not match the chart schema. Inspect the chart's values.schema.json: " +
+			"helm show values <chart> and helm show readme <chart>. " +
+			"Check which values are invalid in the HelmRelease events.",
 	}
 
 	if s, ok := suggestions[reason]; ok {
 		return s
 	}
-	return "Check HelmRelease status and events for more details"
+	return "Check HelmRelease status: kubectl describe helmrelease <name> -n <namespace>"
 }
 
 // findCondition finds a condition by type in the conditions slice

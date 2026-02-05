@@ -2,22 +2,27 @@ name: Tests
 
 on:
   push:
+    branches: [main]
+    tags-ignore: ['v*']
   pull_request:
+
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
-    name: Run on Ubuntu
+    name: Unit Tests
     runs-on: ubuntu-latest
     steps:
-      - name: Clone the code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Go
-        uses: actions/setup-go@v5
+      - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+          cache: true
 
-      - name: Running Tests
+      - name: Run tests
         run: |
           go mod tidy
           make test

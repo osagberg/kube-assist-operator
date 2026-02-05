@@ -1,11 +1,15 @@
 # Default values for kube-assist operator
 # This is a YAML-formatted file.
-# Declare variables to be passed into your templates.
 
+# Number of operator replicas. Only 1 replica is needed when leader election
+# is enabled (the default). Increase for HA if desired.
 replicaCount: 1
 
+# Number of old ReplicaSets to retain for rollback.
+revisionHistoryLimit: 3
+
 image:
-  repository: ghcr.io/osagberg/kube-assist
+  repository: ghcr.io/osagberg/kube-assist-operator
   pullPolicy: IfNotPresent
   # Overrides the image tag whose default is the chart appVersion.
   tag: ""
@@ -15,25 +19,27 @@ nameOverride: ""
 fullnameOverride: ""
 
 serviceAccount:
-  # Specifies whether a service account should be created
+  # Specifies whether a service account should be created.
   create: true
-  # Automatically mount a ServiceAccount's API credentials?
+  # Automatically mount the ServiceAccount API credentials into the pod.
   automount: true
-  # Annotations to add to the service account
+  # Annotations to add to the service account (e.g. for workload identity).
   annotations: {}
   # The name of the service account to use.
-  # If not set and create is true, a name is generated using the fullname template
+  # If not set and create is true, a name is generated using the fullname template.
   name: ""
 
 podAnnotations: {}
 
 podLabels: {}
 
+# Pod-level security context. Applied to all containers in the pod.
 podSecurityContext:
   runAsNonRoot: true
   seccompProfile:
     type: RuntimeDefault
 
+# Container-level security context for the manager container.
 securityContext:
   readOnlyRootFilesystem: true
   allowPrivilegeEscalation: false
@@ -43,34 +49,42 @@ securityContext:
 
 # Operator-specific settings
 operator:
-  # Enable leader election for controller manager
+  # Enable leader election for controller manager.
+  # Required when running multiple replicas.
   leaderElection:
     enabled: true
-  # Health probe bind address
+  # Health probe bind address. Set to "0" to disable.
   healthProbeBindAddress: ":8081"
-  # Metrics bind address (set to "0" to disable)
+  # Metrics bind address. Set to "0" to disable metrics.
   metricsBindAddress: ":8080"
 
-# Dashboard settings
+# Dashboard settings for the Team Health web UI.
 dashboard:
-  # Enable the Team Health Dashboard web server
+  # Enable the Team Health Dashboard web server.
   enabled: false
-  # Dashboard bind address
+  # Dashboard bind address (port the dashboard listens on).
   bindAddress: ":9090"
+  # Dashboard service settings.
+  service:
+    # Service type: ClusterIP, NodePort, or LoadBalancer.
+    type: ClusterIP
+    # Service port (external).
+    port: 9090
 
-# AI-powered suggestions settings
+# AI-powered suggestions settings.
+# When enabled, health check issues include AI-generated remediation suggestions.
 ai:
-  # Enable AI-powered suggestions for health check issues
+  # Enable AI-powered suggestions for health check issues.
   enabled: false
-  # AI provider: anthropic, openai, or noop
+  # AI provider: "anthropic" (Claude), "openai", or "noop".
   provider: "noop"
-  # AI model to use (provider default if empty)
+  # AI model to use. Leave empty for the provider's default model.
   model: ""
-  # API key secret reference (recommended over plain text)
+  # API key secret reference (recommended over plain text).
   apiKeySecretRef:
-    # Name of the secret containing the API key
+    # Name of the Kubernetes Secret containing the API key.
     name: ""
-    # Key in the secret containing the API key
+    # Key within the secret that holds the API key value.
     key: "api-key"
 
 resources:
@@ -81,7 +95,7 @@ resources:
     cpu: 10m
     memory: 64Mi
 
-# Liveness and readiness probes
+# Liveness probe configuration. The operator exposes /healthz on the health port.
 livenessProbe:
   httpGet:
     path: /healthz
@@ -89,6 +103,7 @@ livenessProbe:
   initialDelaySeconds: 15
   periodSeconds: 20
 
+# Readiness probe configuration. The operator exposes /readyz on the health port.
 readinessProbe:
   httpGet:
     path: /readyz
@@ -102,24 +117,33 @@ tolerations: []
 
 affinity: {}
 
-# Additional environment variables
+# Topology spread constraints for pod scheduling.
+topologySpreadConstraints: []
+# - maxSkew: 1
+#   topologyKey: kubernetes.io/hostname
+#   whenUnsatisfiable: DoNotSchedule
+#   labelSelector:
+#     matchLabels: {}
+
+# Additional environment variables for the manager container.
 env: []
 # - name: MY_VAR
 #   value: "my-value"
 
-# Additional volumes
+# Additional volumes to attach to the pod.
 volumes: []
 
-# Additional volume mounts
+# Additional volume mounts for the manager container.
 volumeMounts: []
 
-# Priority class name for the pod
+# Priority class name for the pod.
 priorityClassName: ""
 
-# Termination grace period
+# Termination grace period in seconds.
 terminationGracePeriodSeconds: 10
 
-# Network policy settings
+# Network policy settings.
 networkPolicy:
-  # Enable network policy for the operator pod
+  # Enable network policy for the operator pod.
+  # Controls ingress (health/metrics/dashboard) and egress (DNS, K8s API, AI APIs).
   enabled: false
