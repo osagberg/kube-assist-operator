@@ -185,13 +185,24 @@ kubectl auth can-i list helmreleases.helm.toolkit.fluxcd.io --as=system:servicea
 ## AI Suggestions Not Appearing
 
 ### Symptoms
-- Health check results show static suggestions only
+- Health check results show static suggestions only (kubectl commands but no "AI Analysis:" section)
 - No "AI Analysis:" prefix in suggestions
 - Logs show AI errors
 
 ### Solutions
 
-**1. Verify AI is enabled**
+**1. Enable AI via the Dashboard (v1.4.0 -- Easiest)**
+
+Open the dashboard, find the AI Settings panel, toggle AI on, select a provider, paste your API key, and save. No restart needed. The dashboard calls `POST /api/settings/ai` to reconfigure the shared AI Manager at runtime.
+
+Verify the settings took effect:
+
+```bash
+curl http://localhost:9090/api/settings/ai
+# Should show: {"enabled":true,"provider":"anthropic","hasApiKey":true,"providerReady":true}
+```
+
+**2. Verify AI is enabled (CLI/Helm)**
 
 Check deployment args include `--enable-ai`:
 
@@ -199,7 +210,7 @@ Check deployment args include `--enable-ai`:
 kubectl get deployment kube-assist-controller-manager -n kube-assist-system -o yaml | grep enable-ai
 ```
 
-**2. Configure API key**
+**3. Configure API key**
 
 Option A - Command line flag:
 ```bash
@@ -225,13 +236,13 @@ kubectl create secret generic kube-assist-ai \
   -n kube-assist-system
 ```
 
-**3. Check API key secret exists**
+**4. Check API key secret exists**
 
 ```bash
 kubectl get secret kube-assist-ai -n kube-assist-system
 ```
 
-**4. Verify network egress**
+**5. Verify network egress**
 
 The operator must reach external AI APIs:
 - Anthropic: `api.anthropic.com`
@@ -266,15 +277,15 @@ spec:
           protocol: TCP
 ```
 
-**5. Check provider logs**
+**6. Check provider logs**
 
 ```bash
-kubectl logs -n kube-assist-system deployment/kube-assist-controller-manager | grep -i "ai provider"
+kubectl logs -n kube-assist-system deployment/kube-assist-controller-manager | grep -i "ai"
 ```
 
 Look for:
-- `AI provider initialized` - success
-- `failed to create AI provider` - configuration error
+- `AI provider initialized` or `AI settings updated via dashboard` - success
+- `failed to create AI provider` or `Failed to reconfigure AI provider` - configuration error
 
 ---
 
@@ -352,6 +363,39 @@ For development mode with stack traces:
 
 ---
 
+## AI Runtime Configuration Not Working (v1.4.0)
+
+### Symptoms
+- `POST /api/settings/ai` returns 500
+- Dashboard save button shows error toast
+- AI settings revert after saving
+
+### Solutions
+
+**1. Check the response body**
+
+The API returns the error message in the response body:
+
+```bash
+curl -X POST http://localhost:9090/api/settings/ai \
+  -H 'Content-Type: application/json' \
+  -d '{"enabled":true,"provider":"anthropic","apiKey":"sk-ant-..."}'
+```
+
+**2. Verify provider name is valid**
+
+Provider must be one of: `anthropic`, `openai`, `noop`. The API rejects invalid names with a 400 status.
+
+**3. Check operator logs**
+
+```bash
+kubectl logs -n kube-assist-system deployment/kube-assist-controller-manager | grep -i "AI settings"
+```
+
+Look for `AI settings updated via dashboard (Manager)` for successful updates.
+
+---
+
 ## Common Error Messages
 
 | Error | Cause | Solution |
@@ -359,7 +403,9 @@ For development mode with stack traces:
 | `checker "X" is not supported` | CRD not installed | Install required CRD (e.g., Flux) |
 | `unable to list namespaces` | RBAC missing | Add `list namespaces` permission |
 | `failed to get pods` | RBAC missing | Add `get pods` permission |
-| `AI provider not configured` | Missing API key | Set `KUBE_ASSIST_AI_API_KEY` |
+| `AI provider not configured` | Missing API key | Set via dashboard, env var, or flag |
+| `Failed to reconfigure AI provider` | Invalid provider config | Check provider name and API key |
+| `Invalid provider` | Bad POST body | Provider must be `anthropic`, `openai`, or `noop` |
 | `dashboard server error` | Port conflict | Check port 9090 availability |
 
 ---

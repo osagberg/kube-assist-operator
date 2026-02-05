@@ -6,7 +6,7 @@
 
 **Kubernetes operator for workload diagnostics and cluster health monitoring.**
 
-One command to diagnose your entire cluster. KubeAssist provides instant visibility into workload issues, certificate expiration, resource quotas, Flux GitOps status, and more — with actionable suggestions to fix problems.
+One command to diagnose your entire cluster. KubeAssist provides instant visibility into workload issues, certificate expiration, resource quotas, Flux GitOps status, and more -- with copy-able kubectl remediation commands for every issue it finds.
 
 ![Dashboard Screenshot](docs/dashboard-screenshot.png)
 
@@ -20,6 +20,7 @@ One command to diagnose your entire cluster. KubeAssist provides instant visibil
 - [Health Checkers](#health-checkers)
 - [Custom Resources](#custom-resources)
 - [Dashboard](#dashboard)
+- [AI Integration](#ai-integration)
 - [Helm Installation](#helm-installation)
 - [Architecture](#architecture)
 - [Development](#development)
@@ -32,33 +33,39 @@ One command to diagnose your entire cluster. KubeAssist provides instant visibil
 ### Instant Diagnostics
 - **8 built-in checkers** covering workloads, secrets, storage, quotas, network policies, and Flux GitOps
 - **Severity levels** (Critical/Warning/Info) with actionable fix suggestions
-- **CLI and CRD interfaces** — use whichever fits your workflow
+- **Copy-able kubectl commands** on every issue -- paste and run, no guessing
+- **CLI and CRD interfaces** -- use whichever fits your workflow
 
-### Real-Time Dashboard
-- **Live updates** via Server-Sent Events (SSE)
-- **Dark/Light themes** with persistent preference
+### Modern Dashboard (v1.4.0)
+- **Redesigned UI** with Indigo accent, dark/light themes, responsive layout
+- **Runtime AI settings** -- enable AI, pick a provider, enter your API key, and choose a model, all from the dashboard without restarting the operator
+- **Live updates** via Server-Sent Events (SSE) every 30 seconds
+- **Toast notifications** for user actions and background events
 - **Search & filter** by namespace, checker, severity
 - **Export** reports as JSON or CSV
 - **Keyboard shortcuts** for power users
 - **Health score** visualization with animated progress ring
 
+### AI-Powered Suggestions
+- **Runtime configuration** -- switch providers and models from the dashboard at any time
+- **Enhanced diagnostics** with AI-generated root cause analysis
+- **Provider options** -- Anthropic Claude, OpenAI, or NoOp for testing
+- **Thread-safe AI Manager** -- `Reconfigure()` swaps providers without downtime
+- **Data sanitization** -- sensitive data redacted before AI calls
+- **Configurable** via CLI flags, env vars, Helm values, or the dashboard UI
+
 ### GitOps Native
 - **Flux integration** for HelmReleases, Kustomizations, GitRepositories
-- **Graceful degradation** — Flux checkers automatically skip if Flux isn't installed
-- **Stale reconciliation detection** — catch GitOps pipelines that stopped syncing
-
-### AI-Powered Suggestions
-- **Enhanced diagnostics** with AI-generated root cause analysis
-- **Provider options** — Anthropic Claude, OpenAI, or NoOp for testing
-- **Data sanitization** — sensitive data redacted before AI calls
-- **Configurable** via CLI flags, env vars, or Helm values
+- **Graceful degradation** -- Flux checkers automatically skip if Flux isn't installed
+- **Stale reconciliation detection** -- catch GitOps pipelines that stopped syncing
 
 ### Production Ready
 - **Leader election** for HA deployments
 - **Prometheus metrics** for observability
-- **Minimal RBAC** — read-only access to cluster resources
-- **Distroless container** — secure, minimal attack surface
+- **Minimal RBAC** -- least-privilege, read-only access to cluster resources
+- **Distroless container** with OCI labels -- secure, minimal attack surface
 - **Network policy** template for restricted egress
+- **68% controller test coverage** with full E2E tests
 
 ---
 
@@ -102,7 +109,7 @@ helm install kube-assist charts/kube-assist \
   --set dashboard.enabled=true
 
 # Using Kustomize
-make deploy IMG=ghcr.io/osagberg/kube-assist-operator:v1.2.0
+make deploy IMG=ghcr.io/osagberg/kube-assist-operator:v1.4.0
 ```
 
 ---
@@ -361,7 +368,7 @@ spec:
 
 ## Dashboard
 
-The operator includes a real-time web dashboard with Server-Sent Events (SSE) for live updates.
+The operator includes a redesigned real-time web dashboard (v1.4.0) with an Indigo-accented modern UI, built-in AI settings, and Server-Sent Events (SSE) for live updates every 30 seconds.
 
 ### Enable Dashboard
 
@@ -383,22 +390,27 @@ open http://localhost:9090
 
 ### Endpoints
 
-| Endpoint | Description |
-|----------|-------------|
-| `GET /` | Dashboard UI |
-| `GET /api/health` | Current health data (JSON) |
-| `GET /api/events` | Real-time SSE stream |
-| `POST /api/check` | Trigger immediate health check |
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/` | GET | Dashboard UI |
+| `/api/health` | GET | Current health data (JSON) |
+| `/api/events` | GET | Real-time SSE stream |
+| `/api/check` | POST | Trigger immediate health check |
+| `/api/settings/ai` | GET | Current AI configuration (API key masked) |
+| `/api/settings/ai` | POST | Update AI provider/model/key at runtime |
 
 ### Features
 
-- **Theme Toggle** — Dark/light mode with localStorage persistence
-- **Search** — Filter issues by resource name, namespace, or message
-- **Filters** — Namespace dropdown, checker dropdown, severity tabs
-- **Export** — Download reports as JSON or CSV
-- **Collapsible Cards** — Click checker headers to collapse/expand
-- **Health Score** — Animated progress ring showing overall health
-- **Timeline** — Visual history of last 5 health checks
+- **Redesigned UI** -- Modern Indigo accent, responsive layout, dark/light themes
+- **AI Settings Panel** -- Enable/disable AI, select provider (Anthropic/OpenAI/NoOp), enter API key, choose model, all at runtime without restarting the operator
+- **Copy-able kubectl Commands** -- Every issue includes specific remediation commands you can copy and paste
+- **Toast Notifications** -- Visual feedback for actions like triggering a check or saving AI settings
+- **Search** -- Filter issues by resource name, namespace, or message
+- **Filters** -- Namespace dropdown, checker dropdown, severity tabs
+- **Export** -- Download reports as JSON or CSV
+- **Collapsible Cards** -- Click checker headers to collapse/expand
+- **Health Score** -- Animated progress ring showing overall health
+- **Timeline** -- Visual history of last 5 health checks
 - **Keyboard Shortcuts**:
 
 | Key | Action |
@@ -412,6 +424,39 @@ open http://localhost:9090
 | `1-4` | Filter by severity (All/Critical/Warning/Info) |
 | `?` | Show keyboard shortcuts |
 | `Esc` | Close modal / blur input |
+
+---
+
+## AI Integration
+
+KubeAssist can enhance health check suggestions using AI providers for context-aware root cause analysis and remediation guidance.
+
+### Quick Setup (Dashboard)
+
+The fastest way to enable AI is through the dashboard UI:
+
+1. Open the dashboard and click the AI settings panel
+2. Toggle AI on, select a provider (Anthropic or OpenAI), enter your API key, and pick a model
+3. Click Save -- changes take effect immediately, no restart required
+
+### Quick Setup (CLI)
+
+```bash
+make run ARGS="--enable-dashboard --enable-ai --ai-provider=anthropic --ai-api-key=sk-ant-..."
+```
+
+### Quick Setup (Helm)
+
+```yaml
+ai:
+  enabled: true
+  provider: "anthropic"
+  apiKeySecretRef:
+    name: "kube-assist-ai-secret"
+    key: "api-key"
+```
+
+For full details on providers, data sanitization, API key management, and cost considerations, see the [AI Integration Guide](docs/ai-integration.md).
 
 ---
 
@@ -443,6 +488,8 @@ helm install kube-assist charts/kube-assist \
 | `image.tag` | Chart appVersion | Image tag |
 | `dashboard.enabled` | `false` | Enable web dashboard |
 | `dashboard.bindAddress` | `:9090` | Dashboard listen address |
+| `dashboard.service.type` | `ClusterIP` | Dashboard service type |
+| `dashboard.service.port` | `9090` | Dashboard service port |
 | `operator.leaderElection.enabled` | `true` | Enable leader election |
 | `operator.metricsBindAddress` | `:8080` | Metrics endpoint |
 | `resources.requests.cpu` | `10m` | CPU request |
@@ -451,7 +498,8 @@ helm install kube-assist charts/kube-assist \
 | `resources.limits.memory` | `128Mi` | Memory limit |
 | `ai.enabled` | `false` | Enable AI-powered suggestions |
 | `ai.provider` | `noop` | AI provider: anthropic, openai, noop |
-| `ai.apiKeySecretRef.name` | — | Secret containing API key |
+| `ai.model` | (provider default) | AI model to use |
+| `ai.apiKeySecretRef.name` | -- | Secret containing API key |
 | `networkPolicy.enabled` | `false` | Enable network policy |
 
 ### Full Configuration
@@ -467,21 +515,24 @@ See [charts/kube-assist/values.yaml](charts/kube-assist/values.yaml) for all opt
 │                              User Interface                              │
 ├─────────────────────────────────┬───────────────────────────────────────┤
 │         CLI (kubeassist)        │         Dashboard (:9090)             │
-│  • kubeassist [namespace]       │  • Real-time SSE updates              │
-│  • kubeassist health            │  • Dark/light themes                  │
-│  • JSON/text output             │  • Search, filter, export             │
+│  • kubeassist [namespace]       │  • Modern UI, Indigo accent           │
+│  • kubeassist health            │  • Real-time SSE updates              │
+│  • JSON/text output             │  • AI settings panel (runtime config) │
+│                                 │  • kubectl commands on every issue    │
 └─────────────────────────────────┴───────────────────────────────────────┘
                                     │
-                                    ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│                          Custom Resources                                │
-├─────────────────────────────────┬───────────────────────────────────────┤
-│       TroubleshootRequest       │        TeamHealthRequest              │
-│  • Target: Deployment/Pod/etc   │  • Scope: namespaces/selector         │
-│  • Actions: diagnose/logs/etc   │  • Checks: configurable list          │
-│  • Output: issues + ConfigMaps  │  • Config: per-checker thresholds     │
-└─────────────────────────────────┴───────────────────────────────────────┘
-                                    │
+                        ┌───────────┴──────────┐
+                        ▼                      ▼
+┌──────────────────────────────┐ ┌────────────────────────────────────────┐
+│       AI Manager             │ │           Custom Resources              │
+│  • Thread-safe Reconfigure() │ ├────────────────────┬───────────────────┤
+│  • Shared across dashboard   │ │ TroubleshootRequest │ TeamHealthRequest │
+│    and controllers           │ │ • Target: any kind  │ • Scope: ns/sel   │
+│  • POST /api/settings/ai     │ │ • diagnose/logs/... │ • Configurable    │
+└──────────────────────────────┘ │ • issues+ConfigMaps │ • Per-checker cfg │
+                        │        └────────────────────┴───────────────────┘
+                        │                      │
+                        └───────────┬──────────┘
                                     ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                            Controllers                                   │
@@ -490,6 +541,7 @@ See [charts/kube-assist/values.yaml](charts/kube-assist/values.yaml) for all opt
 │  • Validates target exists      │    • Resolves namespace scope         │
 │  • Collects pod diagnostics     │    • Runs selected checkers           │
 │  • Stores logs/events           │    • Aggregates results               │
+│  • Structured logging           │    • Structured logging               │
 └─────────────────────────────────┴───────────────────────────────────────┘
                                     │
                                     ▼
@@ -501,6 +553,9 @@ See [charts/kube-assist/values.yaml](charts/kube-assist/values.yaml) for all opt
 │Deployment│ TLS cert │ Pending  │ Usage %  │ Coverage │ • kustomizations│
 │StatefulS │ expiry   │ Lost     │ exceeded │ rules    │ • gitrepos      │
 │DaemonSet │ empty    │ capacity │          │          │                 │
+│          │          │          │          │          │                 │
+│ Each checker includes kubectl remediation commands,                    │
+│ common root causes, and links to Kubernetes docs.                     │
 └──────────┴──────────┴──────────┴──────────┴──────────┴─────────────────┘
                                     │
                                     ▼
@@ -554,14 +609,17 @@ make install-cli
 
 ## Documentation
 
-- [AI Integration Guide](docs/ai-integration.md) — Configure AI-powered suggestions
-- [Troubleshooting Guide](docs/troubleshooting.md) — Common issues and solutions
+- [AI Integration Guide](docs/ai-integration.md) -- Configure AI-powered suggestions (including runtime dashboard config)
+- [Troubleshooting Guide](docs/troubleshooting.md) -- Common issues and solutions
 
 ---
 
 ## Roadmap
 
-- [x] AI-powered suggestions
+- [x] AI-powered suggestions (v1.3.0)
+- [x] Runtime AI configuration via dashboard (v1.4.0)
+- [x] Copy-able kubectl remediation commands (v1.4.0)
+- [x] Full E2E test coverage for controllers (v1.4.0)
 - [ ] Slack/PagerDuty alerting integration
 - [ ] Historical trend analysis
 - [ ] Custom checker plugins

@@ -1,24 +1,37 @@
 # AI Integration
 
-kube-assist can enhance health check suggestions using AI providers to deliver context-aware remediation guidance.
+kube-assist can enhance health check suggestions using AI providers to deliver context-aware remediation guidance. As of v1.4.0, AI can be configured at runtime from the dashboard without restarting the operator.
 
 ## Overview
 
 When enabled, the AI integration:
 
 1. Collects detected issues from health checks
-2. Sanitizes data to remove sensitive information
+2. Sanitizes data to remove sensitive information (secrets, tokens, credentials, internal IPs)
 3. Sends context to the configured AI provider
 4. Returns enhanced suggestions with root cause analysis and remediation steps
 
-AI enhancement runs after standard health checks complete. Results include both static suggestions and AI-generated insights.
+AI enhancement runs after standard health checks complete. Results include both static suggestions (with kubectl commands) and AI-generated insights.
 
 ## Configuration
 
-### CLI Flags (Operator)
+There are four ways to configure AI, from simplest to most flexible:
+
+### 1. Dashboard UI (v1.4.0 -- Recommended for Quick Setup)
+
+The dashboard includes a built-in AI settings panel. No restart required.
+
+1. Open the dashboard at `http://<host>:9090`
+2. Locate the AI Settings panel
+3. Toggle AI on, select a provider, enter your API key, and choose a model
+4. Click Save
+
+Changes take effect immediately. The dashboard uses the `POST /api/settings/ai` endpoint, which calls `Manager.Reconfigure()` to swap the active provider at runtime. Both the dashboard and the controllers share the same `ai.Manager` instance, so the change is reflected everywhere.
+
+### 2. CLI Flags (Operator)
 
 ```bash
-/manager \
+./manager \
   --enable-ai \
   --ai-provider=anthropic \
   --ai-model=claude-3-sonnet-20240229 \
@@ -32,7 +45,7 @@ AI enhancement runs after standard health checks complete. Results include both 
 | `--ai-api-key` | API key (prefer env var or secret) | - |
 | `--ai-model` | Model name (uses provider default if empty) | - |
 
-### Environment Variables
+### 3. Environment Variables
 
 ```bash
 export KUBE_ASSIST_AI_PROVIDER=anthropic
@@ -43,7 +56,7 @@ export KUBE_ASSIST_AI_ENDPOINT=https://api.anthropic.com/v1/messages  # optional
 
 The operator checks `KUBE_ASSIST_AI_API_KEY` if no API key is provided via flag.
 
-### Helm Values
+### 4. Helm Values
 
 ```yaml
 ai:
@@ -184,15 +197,66 @@ sanitizer := ai.NewSanitizer()
 sanitizer.AddPattern(`my-custom-pattern`)
 ```
 
+## AI Manager Architecture (v1.4.0)
+
+The `ai.Manager` struct (`internal/ai/manager.go`) wraps the `ai.Provider` interface with thread-safe runtime reconfiguration. It is shared between the dashboard server and the controllers.
+
+Key properties:
+
+- **Thread-safe**: All access is protected by `sync.RWMutex`
+- **Drop-in replacement**: Manager implements the `Provider` interface, so existing code that accepts a Provider works unchanged
+- **Runtime reconfiguration**: `Reconfigure(provider, apiKey, model)` swaps the active provider without downtime
+- **Enable/disable toggle**: `SetEnabled(bool)` turns AI on or off without changing the provider
+
+When the dashboard receives a `POST /api/settings/ai` request, it calls `Manager.Reconfigure()` which creates a new provider from the given configuration and atomically swaps it in. Because the Manager is shared, the controllers immediately use the new provider on their next reconciliation.
+
+## Settings API Endpoints
+
+### GET /api/settings/ai
+
+Returns the current AI configuration. The API key is never exposed -- only a boolean `hasApiKey` field.
+
+```json
+{
+  "enabled": true,
+  "provider": "anthropic",
+  "model": "claude-3-sonnet-20240229",
+  "hasApiKey": true,
+  "providerReady": true
+}
+```
+
+### POST /api/settings/ai
+
+Updates AI configuration at runtime. Only provided fields are changed.
+
+```json
+{
+  "enabled": true,
+  "provider": "anthropic",
+  "apiKey": "sk-ant-...",
+  "model": "claude-3-sonnet-20240229"
+}
+```
+
+Valid providers: `anthropic`, `openai`, `noop`.
+
+---
+
 ## Example Output
 
 ### Without AI
+
+In v1.4.0, every checker includes specific kubectl commands, common root causes, and links to Kubernetes docs -- even without AI enabled.
 
 ```
 workloads (2 healthy, 1 critical)
    [Critical] default/api-server
      Pod api-server-abc123 in CrashLoopBackOff (5 restarts)
-     -> Check pod logs and events for crash reason
+     -> The container is repeatedly crashing. Check recent logs with:
+        kubectl logs api-server-abc123 --previous.
+        Common causes: missing config/secrets, incorrect entrypoint, or application errors.
+        If OOM-related, check: kubectl describe pod api-server-abc123 | grep -i oom
 ```
 
 ### With AI Enhancement
@@ -244,7 +308,8 @@ AI responses include:
 
 AI API calls incur costs based on token usage. To manage costs:
 
-1. Use `noop` provider in development
+1. Use `noop` provider in development and CI pipelines
 2. Choose smaller models for routine checks (`gpt-3.5-turbo`, `claude-3-sonnet`)
 3. Limit max tokens via provider configuration (default: 2000)
 4. Run AI-enhanced checks on-demand rather than continuously
+5. Use the dashboard toggle to enable AI only when you need deeper analysis -- the static suggestions already include kubectl commands and common root causes
