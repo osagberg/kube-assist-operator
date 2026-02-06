@@ -2,8 +2,8 @@
 
 [![Go Version](https://img.shields.io/badge/Go-1.25+-00ADD8?style=flat&logo=go)](https://go.dev/)
 [![Kubernetes](https://img.shields.io/badge/Kubernetes-1.25+-326CE5?style=flat&logo=kubernetes)](https://kubernetes.io/)
-[![Chart Version](https://img.shields.io/badge/Helm_Chart-v1.7.1-0F1689?style=flat&logo=helm)](charts/kube-assist)
-[![Tests](https://img.shields.io/badge/Tests-372_passing-success?style=flat)](https://github.com/osagberg/kube-assist-operator/actions/workflows/test.yml)
+[![Chart Version](https://img.shields.io/badge/Helm_Chart-v1.8.0-0F1689?style=flat&logo=helm)](charts/kube-assist)
+[![Tests](https://img.shields.io/badge/Tests-400+_passing-success?style=flat)](https://github.com/osagberg/kube-assist-operator/actions/workflows/test.yml)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![CI](https://github.com/osagberg/kube-assist-operator/actions/workflows/test.yml/badge.svg)](https://github.com/osagberg/kube-assist-operator/actions/workflows/test.yml)
 
@@ -21,12 +21,13 @@ Deploy the operator, get instant visibility into workload failures, certificate 
 Most monitoring tools tell you *what* is broken. KubeAssist tells you *why* and *how to fix it*.
 
 - **Zero-config value** -- deploy the operator and get immediate health insights with no setup required
-- **8 health checkers** -- full-stack coverage across workloads, secrets, storage, quotas, network policies, and Flux GitOps (HelmReleases, Kustomizations, GitRepositories)
+- **8 built-in + custom plugin checkers** -- full-stack coverage across workloads, secrets, storage, quotas, network policies, and Flux GitOps, plus user-defined CEL-based checks via `CheckPlugin` CRD
 - **Actionable remediation** -- every issue includes copy-able `kubectl` commands, root causes, and links to upstream documentation
 - **Causal analysis engine** -- 4 cross-checker rules with confidence scoring, temporal correlation, and resource graph ownership chains to surface the *real* root cause
-- **AI-enhanced diagnostics** -- optional Anthropic (Claude) or OpenAI integration for context-aware root cause analysis, configurable at runtime from the dashboard
+- **AI-enhanced diagnostics** -- optional Anthropic (Claude) or OpenAI integration for context-aware root cause analysis, configurable at runtime from the dashboard, with "Explain This Cluster" narrative mode
 - **Frosted glass dashboard** -- modern React 19 SPA with dark/light themes, severity pills for colorblind accessibility, collapsible sections, and a pipeline progress indicator
 - **GitOps-native** -- first-class Flux CD integration with graceful degradation when Flux is not installed
+- **Predictive health** -- linear regression trend analysis on health history with projected scores, velocity detection, and risky checker identification
 - **Enterprise patterns** -- DataSource abstraction, pluggable notifiers, webhook validation, TTL cleanup, leader election
 - **Single binary** -- dashboard, API, operator, and CLI all compile into one Go binary (~22K lines of code: 20K Go + 2K TypeScript)
 
@@ -110,7 +111,7 @@ helm install kube-assist charts/kube-assist \
   --set dashboard.enabled=true
 
 # Using Kustomize
-make deploy IMG=ghcr.io/osagberg/kube-assist-operator:v1.7.1
+make deploy IMG=ghcr.io/osagberg/kube-assist-operator:v1.8.0
 ```
 
 ---
@@ -424,6 +425,8 @@ open http://localhost:9090
 | `/api/settings/ai` | POST | Update AI provider/model/key at runtime |
 | `/api/health/history` | GET | Health score history (`?last=N`, `?since=RFC3339`) |
 | `/api/causal/groups` | GET | Causal correlation analysis (correlated issue groups) |
+| `/api/explain` | GET | AI-generated cluster health narrative with risk level and top issues |
+| `/api/prediction/trend` | GET | Predictive health trend analysis (direction, velocity, projection) |
 
 ### Live Updates
 
@@ -596,24 +599,22 @@ See [charts/kube-assist/values.yaml](charts/kube-assist/values.yaml) for all opt
                                     v
 +---------------------------------------------------------------------------+
 |                            Controllers                                    |
-+---------------------------------+-----------------------------------------+
-|  TroubleshootRequestReconciler  |    TeamHealthRequestReconciler          |
-|  - Validates target exists      |    - Resolves namespace scope           |
-|  - Collects pod diagnostics     |    - Runs selected checkers             |
-|  - Stores logs/events           |    - Aggregates results                 |
-|  - Structured logging           |    - Structured logging                 |
-+---------------------------------+-----------------------------------------+
++------------------+---------------------+---------------------------------+
+| TroubleshootReq  | TeamHealthReq       | CheckPluginReconciler           |
+| - Validates tgt  | - Resolves ns scope | - Watches CheckPlugin CRs       |
+| - Pod diagnostics| - Runs checkers     | - Compiles CEL expressions      |
+| - Stores logs    | - Aggregates results| - Hot-reload registry           |
++------------------+---------------------+---------------------------------+
                                     |
                                     v
 +---------------------------------------------------------------------------+
 |                          Checker Registry                                 |
-+----------+----------+----------+----------+----------+--------------------+
-|workloads | secrets  |   pvcs   |  quotas  |  netpol  |   Flux (3)        |
-|          |          |          |          |          | - helmreleases    |
-|Deployment| TLS cert | Pending  | Usage %  | Coverage | - kustomizations  |
-|StatefulS | expiry   | Lost     | exceeded | rules    | - gitrepos        |
-|DaemonSet | empty    | capacity |          |          |                   |
-+----------+----------+----------+----------+----------+--------------------+
++----------+----------+----------+----------+----------+---------+----------+
+|workloads | secrets  |   pvcs   |  quotas  |  netpol  | Flux(3) | Plugins  |
+|          |          |          |          |          | helmrel | CEL CRD  |
+|Deployment| TLS cert | Pending  | Usage %  | Coverage | kustom  | hot-     |
+|StatefulS | expiry   | Lost     | exceeded | rules    | gitrepo | reload   |
++----------+----------+----------+----------+----------+---------+----------+
                                     |
                                     v
 +---------------------------------------------------------------------------+
@@ -622,6 +623,15 @@ See [charts/kube-assist/values.yaml](charts/kube-assist/values.yaml) for all opt
 |  - Resource graph ownership chains (owner references)                     |
 |  - 4 cross-checker rules with confidence scoring                          |
 |  - AI-enhanced group explanations when AI is enabled                      |
++---------------------------------------------------------------------------+
+                                    |
+                                    v
++---------------------------------------------------------------------------+
+|                       Predictive Health Engine                             |
+|  - OLS linear regression on health score history                          |
+|  - Velocity detection (score change per hour)                             |
+|  - Projected score with 95% confidence interval                           |
+|  - Risky checker + severity trajectory identification                     |
 +---------------------------------------------------------------------------+
                                     |
                                     v
@@ -669,7 +679,7 @@ Four GitHub Actions workflows enforce quality at every stage:
 ## Development
 
 ```bash
-# Run tests (372 test cases)
+# Run tests (400+ test cases)
 make test
 
 # Run operator locally
@@ -715,9 +725,9 @@ make install-cli
 - [x] React dashboard -- React 19 + Vite + TypeScript + Tailwind SPA (v1.6.0)
 - [x] Causal analysis engine -- temporal correlation, resource graph, cross-checker rules, AI-enhanced context (v1.7.0)
 - [x] Frosted glass dashboard redesign -- dark/light themes, severity pills, pipeline indicator, collapsible causal timeline, instant AI trigger (v1.7.1)
-- [ ] Custom checker plugins — CRD-driven health checks with CEL expressions (`CheckPlugin` CR, hot-reload registry)
-- [ ] "Explain this cluster" AI mode — narrative summary of cluster health with risk level, top issues, and trend direction
-- [ ] Predictive health — trend analysis via linear regression on health history, score projection, risky checker detection
+- [x] Custom checker plugins — CRD-driven health checks with CEL expressions (`CheckPlugin` CR, hot-reload registry) (v1.8.0)
+- [x] "Explain this cluster" AI mode — narrative summary of cluster health with risk level, top issues, and trend direction (v1.8.0)
+- [x] Predictive health — trend analysis via linear regression on health history, score projection, risky checker detection (v1.8.0)
 - [ ] Cross-cluster via ConsoleDataSource — multi-cluster aggregation through pluggable `DataSource` interface
 
 ---

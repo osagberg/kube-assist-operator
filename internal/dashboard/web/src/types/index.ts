@@ -94,6 +94,39 @@ export interface TimelineEvent {
   issue: Issue
 }
 
+// Explain response types matching internal/ai/provider.go
+export interface ExplainResponse {
+  narrative: string
+  riskLevel: string
+  topIssues?: ExplainIssue[]
+  trendDirection: string
+  confidence: number
+  tokensUsed: number
+}
+
+export interface ExplainIssue {
+  title: string
+  severity: string
+  impact: string
+}
+
+// Prediction types matching internal/prediction/analyzer.go
+export interface PredictionResult {
+  trendDirection: 'improving' | 'stable' | 'degrading'
+  velocity: number
+  projectedScore: number
+  confidenceInterval: [number, number]
+  rSquared: number
+  dataPoints: number
+  riskyCheckers?: string[]
+  severityTrajectories?: Record<string, string>
+}
+
+export interface PredictionResponse {
+  status?: string
+  message?: string
+}
+
 // Health history types matching internal/history/ringbuffer.go
 export interface HealthSnapshot {
   timestamp: string

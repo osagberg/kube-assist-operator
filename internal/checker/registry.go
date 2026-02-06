@@ -56,6 +56,26 @@ func (r *Registry) MustRegister(c Checker) {
 	}
 }
 
+// Unregister removes a checker from the registry by name.
+// Returns true if the checker was found and removed, false if not found.
+func (r *Registry) Unregister(name string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	_, exists := r.checkers[name]
+	if exists {
+		delete(r.checkers, name)
+	}
+	return exists
+}
+
+// Replace adds or replaces a checker in the registry.
+// Unlike Register, this does not error if the name already exists.
+func (r *Registry) Replace(c Checker) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.checkers[c.Name()] = c
+}
+
 // Get returns a checker by name
 func (r *Registry) Get(name string) (Checker, bool) {
 	r.mu.RLock()

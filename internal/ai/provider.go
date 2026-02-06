@@ -55,6 +55,12 @@ type AnalysisRequest struct {
 
 	// MaxTokens limits the response length (provider-specific)
 	MaxTokens int `json:"maxTokens,omitempty"`
+
+	// ExplainMode, when true, uses ExplainContext as the prompt instead of building from Issues.
+	ExplainMode bool `json:"explainMode,omitempty"`
+
+	// ExplainContext is the raw prompt for explain mode.
+	ExplainContext string `json:"explainContext,omitempty"`
 }
 
 // CausalAnalysisContext is a simplified representation of causal correlation
@@ -212,7 +218,12 @@ func DefaultConfig() Config {
 }
 
 // BuildPrompt constructs the user prompt for AI analysis from an AnalysisRequest.
+// When ExplainMode is true, it returns the ExplainContext directly.
 func BuildPrompt(request AnalysisRequest) string {
+	if request.ExplainMode && request.ExplainContext != "" {
+		return request.ExplainContext
+	}
+
 	contextJSON, _ := json.MarshalIndent(request.ClusterContext, "", "  ")
 
 	var issueLines strings.Builder
@@ -328,4 +339,97 @@ func ParseResponse(content string, tokensUsed int, providerName string) *Analysi
 		Summary:             result.Summary,
 		TokensUsed:          tokensUsed,
 	}
+}
+
+// ExplainResponse contains an AI-generated narrative cluster health summary.
+type ExplainResponse struct {
+	// Narrative is a human-readable explanation of the cluster's current state
+	Narrative string `json:"narrative"`
+
+	// RiskLevel indicates the overall cluster risk: "low", "medium", "high", "critical"
+	RiskLevel string `json:"riskLevel"`
+
+	// TopIssues summarizes the most important issues
+	TopIssues []ExplainIssue `json:"topIssues,omitempty"`
+
+	// TrendDirection is "improving", "stable", or "degrading"
+	TrendDirection string `json:"trendDirection"`
+
+	// Confidence is the AI's confidence in this assessment (0-1)
+	Confidence float64 `json:"confidence"`
+
+	// TokensUsed tracks token consumption
+	TokensUsed int `json:"tokensUsed"`
+}
+
+// ExplainIssue is a summarized issue for the explain response.
+type ExplainIssue struct {
+	Title    string `json:"title"`
+	Severity string `json:"severity"`
+	Impact   string `json:"impact"`
+}
+
+// BuildExplainPrompt constructs a prompt for the "Explain This Cluster" AI mode.
+// It takes the current health data, causal analysis, and optionally health history snapshots.
+func BuildExplainPrompt(healthResults map[string]any, causalCtx *CausalAnalysisContext, historySnapshots []any) string {
+	var b strings.Builder
+
+	b.WriteString("You are a Kubernetes cluster health advisor. Analyze the following cluster health data and provide a concise narrative explanation.\n\n")
+
+	b.WriteString("Current Health Results:\n")
+	healthJSON, _ := json.MarshalIndent(healthResults, "", "  ")
+	b.Write(healthJSON)
+	b.WriteString("\n")
+
+	if causalCtx != nil && len(causalCtx.Groups) > 0 {
+		b.WriteString("\nCausal Analysis:\n")
+		causalJSON, _ := json.MarshalIndent(causalCtx.Groups, "", "  ")
+		b.Write(causalJSON)
+		b.WriteString("\n")
+	}
+
+	if len(historySnapshots) > 0 {
+		b.WriteString("\nRecent Health Score History:\n")
+		historyJSON, _ := json.MarshalIndent(historySnapshots, "", "  ")
+		b.Write(historyJSON)
+		b.WriteString("\n")
+	}
+
+	b.WriteString(`
+Respond with a JSON object containing:
+- "narrative": A 2-4 sentence human-readable summary of cluster health
+- "riskLevel": one of "low", "medium", "high", "critical"
+- "topIssues": array of {"title", "severity", "impact"} for top 3 issues
+- "trendDirection": one of "improving", "stable", "degrading"
+- "confidence": your confidence 0-1
+`)
+
+	return b.String()
+}
+
+// ParseExplainResponse parses raw AI response content into an ExplainResponse.
+func ParseExplainResponse(content string, tokensUsed int) *ExplainResponse {
+	var result ExplainResponse
+
+	cleaned := extractJSON(content)
+	if err := json.Unmarshal([]byte(cleaned), &result); err != nil {
+		// On parse failure, return a response with just the narrative set to the raw content
+		return &ExplainResponse{
+			Narrative:      content,
+			RiskLevel:      "unknown",
+			TrendDirection: "unknown",
+			TokensUsed:     tokensUsed,
+		}
+	}
+
+	// Clamp confidence to 0-1
+	if result.Confidence < 0 {
+		result.Confidence = 0
+	}
+	if result.Confidence > 1 {
+		result.Confidence = 1
+	}
+
+	result.TokensUsed = tokensUsed
+	return &result
 }

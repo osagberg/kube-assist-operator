@@ -4,6 +4,9 @@ import type {
   AISettingsRequest,
   HealthSnapshot,
   CausalContext,
+  ExplainResponse,
+  PredictionResult,
+  PredictionResponse,
 } from '../types'
 
 const BASE = '/api'
@@ -72,6 +75,18 @@ export function fetchHealthHistory(params?: { last?: number; since?: string }): 
 /** GET /api/causal/groups — causal correlation analysis */
 export function fetchCausalGroups(): Promise<CausalContext> {
   return json<CausalContext>(`${BASE}/causal/groups`)
+}
+
+/** GET /api/explain — AI-generated cluster health explanation */
+export function fetchExplain(): Promise<ExplainResponse> {
+  return json<ExplainResponse>(`${BASE}/explain`)
+}
+
+/** GET /api/prediction/trend — predictive health trend analysis */
+export async function fetchPrediction(): Promise<PredictionResult | null> {
+  const data = await json<PredictionResult & PredictionResponse>(`${BASE}/prediction/trend`)
+  if (data.status === 'insufficient_data') return null
+  return data as PredictionResult
 }
 
 /** GET /api/events — SSE stream (returns EventSource, caller manages lifecycle) */

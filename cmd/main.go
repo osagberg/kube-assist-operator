@@ -299,6 +299,15 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "TeamHealthRequest")
 		os.Exit(1)
 	}
+	if err := (&controller.CheckPluginReconciler{
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Registry: registry,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "CheckPlugin")
+		os.Exit(1)
+	}
+
 	if enableWebhooks {
 		if err := assistv1alpha1.SetupTroubleshootRequestWebhookWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create webhook", "webhook", "TroubleshootRequest")

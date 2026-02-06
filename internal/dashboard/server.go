@@ -41,6 +41,7 @@ import (
 	"github.com/osagberg/kube-assist-operator/internal/checker"
 	"github.com/osagberg/kube-assist-operator/internal/datasource"
 	"github.com/osagberg/kube-assist-operator/internal/history"
+	"github.com/osagberg/kube-assist-operator/internal/prediction"
 	"github.com/osagberg/kube-assist-operator/internal/scope"
 )
 
@@ -106,6 +107,13 @@ type aiEnhancement struct {
 	RootCause  string
 }
 
+// ExplainCacheEntry stores a cached explain response with its issue hash.
+type ExplainCacheEntry struct {
+	Response  *ai.ExplainResponse `json:"response"`
+	IssueHash string              `json:"-"`
+	CachedAt  time.Time           `json:"-"`
+}
+
 // AISettingsRequest is the JSON body for POST /api/settings/ai
 type AISettingsRequest struct {
 	Enabled  bool   `json:"enabled"`
@@ -144,6 +152,7 @@ type Server struct {
 	lastAIResult       *AIStatus
 	lastAIEnhancements map[string]map[string]aiEnhancement // checker -> "type|resource|namespace" -> enhancement
 	lastCausalInsights []ai.CausalGroupInsight
+	lastExplain        *ExplainCacheEntry
 	checkCounter       uint64
 	aiCheckInterval    int
 	stopCh             chan struct{}
@@ -194,6 +203,8 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/api/check", s.handleTriggerCheck)
 	mux.HandleFunc("/api/settings/ai", s.handleAISettings)
 	mux.HandleFunc("/api/causal/groups", s.handleCausalGroups)
+	mux.HandleFunc("/api/explain", s.handleExplain)
+	mux.HandleFunc("/api/prediction/trend", s.handlePrediction)
 
 	// React SPA dashboard
 	spaFS, err := fs.Sub(webAssets, "web/dist")
@@ -1055,6 +1066,170 @@ func (s *Server) handleCausalGroups(w http.ResponseWriter, _ *http.Request) {
 
 	if err := json.NewEncoder(w).Encode(cc); err != nil {
 		log.Error(err, "Failed to encode response", "handler", "handleCausalGroups")
+	}
+}
+
+// handleExplain returns an AI-generated narrative explanation of cluster health.
+// GET /api/explain
+func (s *Server) handleExplain(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+
+	// Check AI availability
+	s.mu.RLock()
+	provider := s.aiProvider
+	enabled := s.aiEnabled
+	s.mu.RUnlock()
+
+	if !enabled || provider == nil || !provider.Available() {
+		if err := json.NewEncoder(w).Encode(ai.ExplainResponse{
+			Narrative:      "AI is not configured. Enable an AI provider in settings to get cluster explanations.",
+			RiskLevel:      "unknown",
+			TrendDirection: "unknown",
+		}); err != nil {
+			log.Error(err, "Failed to encode response", "handler", "handleExplain")
+		}
+		return
+	}
+
+	// Check cache: valid if issue hash matches and within 5 minutes
+	s.mu.RLock()
+	currentHash := s.lastIssueHash
+	cached := s.lastExplain
+	latest := s.latest
+	causalCtx := s.latestCausal
+	s.mu.RUnlock()
+
+	if cached != nil && cached.IssueHash == currentHash && time.Since(cached.CachedAt) < 5*time.Minute {
+		if err := json.NewEncoder(w).Encode(cached.Response); err != nil {
+			log.Error(err, "Failed to encode response", "handler", "handleExplain")
+		}
+		return
+	}
+
+	if latest == nil {
+		if err := json.NewEncoder(w).Encode(ai.ExplainResponse{
+			Narrative:      "No health data available yet.",
+			RiskLevel:      "unknown",
+			TrendDirection: "unknown",
+		}); err != nil {
+			log.Error(err, "Failed to encode response", "handler", "handleExplain")
+		}
+		return
+	}
+
+	// Convert health results to generic map for the prompt
+	healthMap := make(map[string]any)
+	for name, result := range latest.Results {
+		healthMap[name] = map[string]any{
+			"healthy": result.Healthy,
+			"issues":  len(result.Issues),
+			"error":   result.Error,
+		}
+	}
+	healthMap["summary"] = latest.Summary
+
+	// Get history for trend context
+	historySnapshots := s.history.Last(20)
+	historyForPrompt := make([]any, 0, len(historySnapshots))
+	for _, snap := range historySnapshots {
+		historyForPrompt = append(historyForPrompt, map[string]any{
+			"timestamp":   snap.Timestamp.Format(time.RFC3339),
+			"healthScore": snap.HealthScore,
+			"totalIssues": snap.TotalIssues,
+		})
+	}
+
+	// Convert causal context
+	var causalAnalysis *ai.CausalAnalysisContext
+	if causalCtx != nil {
+		causalAnalysis = toCausalAnalysisContext(causalCtx)
+	}
+
+	// Enrich with prediction data if available
+	predResult := prediction.Analyze(historySnapshots)
+	if predResult != nil {
+		healthMap["prediction"] = map[string]any{
+			"trendDirection": predResult.TrendDirection,
+			"velocity":       predResult.Velocity,
+			"projectedScore": predResult.ProjectedScore,
+			"riskyCheckers":  predResult.RiskyCheckers,
+		}
+	}
+
+	prompt := ai.BuildExplainPrompt(healthMap, causalAnalysis, historyForPrompt)
+
+	// Call AI with explain mode
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+
+	analysisResp, err := provider.Analyze(ctx, ai.AnalysisRequest{
+		ExplainMode:    true,
+		ExplainContext: prompt,
+		ClusterContext: ai.ClusterContext{Namespaces: latest.Namespaces},
+		MaxTokens:      4096,
+	})
+	if err != nil {
+		log.Error(err, "Explain AI call failed")
+		if err := json.NewEncoder(w).Encode(ai.ExplainResponse{
+			Narrative:      "Failed to generate explanation: " + err.Error(),
+			RiskLevel:      "unknown",
+			TrendDirection: "unknown",
+		}); err != nil {
+			log.Error(err, "Failed to encode response", "handler", "handleExplain")
+		}
+		return
+	}
+
+	// Parse the response
+	explainResp := ai.ParseExplainResponse(analysisResp.Summary, analysisResp.TokensUsed)
+
+	// Cache the result
+	s.mu.Lock()
+	s.lastExplain = &ExplainCacheEntry{
+		Response:  explainResp,
+		IssueHash: currentHash,
+		CachedAt:  time.Now(),
+	}
+	s.mu.Unlock()
+
+	if err := json.NewEncoder(w).Encode(explainResp); err != nil {
+		log.Error(err, "Failed to encode response", "handler", "handleExplain")
+	}
+}
+
+// handlePrediction returns health trend analysis using linear regression on history.
+// GET /api/prediction/trend
+func (s *Server) handlePrediction(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+
+	// Get history snapshots
+	snapshots := s.history.Last(50)
+
+	result := prediction.Analyze(snapshots)
+	if result == nil {
+		// Not enough data
+		w.WriteHeader(http.StatusOK)
+		if err := json.NewEncoder(w).Encode(map[string]string{
+			"status":  "insufficient_data",
+			"message": "Need at least 5 health snapshots for prediction",
+		}); err != nil {
+			log.Error(err, "Failed to encode prediction response")
+		}
+		return
+	}
+
+	if err := json.NewEncoder(w).Encode(result); err != nil {
+		log.Error(err, "Failed to encode prediction response")
 	}
 }
 

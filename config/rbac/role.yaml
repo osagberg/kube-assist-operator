@@ -28,6 +28,14 @@ rules:
   - list
   - watch
 - apiGroups:
+  - '*'
+  resources:
+  - '*'
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
   - apps
   resources:
   - daemonsets
@@ -41,6 +49,7 @@ rules:
 - apiGroups:
   - assist.cluster.local
   resources:
+  - checkplugins
   - teamhealthrequests
   - troubleshootrequests
   verbs:
@@ -54,6 +63,7 @@ rules:
 - apiGroups:
   - assist.cluster.local
   resources:
+  - checkplugins/finalizers
   - teamhealthrequests/finalizers
   - troubleshootrequests/finalizers
   verbs:
@@ -61,6 +71,7 @@ rules:
 - apiGroups:
   - assist.cluster.local
   resources:
+  - checkplugins/status
   - teamhealthrequests/status
   - troubleshootrequests/status
   verbs:

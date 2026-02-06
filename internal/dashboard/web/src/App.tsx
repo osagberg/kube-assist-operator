@@ -13,6 +13,7 @@ import { ExportButton } from './components/ExportButton'
 import { SettingsModal } from './components/SettingsModal'
 import { HistoryChart } from './components/HistoryChart'
 import { CausalTimeline } from './components/CausalTimeline'
+import { ClusterExplain } from './components/ClusterExplain'
 import { useKeyboardShortcuts, KeyboardShortcutsHelp } from './components/KeyboardShortcuts'
 import { ToastContainer, showToast } from './components/Toast'
 import { ErrorBoundary } from './components/ErrorBoundary'
@@ -211,6 +212,9 @@ function App() {
                 <MetricCard label="Info" value={health.summary.infoCount} severity="info" />
               </div>
             </div>
+
+            {/* Explain This Cluster */}
+            <ClusterExplain />
 
             {/* History Chart */}
             <HistoryChart />
