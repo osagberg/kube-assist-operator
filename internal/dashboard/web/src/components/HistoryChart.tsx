@@ -5,14 +5,15 @@ import { fetchHealthHistory } from '../api/client'
 
 export function HistoryChart() {
   const [data, setData] = useState<HealthSnapshot[]>([])
+  const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     fetchHealthHistory({ last: 50 })
-      .then(setData)
-      .catch(() => {})
+      .then((d) => { setData(d); setError(null) })
+      .catch((e) => setError(e instanceof Error ? e.message : 'Failed to load history'))
   }, [])
 
-  if (data.length === 0) return null
+  if (error || data.length === 0) return null
 
   const chartData = data.map((s) => ({
     time: new Date(s.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),

@@ -39,6 +39,7 @@ export function CheckerCard({ name, result, search, severity, namespace }: Props
     }`}>
       <button
         onClick={() => setCollapsed(!collapsed)}
+        aria-expanded={!collapsed}
         className="w-full flex items-center justify-between p-4 text-left hover:bg-gray-50 dark:hover:bg-gray-750 rounded-t-lg"
       >
         <div className="flex items-center gap-3">
@@ -69,8 +70,8 @@ export function CheckerCard({ name, result, search, severity, namespace }: Props
 
       {!collapsed && filteredIssues.length > 0 && (
         <div className="border-t border-gray-100 dark:border-gray-700">
-          {filteredIssues.map((issue, i) => (
-            <IssueRow key={i} issue={issue} />
+          {filteredIssues.map((issue) => (
+            <IssueRow key={`${issue.namespace}-${issue.resource}-${issue.type}`} issue={issue} />
           ))}
         </div>
       )}

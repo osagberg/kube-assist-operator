@@ -1,10 +1,15 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import type { HealthUpdate } from '../types'
 
+const MAX_RETRIES = 10
+const BASE_DELAY = 1000
+const MAX_DELAY = 60000
+
 export function useSSE(paused: boolean) {
   const [data, setData] = useState<HealthUpdate | null>(null)
   const [connected, setConnected] = useState(false)
   const esRef = useRef<EventSource | null>(null)
+  const retriesRef = useRef(0)
 
   const connect = useCallback(() => {
     if (esRef.current) {
@@ -14,7 +19,10 @@ export function useSSE(paused: boolean) {
     const es = new EventSource('/api/events')
     esRef.current = es
 
-    es.onopen = () => setConnected(true)
+    es.onopen = () => {
+      setConnected(true)
+      retriesRef.current = 0
+    }
 
     es.onmessage = (event) => {
       try {
@@ -28,8 +36,11 @@ export function useSSE(paused: boolean) {
     es.onerror = () => {
       setConnected(false)
       es.close()
-      // Auto-reconnect after 5s
-      setTimeout(connect, 5000)
+      if (retriesRef.current >= MAX_RETRIES) return
+      const delay = Math.min(BASE_DELAY * 2 ** retriesRef.current, MAX_DELAY)
+      const jitter = delay * 0.1 * Math.random()
+      retriesRef.current++
+      setTimeout(connect, delay + jitter)
     }
   }, [])
 
@@ -40,6 +51,7 @@ export function useSSE(paused: boolean) {
       return
     }
 
+    retriesRef.current = 0
     connect()
     return () => {
       esRef.current?.close()

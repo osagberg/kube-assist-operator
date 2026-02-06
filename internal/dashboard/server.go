@@ -26,6 +26,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -95,21 +96,22 @@ type AISettingsResponse struct {
 
 // Server is the dashboard web server
 type Server struct {
-	client       datasource.DataSource
-	registry     *checker.Registry
-	addr         string
-	aiProvider   ai.Provider
-	aiEnabled    bool
-	aiConfig     ai.Config
-	checkTimeout time.Duration
-	history      *history.RingBuffer
-	correlator   *causal.Correlator
-	mu           sync.RWMutex
-	clients      map[chan HealthUpdate]bool
-	latest       *HealthUpdate
-	latestCausal *causal.CausalContext
-	running      bool
-	stopCh       chan struct{}
+	client        datasource.DataSource
+	registry      *checker.Registry
+	addr          string
+	aiProvider    ai.Provider
+	aiEnabled     bool
+	aiConfig      ai.Config
+	checkTimeout  time.Duration
+	history       *history.RingBuffer
+	correlator    *causal.Correlator
+	mu            sync.RWMutex
+	clients       map[chan HealthUpdate]bool
+	latest        *HealthUpdate
+	latestCausal  *causal.CausalContext
+	running       bool
+	checkInFlight atomic.Bool
+	stopCh        chan struct{}
 }
 
 // NewServer creates a new dashboard server
@@ -381,7 +383,12 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	// Send initial state
 	s.mu.RLock()
 	if s.latest != nil {
-		data, _ := json.Marshal(s.latest)
+		data, err := json.Marshal(s.latest)
+		if err != nil {
+			log.Error(err, "Failed to marshal SSE initial state")
+			s.mu.RUnlock()
+			return
+		}
 		_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
 		if f, ok := w.(http.Flusher); ok {
 			f.Flush()
@@ -395,7 +402,11 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 		case <-r.Context().Done():
 			return
 		case update := <-clientCh:
-			data, _ := json.Marshal(update)
+			data, err := json.Marshal(update)
+			if err != nil {
+				log.Error(err, "Failed to marshal SSE update")
+				continue
+			}
 			_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
 			if f, ok := w.(http.Flusher); ok {
 				f.Flush()
@@ -411,7 +422,20 @@ func (s *Server) handleTriggerCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	go s.runCheck(context.Background())
+	if !s.checkInFlight.CompareAndSwap(false, true) {
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(map[string]string{"status": "check already in progress"}); err != nil {
+			log.Error(err, "Failed to encode response", "handler", "handleTriggerCheck")
+		}
+		return
+	}
+
+	go func() {
+		defer s.checkInFlight.Store(false)
+		ctx, cancel := context.WithTimeout(context.Background(), s.checkTimeout)
+		defer cancel()
+		s.runCheck(ctx)
+	}()
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(map[string]string{"status": "check triggered"}); err != nil {
@@ -482,24 +506,25 @@ func (s *Server) handlePostAISettings(w http.ResponseWriter, r *http.Request) {
 	// If the provider is an ai.Manager, use Reconfigure() so the controller's
 	// AI provider is also updated (Manager is shared between dashboard and controllers).
 	if mgr, ok := s.aiProvider.(*ai.Manager); ok {
+		provider := s.aiConfig.Provider
+		apiKey := s.aiConfig.APIKey
+		model := s.aiConfig.Model
 		s.mu.Unlock()
 		mgr.SetEnabled(req.Enabled)
 		if providerName != "" {
-			if err := mgr.Reconfigure(s.aiConfig.Provider, s.aiConfig.APIKey, s.aiConfig.Model); err != nil {
-				log.Error(err, "Failed to reconfigure AI provider", "provider", s.aiConfig.Provider)
-				http.Error(w, "Failed to reconfigure AI provider: "+err.Error(), http.StatusInternalServerError)
+			if err := mgr.Reconfigure(provider, apiKey, model); err != nil {
+				log.Error(err, "Failed to reconfigure AI provider", "provider", provider)
+				http.Error(w, "Failed to reconfigure AI provider", http.StatusInternalServerError)
 				return
 			}
 		}
-		s.mu.RLock()
 		resp := AISettingsResponse{
 			Enabled:       req.Enabled,
-			Provider:      s.aiConfig.Provider,
-			Model:         s.aiConfig.Model,
-			HasAPIKey:     s.aiConfig.APIKey != "",
+			Provider:      provider,
+			Model:         model,
+			HasAPIKey:     apiKey != "",
 			ProviderReady: mgr.Available(),
 		}
-		s.mu.RUnlock()
 		log.Info("AI settings updated via dashboard (Manager)", "provider", resp.Provider, "enabled", resp.Enabled)
 		w.Header().Set("Content-Type", "application/json")
 		if err := json.NewEncoder(w).Encode(resp); err != nil {
@@ -513,7 +538,7 @@ func (s *Server) handlePostAISettings(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.mu.Unlock()
 		log.Error(err, "Failed to create AI provider", "provider", s.aiConfig.Provider)
-		http.Error(w, "Failed to create AI provider: "+err.Error(), http.StatusInternalServerError)
+		http.Error(w, "Failed to create AI provider", http.StatusInternalServerError)
 		return
 	}
 	s.aiProvider = provider
@@ -544,6 +569,9 @@ func (s *Server) handleHealthHistory(w http.ResponseWriter, r *http.Request) {
 		if err != nil || n < 1 {
 			http.Error(w, "invalid 'last' parameter", http.StatusBadRequest)
 			return
+		}
+		if n > 1000 {
+			n = 1000
 		}
 		if err := json.NewEncoder(w).Encode(s.history.Last(n)); err != nil {
 			log.Error(err, "Failed to encode response", "handler", "handleHealthHistory")

@@ -18,9 +18,11 @@ package dashboard
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -744,5 +746,193 @@ func TestServer_SecurityHeaders(t *testing.T) {
 	xfo := rr.Header().Get("X-Frame-Options")
 	if xfo != "DENY" {
 		t.Errorf("X-Frame-Options = %q, want %q", xfo, "DENY")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SSE and concurrency tests
+// ---------------------------------------------------------------------------
+
+func TestServer_HandleSSE_InitialState(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	server.latest = &HealthUpdate{
+		Timestamp:  time.Now(),
+		Namespaces: []string{"default"},
+		Results:    map[string]CheckResult{},
+		Summary:    Summary{TotalHealthy: 42},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/events", nil).WithContext(ctx)
+	rr := httptest.NewRecorder()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		server.handleSSE(rr, req)
+	}()
+
+	// Give handler time to write initial state
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	<-done
+
+	body := rr.Body.String()
+	if !strings.Contains(body, "data: ") {
+		t.Fatalf("expected SSE data frame, got: %s", body)
+	}
+
+	// Extract JSON from "data: {...}\n\n"
+	line := strings.TrimPrefix(strings.Split(body, "\n")[0], "data: ")
+	var update HealthUpdate
+	if err := json.Unmarshal([]byte(line), &update); err != nil {
+		t.Fatalf("failed to parse SSE data: %v", err)
+	}
+	if update.Summary.TotalHealthy != 42 {
+		t.Errorf("SSE initial state TotalHealthy = %d, want 42", update.Summary.TotalHealthy)
+	}
+}
+
+func TestServer_HandleSSE_ClientDisconnect(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodGet, "/api/events", nil).WithContext(ctx)
+	rr := httptest.NewRecorder()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		server.handleSSE(rr, req)
+	}()
+
+	// Wait for client to register
+	time.Sleep(100 * time.Millisecond)
+
+	server.mu.RLock()
+	clientsBefore := len(server.clients)
+	server.mu.RUnlock()
+
+	if clientsBefore != 1 {
+		t.Fatalf("expected 1 SSE client, got %d", clientsBefore)
+	}
+
+	// Disconnect
+	cancel()
+	<-done
+
+	server.mu.RLock()
+	clientsAfter := len(server.clients)
+	server.mu.RUnlock()
+
+	if clientsAfter != 0 {
+		t.Errorf("expected 0 SSE clients after disconnect, got %d", clientsAfter)
+	}
+}
+
+func TestServer_HandleTriggerCheck_ConcurrencyGuard(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	// Simulate a check already in progress by setting the atomic flag
+	server.checkInFlight.Store(true)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/check", nil)
+	rr := httptest.NewRecorder()
+
+	server.handleTriggerCheck(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("concurrent trigger status = %d, want %d", rr.Code, http.StatusOK)
+	}
+
+	var response map[string]string
+	if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+		t.Fatalf("returned invalid JSON: %v", err)
+	}
+
+	if response["status"] != "check already in progress" {
+		t.Errorf("concurrent trigger status = %q, want 'check already in progress'", response["status"])
+	}
+}
+
+func TestServer_HandleHealthHistory_LastUpperBound(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	// Add a few snapshots
+	for i := range 5 {
+		server.history.Add(history.HealthSnapshot{
+			Timestamp:    time.Now().Add(time.Duration(i) * time.Minute),
+			TotalHealthy: i + 1,
+			HealthScore:  100,
+		})
+	}
+
+	// Request way more than the ring buffer holds — should succeed, not error
+	req := httptest.NewRequest(http.MethodGet, "/api/health/history?last=99999", nil)
+	rr := httptest.NewRecorder()
+
+	server.handleHealthHistory(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("handleHealthHistory(?last=99999) status = %d, want %d", rr.Code, http.StatusOK)
+	}
+
+	var snapshots []history.HealthSnapshot
+	if err := json.Unmarshal(rr.Body.Bytes(), &snapshots); err != nil {
+		t.Fatalf("returned invalid JSON: %v", err)
+	}
+
+	// Should return all 5 (capped at 1000, but only 5 exist)
+	if len(snapshots) != 5 {
+		t.Errorf("handleHealthHistory(?last=99999) returned %d snapshots, want 5", len(snapshots))
+	}
+}
+
+func TestServer_HandleSSE_Headers(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodGet, "/api/events", nil).WithContext(ctx)
+	rr := httptest.NewRecorder()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		server.handleSSE(rr, req)
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+	<-done
+
+	ct := rr.Header().Get("Content-Type")
+	if ct != "text/event-stream" {
+		t.Errorf("SSE Content-Type = %q, want text/event-stream", ct)
+	}
+	cc := rr.Header().Get("Cache-Control")
+	if cc != "no-cache" {
+		t.Errorf("SSE Cache-Control = %q, want no-cache", cc)
+	}
+	conn := rr.Header().Get("Connection")
+	if conn != "keep-alive" {
+		t.Errorf("SSE Connection = %q, want keep-alive", conn)
 	}
 }

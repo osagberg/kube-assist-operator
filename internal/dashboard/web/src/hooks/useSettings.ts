@@ -5,12 +5,13 @@ import { fetchAISettings, updateAISettings } from '../api/client'
 export function useSettings() {
   const [settings, setSettings] = useState<AISettingsResponse | null>(null)
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
 
   const refresh = useCallback(() => {
     setLoading(true)
     fetchAISettings()
-      .then(setSettings)
-      .catch(() => {})
+      .then((s) => { setSettings(s); setError(null) })
+      .catch((e) => setError(e instanceof Error ? e.message : 'Failed to load settings'))
       .finally(() => setLoading(false))
   }, [])
 
@@ -24,5 +25,5 @@ export function useSettings() {
     return updated
   }
 
-  return { settings, loading, save, refresh }
+  return { settings, loading, error, save, refresh }
 }

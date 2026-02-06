@@ -9,11 +9,15 @@ import type {
 const BASE = '/api'
 
 async function json<T>(url: string, init?: RequestInit): Promise<T> {
-  const resp = await fetch(url, init)
-  if (!resp.ok) {
-    throw new Error(`${resp.status} ${resp.statusText}`)
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 30_000)
+  try {
+    const resp = await fetch(url, { ...init, signal: controller.signal })
+    if (!resp.ok) throw new Error(`${resp.status} ${resp.statusText}`)
+    return resp.json() as Promise<T>
+  } finally {
+    clearTimeout(timeout)
   }
-  return resp.json() as Promise<T>
 }
 
 /** GET /api/health — current health data */
@@ -23,7 +27,10 @@ export function fetchHealth(): Promise<HealthUpdate> {
 
 /** POST /api/check — trigger immediate health check */
 export async function triggerCheck(): Promise<void> {
-  await fetch(`${BASE}/check`, { method: 'POST' })
+  const resp = await fetch(`${BASE}/check`, { method: 'POST' })
+  if (!resp.ok) {
+    throw new Error(`${resp.status} ${resp.statusText}`)
+  }
 }
 
 /** GET /api/settings/ai — current AI configuration */

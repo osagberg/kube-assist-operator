@@ -37,6 +37,7 @@ export function CausalGroupCard({ group }: Props) {
       <button
         className="w-full text-left flex items-center justify-between"
         onClick={() => setExpanded((e) => !e)}
+        aria-expanded={expanded}
       >
         <div className="flex items-center gap-2 flex-1 min-w-0">
           <span className="text-lg" aria-hidden>{icon}</span>
