@@ -199,27 +199,23 @@ func TestRingBuffer_ThreadSafety(t *testing.T) {
 	var wg sync.WaitGroup
 
 	// Concurrent writers
-	for i := 0; i < 10; i++ {
-		wg.Add(1)
-		go func(id int) {
-			defer wg.Done()
-			for j := 0; j < 50; j++ {
-				rb.Add(HealthSnapshot{HealthScore: float64(id*100 + j)})
+	for i := range 10 {
+		wg.Go(func() {
+			for j := range 50 {
+				rb.Add(HealthSnapshot{HealthScore: float64(i*100 + j)})
 			}
-		}(i)
+		})
 	}
 
 	// Concurrent readers
-	for i := 0; i < 5; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for j := 0; j < 50; j++ {
+	for range 5 {
+		wg.Go(func() {
+			for range 50 {
 				_ = rb.Last(10)
 				_, _ = rb.Latest()
 				_ = rb.Len()
 			}
-		}()
+		})
 	}
 
 	wg.Wait()
