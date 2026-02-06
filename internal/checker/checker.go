@@ -20,9 +20,13 @@ package checker
 import (
 	"context"
 
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
+
 	"github.com/osagberg/kube-assist-operator/internal/ai"
 	"github.com/osagberg/kube-assist-operator/internal/datasource"
 )
+
+var log = logf.Log.WithName("checker")
 
 // Severity levels for issues
 const (
@@ -169,14 +173,25 @@ func (r *CheckResult) EnhanceWithAI(ctx context.Context, checkCtx *CheckContext)
 	// Get AI analysis
 	response, err := checkCtx.AIProvider.Analyze(ctx, sanitizedRequest)
 	if err != nil {
-		// Log but don't fail - AI is optional enhancement
+		log.Error(err, "AI analysis failed", "provider", checkCtx.AIProvider.Name(), "issues", len(r.Issues))
 		return nil
 	}
 
-	// Enhance issues with AI suggestions
+	log.Info("AI analysis completed", "provider", checkCtx.AIProvider.Name(), "suggestions", len(response.EnhancedSuggestions), "tokens", response.TokensUsed)
+
+	// Enhance issues with AI suggestions — try multiple key formats
 	for i := range r.Issues {
 		key := r.Issues[i].Namespace + "/" + r.Issues[i].Resource
-		if enhanced, ok := response.EnhancedSuggestions[key]; ok {
+		enhanced, ok := response.EnhancedSuggestions[key]
+		if !ok {
+			// Also try just the resource name
+			enhanced, ok = response.EnhancedSuggestions[r.Issues[i].Resource]
+		}
+		if !ok {
+			// Try type/resource
+			enhanced, ok = response.EnhancedSuggestions[r.Issues[i].Type+"/"+r.Issues[i].Resource]
+		}
+		if ok {
 			if enhanced.Suggestion != "" && enhanced.Confidence > 0.5 {
 				// Append AI suggestion to existing suggestion
 				if r.Issues[i].Suggestion != "" {
