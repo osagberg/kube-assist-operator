@@ -23,8 +23,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
+
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 )
+
+var log = logf.Log.WithName("ai")
 
 const (
 	defaultOpenAIEndpoint = "https://api.openai.com/v1/chat/completions"
@@ -188,16 +193,22 @@ func (p *OpenAIProvider) Analyze(ctx context.Context, request AnalysisRequest) (
 }
 
 func (p *OpenAIProvider) buildPrompt(request AnalysisRequest) string {
-	issuesJSON, _ := json.MarshalIndent(request.Issues, "", "  ")
 	contextJSON, _ := json.MarshalIndent(request.ClusterContext, "", "  ")
 
-	prompt := fmt.Sprintf(`Analyze these Kubernetes health check issues and provide enhanced suggestions:
+	var issueLines strings.Builder
+	for i, issue := range request.Issues {
+		issueJSON, _ := json.Marshal(issue)
+		fmt.Fprintf(&issueLines, "issue_%d: %s\n", i, issueJSON)
+	}
+
+	prompt := fmt.Sprintf(`Analyze these Kubernetes health check issues and provide enhanced suggestions.
+Use the exact issue key (issue_0, issue_1, ...) in your response.
 
 Cluster Context:
 %s
 
 Issues:
-%s`, contextJSON, issuesJSON)
+%s`, contextJSON, issueLines.String())
 
 	if request.CausalContext != nil && len(request.CausalContext.Groups) > 0 {
 		causalJSON, _ := json.MarshalIndent(request.CausalContext, "", "  ")
@@ -220,8 +231,14 @@ func (p *OpenAIProvider) parseResponse(content string, tokensUsed int) *Analysis
 		Summary     string                        `json:"summary"`
 	}
 
-	if err := json.Unmarshal([]byte(content), &result); err != nil {
-		// If parsing fails, return the raw content as summary
+	cleaned := extractJSON(content)
+	if err := json.Unmarshal([]byte(cleaned), &result); err != nil {
+		// Log the parse failure for debugging
+		preview := content
+		if len(preview) > 200 {
+			preview = preview[:200] + "..."
+		}
+		log.Error(err, "Failed to parse AI response as JSON", "provider", "openai", "preview", preview)
 		return &AnalysisResponse{
 			EnhancedSuggestions: make(map[string]EnhancedSuggestion),
 			Summary:             content,
@@ -236,6 +253,30 @@ func (p *OpenAIProvider) parseResponse(content string, tokensUsed int) *Analysis
 	}
 }
 
+// extractJSON strips markdown code fences from AI responses.
+// AI models often wrap JSON in ```json ... ``` blocks.
+func extractJSON(content string) string {
+	// Try ```json ... ```
+	if idx := strings.Index(content, "```json"); idx >= 0 {
+		start := idx + 7
+		if end := strings.Index(content[start:], "```"); end >= 0 {
+			return strings.TrimSpace(content[start : start+end])
+		}
+	}
+	// Try bare ``` ... ```
+	if idx := strings.Index(content, "```"); idx >= 0 {
+		start := idx + 3
+		// Skip optional newline after opening fence
+		if start < len(content) && content[start] == '\n' {
+			start++
+		}
+		if end := strings.Index(content[start:], "```"); end >= 0 {
+			return strings.TrimSpace(content[start : start+end])
+		}
+	}
+	return content
+}
+
 const systemPrompt = `You are a Kubernetes troubleshooting expert. You analyze health check issues from Kubernetes clusters and provide actionable suggestions.
 
 When analyzing issues:
@@ -244,16 +285,19 @@ When analyzing issues:
 3. Consider common patterns and best practices
 4. Reference relevant Kubernetes documentation when helpful
 
+Each issue is labeled with an index key (issue_0, issue_1, ...). Use the EXACT same key in your response.
+
 Respond in JSON format with this structure:
 {
   "suggestions": {
-    "namespace/resource": {
+    "issue_0": {
       "suggestion": "Main suggestion text",
       "rootCause": "Likely root cause",
       "steps": ["Step 1", "Step 2"],
       "references": ["https://kubernetes.io/..."],
       "confidence": 0.8
-    }
+    },
+    "issue_1": { ... }
   },
   "summary": "Overall analysis summary"
 }

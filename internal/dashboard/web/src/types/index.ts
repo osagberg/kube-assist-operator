@@ -1,10 +1,19 @@
 // Types matching Go structs in internal/dashboard/server.go
 
+export interface AIStatus {
+  enabled: boolean
+  provider: string
+  lastError?: string
+  issuesEnhanced: number
+  tokensUsed: number
+}
+
 export interface HealthUpdate {
   timestamp: string
   namespaces: string[]
   results: Record<string, CheckResult>
   summary: Summary
+  aiStatus?: AIStatus
 }
 
 export interface CheckResult {
@@ -21,6 +30,9 @@ export interface Issue {
   namespace: string
   message: string
   suggestion: string
+  aiEnhanced?: boolean
+  rootCause?: string
+  metadata?: Record<string, string>
 }
 
 export interface Summary {

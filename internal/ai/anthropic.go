@@ -23,12 +23,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
 const (
 	defaultAnthropicEndpoint = "https://api.anthropic.com/v1/messages"
-	defaultAnthropicModel    = "claude-sonnet-4-5-20250929"
+	defaultAnthropicModel    = "claude-haiku-4-5-20251001"
 	anthropicAPIVersion      = "2023-06-01"
 )
 
@@ -197,16 +198,22 @@ func (p *AnthropicProvider) Analyze(ctx context.Context, request AnalysisRequest
 }
 
 func (p *AnthropicProvider) buildPrompt(request AnalysisRequest) string {
-	issuesJSON, _ := json.MarshalIndent(request.Issues, "", "  ")
 	contextJSON, _ := json.MarshalIndent(request.ClusterContext, "", "  ")
 
-	prompt := fmt.Sprintf(`Analyze these Kubernetes health check issues and provide enhanced suggestions:
+	var issueLines strings.Builder
+	for i, issue := range request.Issues {
+		issueJSON, _ := json.Marshal(issue)
+		fmt.Fprintf(&issueLines, "issue_%d: %s\n", i, issueJSON)
+	}
+
+	prompt := fmt.Sprintf(`Analyze these Kubernetes health check issues and provide enhanced suggestions.
+Use the exact issue key (issue_0, issue_1, ...) in your response.
 
 Cluster Context:
 %s
 
 Issues:
-%s`, contextJSON, issuesJSON)
+%s`, contextJSON, issueLines.String())
 
 	if request.CausalContext != nil && len(request.CausalContext.Groups) > 0 {
 		causalJSON, _ := json.MarshalIndent(request.CausalContext, "", "  ")
@@ -229,8 +236,13 @@ func (p *AnthropicProvider) parseResponse(content string, tokensUsed int) *Analy
 		Summary     string                        `json:"summary"`
 	}
 
-	if err := json.Unmarshal([]byte(content), &result); err != nil {
-		// If parsing fails, return the raw content as summary
+	cleaned := extractJSON(content)
+	if err := json.Unmarshal([]byte(cleaned), &result); err != nil {
+		preview := content
+		if len(preview) > 200 {
+			preview = preview[:200] + "..."
+		}
+		log.Error(err, "Failed to parse AI response as JSON", "provider", "anthropic", "preview", preview)
 		return &AnalysisResponse{
 			EnhancedSuggestions: make(map[string]EnhancedSuggestion),
 			Summary:             content,

@@ -99,6 +99,21 @@ export function SettingsModal({ open, onClose, settings, onSave }: Props) {
           />
         </div>
 
+        {/* Provider status */}
+        {settings && (
+          <div className="text-xs space-y-1">
+            <div className="flex items-center gap-1.5">
+              <span className={`w-2 h-2 rounded-full ${settings.providerReady ? 'bg-green-500' : 'bg-gray-300 dark:bg-gray-600'}`} />
+              <span className={settings.providerReady ? 'text-green-600 dark:text-green-400' : 'text-gray-400'}>
+                {settings.providerReady ? 'Provider ready' : 'Provider not configured'}
+              </span>
+            </div>
+            <p className="text-gray-400 dark:text-gray-500">
+              Default Anthropic model: claude-haiku-4-5 (cost-efficient). Override above for Sonnet.
+            </p>
+          </div>
+        )}
+
         <div className="flex justify-end gap-2 pt-2">
           <button
             onClick={onClose}

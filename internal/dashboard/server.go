@@ -43,12 +43,22 @@ import (
 
 var log = logf.Log.WithName("dashboard")
 
+// AIStatus tracks AI analysis state for the frontend
+type AIStatus struct {
+	Enabled        bool   `json:"enabled"`
+	Provider       string `json:"provider"`
+	LastError      string `json:"lastError,omitempty"`
+	IssuesEnhanced int    `json:"issuesEnhanced"`
+	TokensUsed     int    `json:"tokensUsed"`
+}
+
 // HealthUpdate represents a health check update sent via SSE
 type HealthUpdate struct {
 	Timestamp  time.Time              `json:"timestamp"`
 	Namespaces []string               `json:"namespaces"`
 	Results    map[string]CheckResult `json:"results"`
 	Summary    Summary                `json:"summary"`
+	AIStatus   *AIStatus              `json:"aiStatus,omitempty"`
 }
 
 // CheckResult is a simplified result for the dashboard
@@ -61,12 +71,15 @@ type CheckResult struct {
 
 // Issue is a simplified issue for the dashboard
 type Issue struct {
-	Type       string `json:"type"`
-	Severity   string `json:"severity"`
-	Resource   string `json:"resource"`
-	Namespace  string `json:"namespace"`
-	Message    string `json:"message"`
-	Suggestion string `json:"suggestion"`
+	Type       string            `json:"type"`
+	Severity   string            `json:"severity"`
+	Resource   string            `json:"resource"`
+	Namespace  string            `json:"namespace"`
+	Message    string            `json:"message"`
+	Suggestion string            `json:"suggestion"`
+	AIEnhanced bool              `json:"aiEnhanced,omitempty"`
+	RootCause  string            `json:"rootCause,omitempty"`
+	Metadata   map[string]string `json:"metadata,omitempty"`
 }
 
 // Summary provides aggregate health information
@@ -234,7 +247,7 @@ func (s *Server) runHealthChecker(ctx context.Context) {
 
 // runCheck performs a health check and broadcasts results
 func (s *Server) runCheck(ctx context.Context) {
-	// Resolve namespaces via scope resolver — scan all non-system namespaces
+	// 1. Resolve namespaces via scope resolver — scan all non-system namespaces
 	resolver := scope.NewResolver(s.client, "default")
 	namespaces, err := resolver.ResolveNamespaces(ctx, assistv1alpha1.ScopeConfig{
 		NamespaceSelector: &metav1.LabelSelector{},
@@ -248,28 +261,64 @@ func (s *Server) runCheck(ctx context.Context) {
 		namespaces = []string{"default"}
 	}
 
+	checkCtx2, cancel := context.WithTimeout(ctx, s.checkTimeout)
+	defer cancel()
+
+	// 2. Build CheckContext with AIEnabled: false — pure health checks first
+	checkCtx := &checker.CheckContext{
+		DataSource: s.client,
+		Namespaces: namespaces,
+		AIEnabled:  false,
+	}
+
+	// 3. RunAll — pure health checks, no AI
+	results := s.registry.RunAll(checkCtx2, checkCtx, nil)
+
+	// 4. Run causal correlator BEFORE AI so causal context is available
+	now := time.Now()
+	causalCtx := s.correlator.Analyze(causal.CorrelationInput{
+		Results:   results,
+		Timestamp: now,
+	})
+
+	// 5. Populate ClusterContext with namespaces
+	checkCtx.ClusterContext = ai.ClusterContext{
+		Namespaces: namespaces,
+	}
+
+	// 6. Convert causal.CausalContext to ai.CausalAnalysisContext
+	checkCtx.CausalContext = toCausalAnalysisContext(causalCtx)
+
+	// 7. Enable AI and set provider for the batched call
 	s.mu.RLock()
 	provider := s.aiProvider
 	enabled := s.aiEnabled
 	s.mu.RUnlock()
 
-	checkCtx2, cancel := context.WithTimeout(ctx, s.checkTimeout)
-	defer cancel()
+	checkCtx.AIEnabled = enabled
+	checkCtx.AIProvider = provider
 
-	checkCtx := &checker.CheckContext{
-		DataSource: s.client,
-		Namespaces: namespaces,
-		AIProvider: provider,
-		AIEnabled:  enabled,
+	// 8. Single batched AI call
+	var aiStatus *AIStatus
+	enhanced, tokens, aiErr := checker.EnhanceAllWithAI(checkCtx2, results, checkCtx)
+	if enabled && provider != nil {
+		aiStatus = &AIStatus{
+			Enabled:        enabled,
+			Provider:       provider.Name(),
+			IssuesEnhanced: enhanced,
+			TokensUsed:     tokens,
+		}
+		if aiErr != nil {
+			aiStatus.LastError = aiErr.Error()
+		}
 	}
 
-	results := s.registry.RunAll(checkCtx2, checkCtx, nil)
-
-	// Convert to dashboard format
+	// 9. Convert to dashboard format
 	update := &HealthUpdate{
-		Timestamp:  time.Now(),
+		Timestamp:  now,
 		Namespaces: namespaces,
 		Results:    make(map[string]CheckResult),
+		AIStatus:   aiStatus,
 	}
 
 	var summary Summary
@@ -286,14 +335,24 @@ func (s *Server) runCheck(ctx context.Context) {
 			summary.TotalIssues += len(result.Issues)
 
 			for _, issue := range result.Issues {
-				cr.Issues = append(cr.Issues, Issue{
+				di := Issue{
 					Type:       issue.Type,
 					Severity:   issue.Severity,
 					Resource:   issue.Resource,
 					Namespace:  issue.Namespace,
 					Message:    issue.Message,
 					Suggestion: issue.Suggestion,
-				})
+					Metadata:   issue.Metadata,
+				}
+				if strings.Contains(issue.Suggestion, "AI Analysis:") {
+					di.AIEnhanced = true
+				}
+				if issue.Metadata != nil {
+					if rc, ok := issue.Metadata["aiRootCause"]; ok {
+						di.RootCause = rc
+					}
+				}
+				cr.Issues = append(cr.Issues, di)
 
 				switch issue.Severity {
 				case checker.SeverityCritical:
@@ -310,13 +369,7 @@ func (s *Server) runCheck(ctx context.Context) {
 	}
 	update.Summary = summary
 
-	// Run causal correlation
-	causalCtx := s.correlator.Analyze(causal.CorrelationInput{
-		Results:   results,
-		Timestamp: update.Timestamp,
-	})
-
-	// Store latest and broadcast
+	// 10. Store latest and broadcast
 	s.mu.Lock()
 	s.latest = update
 	s.latestCausal = causalCtx
@@ -346,6 +399,33 @@ func (s *Server) runCheck(ctx context.Context) {
 		snapshot.ByChecker[name] = len(result.Issues)
 	}
 	s.history.Add(snapshot)
+}
+
+// toCausalAnalysisContext converts causal.CausalContext to ai.CausalAnalysisContext
+func toCausalAnalysisContext(cc *causal.CausalContext) *ai.CausalAnalysisContext {
+	if cc == nil || len(cc.Groups) == 0 {
+		return nil
+	}
+	groups := make([]ai.CausalGroupSummary, len(cc.Groups))
+	for i, g := range cc.Groups {
+		resources := make([]string, len(g.Events))
+		for j, e := range g.Events {
+			resources[j] = e.Issue.Namespace + "/" + e.Issue.Resource
+		}
+		groups[i] = ai.CausalGroupSummary{
+			Rule:       g.Rule,
+			Title:      g.Title,
+			RootCause:  g.RootCause,
+			Severity:   g.Severity,
+			Confidence: g.Confidence,
+			Resources:  resources,
+		}
+	}
+	return &ai.CausalAnalysisContext{
+		Groups:            groups,
+		UncorrelatedCount: cc.UncorrelatedCount,
+		TotalIssues:       cc.TotalIssues,
+	}
 }
 
 // handleHealth returns current health status

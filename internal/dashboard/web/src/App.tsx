@@ -115,6 +115,28 @@ function App() {
         </div>
       </header>
 
+      {/* AI Status Bar */}
+      {health?.aiStatus && (
+        <div className={`px-6 py-1.5 text-xs font-medium ${
+          health.aiStatus.lastError
+            ? 'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300'
+            : health.aiStatus.issuesEnhanced > 0
+              ? 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300'
+              : 'bg-yellow-100 dark:bg-yellow-900/30 text-yellow-700 dark:text-yellow-300'
+        }`}>
+          <div className="max-w-7xl mx-auto flex items-center gap-2">
+            <span className="font-semibold">AI:</span>
+            {health.aiStatus.lastError ? (
+              <span>Error: {health.aiStatus.lastError}</span>
+            ) : health.aiStatus.issuesEnhanced > 0 ? (
+              <span>{health.aiStatus.issuesEnhanced} issues enhanced ({health.aiStatus.provider}, {health.aiStatus.tokensUsed} tokens)</span>
+            ) : (
+              <span>Enabled but no issues enhanced</span>
+            )}
+          </div>
+        </div>
+      )}
+
       <main className="max-w-7xl mx-auto px-6 py-8">
         {error && (
           <div className="bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300 px-4 py-3 rounded-lg mb-6 border border-red-200 dark:border-red-800">

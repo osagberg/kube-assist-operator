@@ -35,11 +35,23 @@ export function IssueRow({ issue }: Props) {
             {cfg.icon}
           </span>
           <div className="min-w-0">
-            <div className="font-medium text-sm">
-              <span className="text-gray-500 dark:text-gray-400">{issue.namespace}/</span>
-              {issue.resource}
+            <div className="font-medium text-sm flex items-center gap-1.5">
+              <span>
+                <span className="text-gray-500 dark:text-gray-400">{issue.namespace}/</span>
+                {issue.resource}
+              </span>
+              {issue.aiEnhanced && (
+                <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-semibold bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300">
+                  AI
+                </span>
+              )}
             </div>
             <div className="text-sm text-gray-600 dark:text-gray-300 mt-0.5">{issue.message}</div>
+            {issue.rootCause && (
+              <div className="text-xs text-gray-600 dark:text-gray-400 mt-1 italic">
+                Root cause: {issue.rootCause}
+              </div>
+            )}
             {issue.suggestion && (
               <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">{issue.suggestion}</div>
             )}

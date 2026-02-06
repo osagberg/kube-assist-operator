@@ -19,6 +19,7 @@ package checker
 
 import (
 	"context"
+	"fmt"
 
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -212,4 +213,91 @@ func (r *CheckResult) EnhanceWithAI(ctx context.Context, checkCtx *CheckContext)
 	}
 
 	return nil
+}
+
+// EnhanceAllWithAI collects issues from all results and makes a single batched AI call.
+// It uses index-based keys ("issue_0", "issue_1", ...) so the AI response keys match exactly.
+func EnhanceAllWithAI(ctx context.Context, results map[string]*CheckResult, checkCtx *CheckContext) (int, int, error) {
+	if !checkCtx.AIEnabled || checkCtx.AIProvider == nil || !checkCtx.AIProvider.Available() {
+		return 0, 0, nil
+	}
+
+	// Track which result and index each issue came from
+	type issueRef struct {
+		checkerName string
+		issueIdx    int
+	}
+
+	var issueContexts []ai.IssueContext
+	var refs []issueRef
+
+	for checkerName, result := range results {
+		if result.Error != nil {
+			continue
+		}
+		for i, issue := range result.Issues {
+			issueContexts = append(issueContexts, ai.IssueContext{
+				Type:             issue.Type,
+				Severity:         issue.Severity,
+				Resource:         issue.Resource,
+				Namespace:        issue.Namespace,
+				Message:          issue.Message,
+				StaticSuggestion: issue.Suggestion,
+			})
+			refs = append(refs, issueRef{checkerName: checkerName, issueIdx: i})
+		}
+	}
+
+	if len(issueContexts) == 0 {
+		return 0, 0, nil
+	}
+
+	// Sanitize before sending to AI
+	request := ai.AnalysisRequest{
+		Issues:         issueContexts,
+		ClusterContext: checkCtx.ClusterContext,
+		CausalContext:  checkCtx.CausalContext,
+	}
+	sanitizedRequest := ai.NewSanitizer().SanitizeAnalysisRequest(request)
+
+	// Single batched AI call
+	response, err := checkCtx.AIProvider.Analyze(ctx, sanitizedRequest)
+	if err != nil {
+		log.Error(err, "AI batch analysis failed", "provider", checkCtx.AIProvider.Name(), "issues", len(issueContexts))
+		return 0, 0, err
+	}
+
+	// Distribute suggestions back to their original issues
+	issuesEnhanced := 0
+	for i, ref := range refs {
+		key := fmt.Sprintf("issue_%d", i)
+		enhanced, ok := response.EnhancedSuggestions[key]
+		if !ok {
+			continue
+		}
+		if enhanced.Suggestion != "" && enhanced.Confidence > 0.5 {
+			issue := &results[ref.checkerName].Issues[ref.issueIdx]
+			if issue.Suggestion != "" {
+				issue.Suggestion += "\n\nAI Analysis: " + enhanced.Suggestion
+			} else {
+				issue.Suggestion = "AI Analysis: " + enhanced.Suggestion
+			}
+			if enhanced.RootCause != "" {
+				if issue.Metadata == nil {
+					issue.Metadata = make(map[string]string)
+				}
+				issue.Metadata["aiRootCause"] = enhanced.RootCause
+			}
+			issuesEnhanced++
+		}
+	}
+
+	log.Info("AI batch analysis completed",
+		"provider", checkCtx.AIProvider.Name(),
+		"totalIssues", len(issueContexts),
+		"enhanced", issuesEnhanced,
+		"tokens", response.TokensUsed,
+	)
+
+	return issuesEnhanced, response.TokensUsed, nil
 }

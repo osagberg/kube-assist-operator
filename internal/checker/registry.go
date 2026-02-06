@@ -127,11 +127,6 @@ func (r *Registry) RunAll(ctx context.Context, checkCtx *CheckContext, names []s
 				}
 			}
 
-			// Enhance with AI suggestions if enabled
-			if checkCtx.AIEnabled && checkCtx.AIProvider != nil && result.Error == nil && len(result.Issues) > 0 {
-				_ = result.EnhanceWithAI(ctx, checkCtx)
-			}
-
 			resultsChan <- struct {
 				name   string
 				result *CheckResult
