@@ -45,8 +45,8 @@ func (p *NoOpProvider) Analyze(_ context.Context, request AnalysisRequest) (*Ana
 		EnhancedSuggestions: make(map[string]EnhancedSuggestion),
 	}
 
-	for _, issue := range request.Issues {
-		key := issue.Namespace + "/" + issue.Resource
+	for i, issue := range request.Issues {
+		key := fmt.Sprintf("issue_%d", i)
 		rootCause := "This is a test suggestion from the NoOp AI provider."
 		if request.CausalContext != nil && len(request.CausalContext.Groups) > 0 {
 			rootCause = fmt.Sprintf("[NoOp AI] Causal context: %d groups, %d total issues",

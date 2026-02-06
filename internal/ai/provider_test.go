@@ -60,7 +60,7 @@ func TestNoOpProvider_Analyze(t *testing.T) {
 		t.Errorf("EnhancedSuggestions length = %d, want 1", len(resp.EnhancedSuggestions))
 	}
 
-	key := "default/deployment/test"
+	key := "issue_0"
 	suggestion, ok := resp.EnhancedSuggestions[key]
 	if !ok {
 		t.Errorf("EnhancedSuggestions missing key %s", key)

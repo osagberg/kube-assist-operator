@@ -180,16 +180,21 @@ func (r *CheckResult) EnhanceWithAI(ctx context.Context, checkCtx *CheckContext)
 
 	log.Info("AI analysis completed", "provider", checkCtx.AIProvider.Name(), "suggestions", len(response.EnhancedSuggestions), "tokens", response.TokensUsed)
 
-	// Enhance issues with AI suggestions — try multiple key formats
+	// Enhance issues with AI suggestions — try index-based key first, then legacy formats
 	for i := range r.Issues {
-		key := r.Issues[i].Namespace + "/" + r.Issues[i].Resource
+		// Primary: index-based key (matches batch prompt format)
+		key := fmt.Sprintf("issue_%d", i)
 		enhanced, ok := response.EnhancedSuggestions[key]
 		if !ok {
-			// Also try just the resource name
+			// Legacy: namespace/resource
+			enhanced, ok = response.EnhancedSuggestions[r.Issues[i].Namespace+"/"+r.Issues[i].Resource]
+		}
+		if !ok {
+			// Legacy: just the resource name
 			enhanced, ok = response.EnhancedSuggestions[r.Issues[i].Resource]
 		}
 		if !ok {
-			// Try type/resource
+			// Legacy: type/resource
 			enhanced, ok = response.EnhancedSuggestions[r.Issues[i].Type+"/"+r.Issues[i].Resource]
 		}
 		if ok {
