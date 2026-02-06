@@ -8,6 +8,19 @@ import type {
 
 const BASE = '/api'
 
+/** Normalize Go nil slices (JSON null) to empty arrays */
+export function normalizeHealth(data: HealthUpdate): HealthUpdate {
+  for (const key of Object.keys(data.results)) {
+    if (!data.results[key].issues) {
+      data.results[key].issues = []
+    }
+  }
+  if (!data.namespaces) {
+    data.namespaces = []
+  }
+  return data
+}
+
 async function json<T>(url: string, init?: RequestInit): Promise<T> {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), 30_000)
@@ -21,8 +34,9 @@ async function json<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 /** GET /api/health — current health data */
-export function fetchHealth(): Promise<HealthUpdate> {
-  return json<HealthUpdate>(`${BASE}/health`)
+export async function fetchHealth(): Promise<HealthUpdate> {
+  const data = await json<HealthUpdate>(`${BASE}/health`)
+  return normalizeHealth(data)
 }
 
 /** POST /api/check — trigger immediate health check */

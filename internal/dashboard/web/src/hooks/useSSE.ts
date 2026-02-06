@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import type { HealthUpdate } from '../types'
+import { normalizeHealth } from '../api/client'
 
 const MAX_RETRIES = 10
 const BASE_DELAY = 1000
@@ -27,7 +28,7 @@ export function useSSE(paused: boolean) {
     es.onmessage = (event) => {
       try {
         const update = JSON.parse(event.data) as HealthUpdate
-        setData(update)
+        setData(normalizeHealth(update))
       } catch {
         // ignore parse errors
       }
