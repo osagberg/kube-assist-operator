@@ -32,6 +32,7 @@ import (
 
 	assistv1alpha1 "github.com/osagberg/kube-assist-operator/api/v1alpha1"
 	"github.com/osagberg/kube-assist-operator/internal/ai"
+	"github.com/osagberg/kube-assist-operator/internal/causal"
 	"github.com/osagberg/kube-assist-operator/internal/checker"
 	"github.com/osagberg/kube-assist-operator/internal/datasource"
 	"github.com/osagberg/kube-assist-operator/internal/history"
@@ -102,9 +103,11 @@ type Server struct {
 	aiConfig     ai.Config
 	checkTimeout time.Duration
 	history      *history.RingBuffer
+	correlator   *causal.Correlator
 	mu           sync.RWMutex
 	clients      map[chan HealthUpdate]bool
 	latest       *HealthUpdate
+	latestCausal *causal.CausalContext
 	running      bool
 	stopCh       chan struct{}
 }
@@ -118,6 +121,7 @@ func NewServer(ds datasource.DataSource, registry *checker.Registry, addr string
 		aiConfig:     ai.DefaultConfig(),
 		checkTimeout: 2 * time.Minute,
 		history:      history.New(100),
+		correlator:   causal.NewCorrelator(),
 		clients:      make(map[chan HealthUpdate]bool),
 		stopCh:       make(chan struct{}),
 	}
@@ -143,6 +147,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/api/events", s.handleSSE)
 	mux.HandleFunc("/api/check", s.handleTriggerCheck)
 	mux.HandleFunc("/api/settings/ai", s.handleAISettings)
+	mux.HandleFunc("/api/causal/groups", s.handleCausalGroups)
 
 	// React SPA dashboard
 	spaFS, err := fs.Sub(webAssets, "web/dist")
@@ -291,9 +296,16 @@ func (s *Server) runCheck(ctx context.Context) {
 	}
 	update.Summary = summary
 
+	// Run causal correlation
+	causalCtx := s.correlator.Analyze(causal.CorrelationInput{
+		Results:   results,
+		Timestamp: update.Timestamp,
+	})
+
 	// Store latest and broadcast
 	s.mu.Lock()
 	s.latest = update
+	s.latestCausal = causalCtx
 	for clientCh := range s.clients {
 		select {
 		case clientCh <- *update:
@@ -539,4 +551,20 @@ func (s *Server) handleHealthHistory(w http.ResponseWriter, r *http.Request) {
 
 	// Default: return last 50
 	_ = json.NewEncoder(w).Encode(s.history.Last(50))
+}
+
+// handleCausalGroups returns the latest causal correlation analysis
+func (s *Server) handleCausalGroups(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	s.mu.RLock()
+	cc := s.latestCausal
+	s.mu.RUnlock()
+
+	if cc == nil {
+		_ = json.NewEncoder(w).Encode(&causal.CausalContext{})
+		return
+	}
+
+	_ = json.NewEncoder(w).Encode(cc)
 }
