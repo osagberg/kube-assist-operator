@@ -158,11 +158,20 @@ func (s *Server) Start(ctx context.Context) error {
 	} else {
 		fileServer := http.FileServer(http.FS(spaFS))
 		mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-			// Serve static assets directly, fall back to index.html for SPA routing
 			path := r.URL.Path
+			// Serve index.html directly for root and SPA routes to avoid
+			// FileServer's redirect loop (it redirects /index.html → ./ → /)
 			if path == "/" || path == "" {
-				r.URL.Path = "/index.html"
+				http.ServeFileFS(w, r, spaFS, "index.html")
+				return
 			}
+			// Try static asset first; fall back to index.html for SPA routing
+			f, err := spaFS.Open(path[1:]) // strip leading /
+			if err != nil {
+				http.ServeFileFS(w, r, spaFS, "index.html")
+				return
+			}
+			_ = f.Close()
 			fileServer.ServeHTTP(w, r)
 		})
 	}
