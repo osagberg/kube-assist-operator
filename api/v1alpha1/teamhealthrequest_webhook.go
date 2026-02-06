@@ -69,6 +69,17 @@ func (v *TeamHealthRequestCustomValidator) ValidateCreate(_ context.Context, hr 
 			*hr.Spec.TTLSecondsAfterFinished, "must be >= 0"))
 	}
 
+	// Validate notification targets
+	for i, target := range hr.Spec.Notify {
+		notifyPath := specPath.Child("notify").Index(i)
+		if target.URL == "" && target.SecretRef == nil {
+			allErrs = append(allErrs, field.Required(notifyPath, "must specify url or secretRef"))
+		}
+		if target.URL != "" && target.SecretRef != nil {
+			allErrs = append(allErrs, field.Forbidden(notifyPath, "cannot specify both url and secretRef"))
+		}
+	}
+
 	// scope: can't set both currentNamespaceOnly and namespaces/namespaceSelector
 	if hr.Spec.Scope.CurrentNamespaceOnly {
 		if len(hr.Spec.Scope.Namespaces) > 0 {

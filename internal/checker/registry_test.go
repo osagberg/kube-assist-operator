@@ -196,34 +196,57 @@ func TestRegistry_Run(t *testing.T) {
 }
 
 func TestRegistry_RunAll(t *testing.T) {
-	r := NewRegistry()
-	ctx := context.Background()
-	checkCtx := &CheckContext{}
+	t.Run("nil names runs all registered", func(t *testing.T) {
+		r := NewRegistry()
+		ctx := context.Background()
+		checkCtx := &CheckContext{}
 
-	r.MustRegister(&mockChecker{name: "a", supported: true, issues: []Issue{{Type: "A"}}})
-	r.MustRegister(&mockChecker{name: "b", supported: true, issues: []Issue{{Type: "B"}}})
-	r.MustRegister(&mockChecker{name: "c", supported: false})
+		r.MustRegister(&mockChecker{name: "a", supported: true, issues: []Issue{{Type: "A"}}})
+		r.MustRegister(&mockChecker{name: "b", supported: true, issues: []Issue{{Type: "B"}}})
+		r.MustRegister(&mockChecker{name: "c", supported: false})
 
-	results := r.RunAll(ctx, checkCtx, []string{"a", "b", "c"})
+		results := r.RunAll(ctx, checkCtx, nil)
 
-	if len(results) != 3 {
-		t.Errorf("RunAll() results = %d, want 3", len(results))
-	}
+		if len(results) != 3 {
+			t.Errorf("RunAll(nil) results = %d, want 3", len(results))
+		}
 
-	// Check "a" result
-	if results["a"] == nil || len(results["a"].Issues) != 1 {
-		t.Error("RunAll() expected result for 'a' with 1 issue")
-	}
+		if results["a"] == nil || len(results["a"].Issues) != 1 {
+			t.Error("RunAll(nil) expected result for 'a' with 1 issue")
+		}
+		if results["b"] == nil || len(results["b"].Issues) != 1 {
+			t.Error("RunAll(nil) expected result for 'b' with 1 issue")
+		}
+		if results["c"] == nil || results["c"].Error == nil {
+			t.Error("RunAll(nil) expected error result for unsupported 'c'")
+		}
+	})
 
-	// Check "b" result
-	if results["b"] == nil || len(results["b"].Issues) != 1 {
-		t.Error("RunAll() expected result for 'b' with 1 issue")
-	}
+	t.Run("explicit names runs only specified", func(t *testing.T) {
+		r := NewRegistry()
+		ctx := context.Background()
+		checkCtx := &CheckContext{}
 
-	// Check "c" result (unsupported)
-	if results["c"] == nil || results["c"].Error == nil {
-		t.Error("RunAll() expected error result for unsupported 'c'")
-	}
+		r.MustRegister(&mockChecker{name: "a", supported: true, issues: []Issue{{Type: "A"}}})
+		r.MustRegister(&mockChecker{name: "b", supported: true, issues: []Issue{{Type: "B"}}})
+		r.MustRegister(&mockChecker{name: "c", supported: false})
+
+		results := r.RunAll(ctx, checkCtx, []string{"a", "c"})
+
+		if len(results) != 2 {
+			t.Errorf("RunAll(explicit) results = %d, want 2", len(results))
+		}
+
+		if results["a"] == nil || len(results["a"].Issues) != 1 {
+			t.Error("RunAll(explicit) expected result for 'a' with 1 issue")
+		}
+		if results["b"] != nil {
+			t.Error("RunAll(explicit) should not contain 'b'")
+		}
+		if results["c"] == nil || results["c"].Error == nil {
+			t.Error("RunAll(explicit) expected error result for unsupported 'c'")
+		}
+	})
 }
 
 func TestRegistry_Aggregate(t *testing.T) {

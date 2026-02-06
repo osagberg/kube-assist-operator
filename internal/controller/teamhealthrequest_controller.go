@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -35,6 +36,7 @@ import (
 	"github.com/osagberg/kube-assist-operator/internal/checker"
 	"github.com/osagberg/kube-assist-operator/internal/checker/workload"
 	"github.com/osagberg/kube-assist-operator/internal/datasource"
+	"github.com/osagberg/kube-assist-operator/internal/notifier"
 	"github.com/osagberg/kube-assist-operator/internal/scope"
 )
 
@@ -49,11 +51,12 @@ const (
 // TeamHealthRequestReconciler reconciles a TeamHealthRequest object
 type TeamHealthRequestReconciler struct {
 	client.Client
-	Scheme     *runtime.Scheme
-	Registry   *checker.Registry
-	AIProvider ai.Provider
-	AIEnabled  bool
-	DataSource datasource.DataSource
+	Scheme            *runtime.Scheme
+	Registry          *checker.Registry
+	AIProvider        ai.Provider
+	AIEnabled         bool
+	DataSource        datasource.DataSource
+	NotifierRegistry  *notifier.Registry
 }
 
 // +kubebuilder:rbac:groups=assist.cluster.local,resources=teamhealthrequests,verbs=get;list;watch;create;update;patch;delete
@@ -226,6 +229,11 @@ func (r *TeamHealthRequestReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		return ctrl.Result{}, err
 	}
 
+	// Send notifications if configured
+	if len(healthReq.Spec.Notify) > 0 && r.NotifierRegistry != nil {
+		go r.dispatchNotifications(context.Background(), healthReq, totalHealthy, totalIssues, criticalCount, warningCount)
+	}
+
 	log.Info("TeamHealthRequest completed",
 		"namespaces", len(namespaces),
 		"healthy", totalHealthy,
@@ -315,6 +323,79 @@ func (r *TeamHealthRequestReconciler) setCondition(hr *assistv1alpha1.TeamHealth
 		Message:            message,
 		LastTransitionTime: metav1.Now(),
 	})
+}
+
+// dispatchNotifications sends notifications to configured targets
+func (r *TeamHealthRequestReconciler) dispatchNotifications(
+	ctx context.Context,
+	hr *assistv1alpha1.TeamHealthRequest,
+	totalHealthy, totalIssues, criticalCount, warningCount int,
+) {
+	log := logf.FromContext(ctx).WithValues("name", hr.Name, "namespace", hr.Namespace)
+
+	for _, target := range hr.Spec.Notify {
+		if target.Type != assistv1alpha1.NotificationTypeWebhook {
+			continue
+		}
+
+		// Skip if severity filter doesn't match
+		if target.OnSeverity != "" && !r.severityMet(target.OnSeverity, criticalCount, warningCount) {
+			continue
+		}
+
+		url := target.URL
+		if url == "" && target.SecretRef != nil {
+			// Read URL from secret
+			var secret corev1.Secret
+			if err := r.Get(ctx, client.ObjectKey{Name: target.SecretRef.Name, Namespace: hr.Namespace}, &secret); err != nil {
+				log.Error(err, "Failed to read notification secret", "secret", target.SecretRef.Name)
+				continue
+			}
+			url = string(secret.Data[target.SecretRef.Key])
+		}
+
+		if url == "" {
+			continue
+		}
+
+		healthy := totalHealthy
+		issues := totalIssues
+		score := float64(100)
+		if healthy+issues > 0 {
+			score = float64(healthy) / float64(healthy+issues) * 100
+		}
+
+		n := notifier.Notification{
+			Summary:       hr.Status.Summary,
+			TotalHealthy:  healthy,
+			TotalIssues:   issues,
+			CriticalCount: criticalCount,
+			WarningCount:  warningCount,
+			HealthScore:   score,
+			Timestamp:     time.Now(),
+			RequestName:   hr.Name,
+			Namespace:     hr.Namespace,
+		}
+
+		wh := notifier.NewWebhookNotifier(url)
+		if err := wh.Send(ctx, n); err != nil {
+			log.Error(err, "Failed to send notification", "url", url)
+		}
+	}
+}
+
+// severityMet checks if the configured severity threshold is met
+func (r *TeamHealthRequestReconciler) severityMet(threshold string, critical, warning int) bool {
+	switch threshold {
+	case "Critical":
+		return critical > 0
+	case "Warning":
+		return critical > 0 || warning > 0
+	case "Info":
+		return true
+	default:
+		return true
+	}
 }
 
 // SetupWithManager sets up the controller with the Manager.

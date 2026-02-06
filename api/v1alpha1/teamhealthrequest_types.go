@@ -123,6 +123,47 @@ type CheckerConfig struct {
 	PVCs *PVCCheckConfig `json:"pvcs,omitempty"`
 }
 
+// NotificationType identifies a notification backend
+// +kubebuilder:validation:Enum=webhook
+type NotificationType string
+
+const (
+	NotificationTypeWebhook NotificationType = "webhook"
+)
+
+// SecretKeyRef is a reference to a key in a Secret
+type SecretKeyRef struct {
+	// name is the name of the Secret
+	Name string `json:"name"`
+	// key is the key within the Secret
+	Key string `json:"key"`
+}
+
+// NotificationTarget defines where to send notifications
+type NotificationTarget struct {
+	// type is the notification backend type
+	// +kubebuilder:validation:Required
+	Type NotificationType `json:"type"`
+
+	// url is the webhook URL (use this OR secretRef, not both)
+	// +optional
+	URL string `json:"url,omitempty"`
+
+	// secretRef references a Secret containing the webhook URL
+	// +optional
+	SecretRef *SecretKeyRef `json:"secretRef,omitempty"`
+
+	// onCompletion sends notification when health check completes
+	// +optional
+	// +kubebuilder:default=true
+	OnCompletion bool `json:"onCompletion,omitempty"`
+
+	// onSeverity sends notification only when issues of this severity or higher are found
+	// +optional
+	// +kubebuilder:validation:Enum=Critical;Warning;Info
+	OnSeverity string `json:"onSeverity,omitempty"`
+}
+
 // TeamHealthRequestSpec defines the desired state of TeamHealthRequest
 type TeamHealthRequestSpec struct {
 	// scope defines which namespaces to check
@@ -143,6 +184,10 @@ type TeamHealthRequestSpec struct {
 	// +optional
 	// +kubebuilder:validation:Minimum=0
 	TTLSecondsAfterFinished *int32 `json:"ttlSecondsAfterFinished,omitempty"`
+
+	// notify configures notification targets for health check results
+	// +optional
+	Notify []NotificationTarget `json:"notify,omitempty"`
 }
 
 // CheckerResult contains results from a single checker

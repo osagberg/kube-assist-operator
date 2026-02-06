@@ -135,6 +135,52 @@ spec:
                         type: integer
                     type: object
                 type: object
+              notify:
+                description: notify configures notification targets for health check
+                  results
+                items:
+                  description: NotificationTarget defines where to send notifications
+                  properties:
+                    onCompletion:
+                      default: true
+                      description: onCompletion sends notification when health check
+                        completes
+                      type: boolean
+                    onSeverity:
+                      description: onSeverity sends notification only when issues
+                        of this severity or higher are found
+                      enum:
+                      - Critical
+                      - Warning
+                      - Info
+                      type: string
+                    secretRef:
+                      description: secretRef references a Secret containing the webhook
+                        URL
+                      properties:
+                        key:
+                          description: key is the key within the Secret
+                          type: string
+                        name:
+                          description: name is the name of the Secret
+                          type: string
+                      required:
+                      - key
+                      - name
+                      type: object
+                    type:
+                      description: type is the notification backend type
+                      enum:
+                      - webhook
+                      type: string
+                    url:
+                      description: url is the webhook URL (use this OR secretRef,
+                        not both)
+                      type: string
+                  required:
+                  - type
+                  type: object
+                type: array
               scope:
                 description: scope defines which namespaces to check
                 properties:

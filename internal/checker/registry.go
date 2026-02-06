@@ -94,45 +94,18 @@ func (r *Registry) Run(ctx context.Context, name string, checkCtx *CheckContext)
 	return checker.Check(ctx, checkCtx)
 }
 
-// RunAll executes multiple checkers and returns results keyed by checker name
+// RunAll executes checkers concurrently and returns results keyed by checker name.
+// If names is nil, all registered checkers are run.
 func (r *Registry) RunAll(ctx context.Context, checkCtx *CheckContext, names []string) map[string]*CheckResult {
-	results := make(map[string]*CheckResult)
-
-	for _, name := range names {
-		result, err := r.Run(ctx, name, checkCtx)
-		if err != nil {
-			results[name] = &CheckResult{
-				CheckerName: name,
-				Error:       err,
-			}
-			continue
+	if names == nil {
+		r.mu.RLock()
+		names = make([]string, 0, len(r.checkers))
+		for name := range r.checkers {
+			names = append(names, name)
 		}
-
-		// Enhance with AI suggestions if enabled
-		if checkCtx.AIEnabled && checkCtx.AIProvider != nil && len(result.Issues) > 0 {
-			_ = result.EnhanceWithAI(ctx, checkCtx)
-		}
-
-		results[name] = result
+		r.mu.RUnlock()
 	}
 
-	return results
-}
-
-// RunAllSupported executes all registered checkers that are supported
-func (r *Registry) RunAllSupported(ctx context.Context, checkCtx *CheckContext) map[string]*CheckResult {
-	r.mu.RLock()
-	names := make([]string, 0, len(r.checkers))
-	for name := range r.checkers {
-		names = append(names, name)
-	}
-	r.mu.RUnlock()
-
-	return r.RunAll(ctx, checkCtx, names)
-}
-
-// RunConcurrent executes multiple checkers concurrently and returns results
-func (r *Registry) RunConcurrent(ctx context.Context, checkCtx *CheckContext, names []string) map[string]*CheckResult {
 	results := make(map[string]*CheckResult)
 	resultsChan := make(chan struct {
 		name   string

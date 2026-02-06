@@ -406,6 +406,7 @@ open http://localhost:9090
 | `/api/check` | POST | Trigger immediate health check |
 | `/api/settings/ai` | GET | Current AI configuration (API key masked) |
 | `/api/settings/ai` | POST | Update AI provider/model/key at runtime |
+| `/api/health/history` | GET | Health score history (`?last=N`, `?since=RFC3339`) |
 
 ### Features
 
@@ -634,8 +635,10 @@ make install-cli
 - [x] Validating admission webhooks (v1.5.0)
 - [x] Test helper utilities and reduced boilerplate (v1.5.0)
 - [x] DataSource abstraction for pluggable backends (v1.5.0)
-- [ ] Slack/PagerDuty alerting integration
-- [ ] Historical trend analysis
+- [x] Webhook notification interface (`spec.notify` on TeamHealthRequest) (v1.5.1)
+- [x] Health score history with ring buffer (`/api/health/history`) (v1.5.1)
+- [ ] React dashboard (Phase 2)
+- [ ] Causal analysis engine (Phase 3)
 - [ ] Custom checker plugins
 
 ---

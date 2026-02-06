@@ -22,16 +22,19 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	corev1 "k8s.io/api/core/v1"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
+	assistv1alpha1 "github.com/osagberg/kube-assist-operator/api/v1alpha1"
 	"github.com/osagberg/kube-assist-operator/internal/ai"
 	"github.com/osagberg/kube-assist-operator/internal/checker"
 	"github.com/osagberg/kube-assist-operator/internal/datasource"
+	"github.com/osagberg/kube-assist-operator/internal/history"
+	"github.com/osagberg/kube-assist-operator/internal/scope"
 )
 
 var log = logf.Log.WithName("dashboard")
@@ -90,28 +93,32 @@ type AISettingsResponse struct {
 
 // Server is the dashboard web server
 type Server struct {
-	client     datasource.DataSource
-	registry   *checker.Registry
-	addr       string
-	aiProvider ai.Provider
-	aiEnabled  bool
-	aiConfig   ai.Config
-	mu         sync.RWMutex
-	clients    map[chan HealthUpdate]bool
-	latest     *HealthUpdate
-	running    bool
-	stopCh     chan struct{}
+	client       datasource.DataSource
+	registry     *checker.Registry
+	addr         string
+	aiProvider   ai.Provider
+	aiEnabled    bool
+	aiConfig     ai.Config
+	checkTimeout time.Duration
+	history      *history.RingBuffer
+	mu           sync.RWMutex
+	clients      map[chan HealthUpdate]bool
+	latest       *HealthUpdate
+	running      bool
+	stopCh       chan struct{}
 }
 
 // NewServer creates a new dashboard server
 func NewServer(ds datasource.DataSource, registry *checker.Registry, addr string) *Server {
 	return &Server{
-		client:   ds,
-		registry: registry,
-		addr:     addr,
-		aiConfig: ai.DefaultConfig(),
-		clients:  make(map[chan HealthUpdate]bool),
-		stopCh:   make(chan struct{}),
+		client:       ds,
+		registry:     registry,
+		addr:         addr,
+		aiConfig:     ai.DefaultConfig(),
+		checkTimeout: 2 * time.Minute,
+		history:      history.New(100),
+		clients:      make(map[chan HealthUpdate]bool),
+		stopCh:       make(chan struct{}),
 	}
 }
 
@@ -131,6 +138,7 @@ func (s *Server) Start(ctx context.Context) error {
 
 	// API endpoints
 	mux.HandleFunc("/api/health", s.handleHealth)
+	mux.HandleFunc("/api/health/history", s.handleHealthHistory)
 	mux.HandleFunc("/api/events", s.handleSSE)
 	mux.HandleFunc("/api/check", s.handleTriggerCheck)
 	mux.HandleFunc("/api/settings/ai", s.handleAISettings)
@@ -195,10 +203,15 @@ func (s *Server) runHealthChecker(ctx context.Context) {
 
 // runCheck performs a health check and broadcasts results
 func (s *Server) runCheck(ctx context.Context) {
-	// Get all non-system namespaces
-	namespaces, err := s.getAllNamespaces(ctx)
+	// Resolve namespaces via scope resolver
+	resolver := scope.NewResolver(s.client, "default")
+	namespaces, err := resolver.ResolveNamespaces(ctx, assistv1alpha1.ScopeConfig{})
 	if err != nil {
-		log.Error(err, "Failed to list namespaces")
+		log.Error(err, "Failed to resolve namespaces")
+		namespaces = []string{"default"}
+	}
+	namespaces = scope.FilterSystemNamespaces(namespaces)
+	if len(namespaces) == 0 {
 		namespaces = []string{"default"}
 	}
 
@@ -207,6 +220,9 @@ func (s *Server) runCheck(ctx context.Context) {
 	enabled := s.aiEnabled
 	s.mu.RUnlock()
 
+	checkCtx2, cancel := context.WithTimeout(ctx, s.checkTimeout)
+	defer cancel()
+
 	checkCtx := &checker.CheckContext{
 		DataSource: s.client,
 		Namespaces: namespaces,
@@ -214,7 +230,7 @@ func (s *Server) runCheck(ctx context.Context) {
 		AIEnabled:  enabled,
 	}
 
-	results := s.registry.RunAllSupported(ctx, checkCtx)
+	results := s.registry.RunAll(checkCtx2, checkCtx, nil)
 
 	// Convert to dashboard format
 	update := &HealthUpdate{
@@ -272,6 +288,24 @@ func (s *Server) runCheck(ctx context.Context) {
 		}
 	}
 	s.mu.Unlock()
+
+	// Record history snapshot
+	snapshot := history.HealthSnapshot{
+		Timestamp:    update.Timestamp,
+		TotalHealthy: update.Summary.TotalHealthy,
+		TotalIssues:  update.Summary.TotalIssues,
+		BySeverity: map[string]int{
+			"Critical": update.Summary.CriticalCount,
+			"Warning":  update.Summary.WarningCount,
+			"Info":     update.Summary.InfoCount,
+		},
+		ByChecker:   make(map[string]int),
+		HealthScore: history.ComputeScore(update.Summary.TotalHealthy, update.Summary.TotalIssues),
+	}
+	for name, result := range update.Results {
+		snapshot.ByChecker[name] = len(result.Issues)
+	}
+	s.history.Add(snapshot)
 }
 
 // handleHealth returns current health status
@@ -471,21 +505,31 @@ func (s *Server) handleDashboard(w http.ResponseWriter, _ *http.Request) {
 	_, _ = w.Write([]byte(dashboardHTML))
 }
 
-// getAllNamespaces returns all non-system namespaces
-func (s *Server) getAllNamespaces(ctx context.Context) ([]string, error) {
-	var nsList corev1.NamespaceList
-	if err := s.client.List(ctx, &nsList); err != nil {
-		return nil, err
+// handleHealthHistory returns historical health snapshots
+func (s *Server) handleHealthHistory(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	if lastParam := r.URL.Query().Get("last"); lastParam != "" {
+		n, err := strconv.Atoi(lastParam)
+		if err != nil || n < 1 {
+			http.Error(w, "invalid 'last' parameter", http.StatusBadRequest)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(s.history.Last(n))
+		return
 	}
 
-	namespaces := make([]string, 0, len(nsList.Items))
-	for _, ns := range nsList.Items {
-		// Skip system namespaces
-		name := ns.Name
-		if name == "kube-system" || name == "kube-public" || name == "kube-node-lease" {
-			continue
+	if sinceParam := r.URL.Query().Get("since"); sinceParam != "" {
+		t, err := time.Parse(time.RFC3339, sinceParam)
+		if err != nil {
+			http.Error(w, "invalid 'since' parameter, use RFC3339", http.StatusBadRequest)
+			return
 		}
-		namespaces = append(namespaces, name)
+		_ = json.NewEncoder(w).Encode(s.history.Since(t))
+		return
 	}
-	return namespaces, nil
+
+	// Default: return last 50
+	_ = json.NewEncoder(w).Encode(s.history.Last(50))
 }
+
