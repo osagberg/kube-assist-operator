@@ -50,15 +50,18 @@ Most monitoring tools tell you *what* is broken. KubeAssist tells you *why* and 
 - **Copy-able kubectl commands** on every issue -- paste and run, no guessing
 - **CLI and CRD interfaces** -- use whichever fits your workflow
 
-### Modern Dashboard
-- **Redesigned UI** with Indigo accent, dark/light themes, responsive layout
+### Modern React Dashboard
+- **React 19 + Vite + TypeScript + Tailwind CSS** -- embedded SPA via `go:embed`, single binary
+- **Indigo accent** with dark/light themes, responsive layout
 - **Runtime AI settings** -- enable AI, pick a provider, enter your API key, and choose a model, all from the dashboard without restarting the operator
-- **Live updates** via Server-Sent Events (SSE) every 30 seconds
+- **Live updates** via Server-Sent Events (SSE) with auto-reconnect, pause/resume
+- **Health score history** -- line chart visualization powered by recharts
+- **Connection indicator** -- green/yellow/red dot showing SSE status
 - **Toast notifications** for user actions and background events
-- **Search & filter** by namespace, checker, severity
+- **Search & filter** by namespace, severity, text
 - **Export** reports as JSON or CSV
 - **Keyboard shortcuts** for power users
-- **Health score** visualization with animated progress ring
+- **Health score** visualization with animated SVG ring
 
 ### AI-Powered Suggestions
 - **Runtime configuration** -- switch providers and models from the dashboard at any time
@@ -394,7 +397,7 @@ spec:
 
 ## Dashboard
 
-The operator includes a real-time web dashboard with an Indigo-accented modern UI, built-in AI settings, health score history, and Server-Sent Events (SSE) for live updates every 30 seconds.
+The operator includes a real-time React dashboard (React 19 + Vite + TypeScript + Tailwind CSS) embedded in the Go binary via `go:embed`. Features an Indigo-accented modern UI, built-in AI settings, health score history charting (recharts), and Server-Sent Events (SSE) for live updates with auto-reconnect.
 
 ### Enable Dashboard
 
@@ -677,7 +680,7 @@ make install-cli
 - [x] DataSource abstraction for pluggable backends (v1.5.0)
 - [x] Webhook notification interface (`spec.notify` on TeamHealthRequest) (v1.5.1)
 - [x] Health score history with ring buffer (`/api/health/history`) (v1.5.1)
-- [ ] React dashboard (Phase 2)
+- [x] React dashboard — React 19 + Vite + TypeScript + Tailwind SPA (v1.6.0)
 - [ ] Causal analysis engine (Phase 3)
 - [ ] Custom checker plugins
 
