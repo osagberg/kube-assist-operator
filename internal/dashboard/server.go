@@ -19,10 +19,13 @@ package dashboard
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io/fs"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -45,11 +48,17 @@ var log = logf.Log.WithName("dashboard")
 
 // AIStatus tracks AI analysis state for the frontend
 type AIStatus struct {
-	Enabled        bool   `json:"enabled"`
-	Provider       string `json:"provider"`
-	LastError      string `json:"lastError,omitempty"`
-	IssuesEnhanced int    `json:"issuesEnhanced"`
-	TokensUsed     int    `json:"tokensUsed"`
+	Enabled          bool    `json:"enabled"`
+	Provider         string  `json:"provider"`
+	LastError        string  `json:"lastError,omitempty"`
+	IssuesEnhanced   int     `json:"issuesEnhanced"`
+	TokensUsed       int     `json:"tokensUsed"`
+	EstimatedCostUSD float64 `json:"estimatedCostUsd,omitempty"`
+	CacheHit         bool    `json:"cacheHit,omitempty"`
+	IssuesCapped     bool    `json:"issuesCapped,omitempty"`
+	TotalIssueCount  int     `json:"totalIssueCount,omitempty"`
+	Pending          bool    `json:"pending,omitempty"`
+	CheckPhase       string  `json:"checkPhase,omitempty"` // checkers, causal, ai, done
 }
 
 // HealthUpdate represents a health check update sent via SSE
@@ -91,6 +100,12 @@ type Summary struct {
 	InfoCount     int `json:"infoCount"`
 }
 
+// aiEnhancement stores a cached AI suggestion for reapplication on cache hits.
+type aiEnhancement struct {
+	Suggestion string
+	RootCause  string
+}
+
 // AISettingsRequest is the JSON body for POST /api/settings/ai
 type AISettingsRequest struct {
 	Enabled  bool   `json:"enabled"`
@@ -110,36 +125,43 @@ type AISettingsResponse struct {
 
 // Server is the dashboard web server
 type Server struct {
-	client        datasource.DataSource
-	registry      *checker.Registry
-	addr          string
-	aiProvider    ai.Provider
-	aiEnabled     bool
-	aiConfig      ai.Config
-	checkTimeout  time.Duration
-	history       *history.RingBuffer
-	correlator    *causal.Correlator
-	mu            sync.RWMutex
-	clients       map[chan HealthUpdate]bool
-	latest        *HealthUpdate
-	latestCausal  *causal.CausalContext
-	running       bool
-	checkInFlight atomic.Bool
-	stopCh        chan struct{}
+	client             datasource.DataSource
+	registry           *checker.Registry
+	addr               string
+	aiProvider         ai.Provider
+	aiEnabled          bool
+	aiConfig           ai.Config
+	checkTimeout       time.Duration
+	history            *history.RingBuffer
+	correlator         *causal.Correlator
+	mu                 sync.RWMutex
+	clients            map[chan HealthUpdate]bool
+	latest             *HealthUpdate
+	latestCausal       *causal.CausalContext
+	running            bool
+	checkInFlight      atomic.Bool
+	lastIssueHash      string
+	lastAIResult       *AIStatus
+	lastAIEnhancements map[string]map[string]aiEnhancement // checker -> "type|resource|namespace" -> enhancement
+	lastCausalInsights []ai.CausalGroupInsight
+	checkCounter       uint64
+	aiCheckInterval    int
+	stopCh             chan struct{}
 }
 
 // NewServer creates a new dashboard server
 func NewServer(ds datasource.DataSource, registry *checker.Registry, addr string) *Server {
 	return &Server{
-		client:       ds,
-		registry:     registry,
-		addr:         addr,
-		aiConfig:     ai.DefaultConfig(),
-		checkTimeout: 2 * time.Minute,
-		history:      history.New(100),
-		correlator:   causal.NewCorrelator(),
-		clients:      make(map[chan HealthUpdate]bool),
-		stopCh:       make(chan struct{}),
+		client:          ds,
+		registry:        registry,
+		addr:            addr,
+		aiConfig:        ai.DefaultConfig(),
+		checkTimeout:    2 * time.Minute,
+		history:         history.New(100),
+		correlator:      causal.NewCorrelator(),
+		clients:         make(map[chan HealthUpdate]bool),
+		stopCh:          make(chan struct{}),
+		aiCheckInterval: 10,
 	}
 }
 
@@ -149,6 +171,14 @@ func (s *Server) WithAI(provider ai.Provider, enabled bool) *Server {
 	s.aiEnabled = enabled
 	if provider != nil {
 		s.aiConfig.Provider = provider.Name()
+	}
+	return s
+}
+
+// WithAICheckInterval sets how often AI runs (every N checks). Default is 10 (every ~5 min at 30s interval).
+func (s *Server) WithAICheckInterval(n int) *Server {
+	if n > 0 {
+		s.aiCheckInterval = n
 	}
 	return s
 }
@@ -240,7 +270,30 @@ func (s *Server) runHealthChecker(ctx context.Context) {
 		case <-s.stopCh:
 			return
 		case <-ticker.C:
-			s.runCheck(ctx)
+			if s.checkInFlight.CompareAndSwap(false, true) {
+				s.runCheck(ctx)
+				s.checkInFlight.Store(false)
+			}
+		}
+	}
+}
+
+// broadcastPhase sends a lightweight SSE update with just the current check phase,
+// so the frontend can show a pipeline progress indicator during long checks.
+func (s *Server) broadcastPhase(phase string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.latest == nil {
+		return
+	}
+	if s.latest.AIStatus == nil {
+		s.latest.AIStatus = &AIStatus{}
+	}
+	s.latest.AIStatus.CheckPhase = phase
+	for clientCh := range s.clients {
+		select {
+		case clientCh <- *s.latest:
+		default:
 		}
 	}
 }
@@ -264,6 +317,8 @@ func (s *Server) runCheck(ctx context.Context) {
 	checkCtx2, cancel := context.WithTimeout(ctx, s.checkTimeout)
 	defer cancel()
 
+	s.broadcastPhase("checkers")
+
 	// 2. Build CheckContext with AIEnabled: false — pure health checks first
 	checkCtx := &checker.CheckContext{
 		DataSource: s.client,
@@ -273,6 +328,8 @@ func (s *Server) runCheck(ctx context.Context) {
 
 	// 3. RunAll — pure health checks, no AI
 	results := s.registry.RunAll(checkCtx2, checkCtx, nil)
+
+	s.broadcastPhase("causal")
 
 	// 4. Run causal correlator BEFORE AI so causal context is available
 	now := time.Now()
@@ -298,19 +355,114 @@ func (s *Server) runCheck(ctx context.Context) {
 	checkCtx.AIEnabled = enabled
 	checkCtx.AIProvider = provider
 
-	// 8. Single batched AI call
+	s.broadcastPhase("ai")
+
+	// 8. AI caching and throttling
+	s.checkCounter++
+	issueHash := computeIssueHash(results)
+
 	var aiStatus *AIStatus
-	enhanced, tokens, aiErr := checker.EnhanceAllWithAI(checkCtx2, results, checkCtx)
-	if enabled && provider != nil {
-		aiStatus = &AIStatus{
-			Enabled:        enabled,
-			Provider:       provider.Name(),
-			IssuesEnhanced: enhanced,
-			TokensUsed:     tokens,
+	if enabled && provider != nil && provider.Available() {
+		hashChanged := issueHash != s.lastIssueHash
+		intervalDue := s.checkCounter%uint64(s.aiCheckInterval) == 0
+		if !hashChanged && s.lastAIResult != nil && !intervalDue {
+			// Reuse cached AI result and reapply enhancements
+			aiStatus = &AIStatus{
+				Enabled:         enabled,
+				Provider:        provider.Name(),
+				IssuesEnhanced:  s.lastAIResult.IssuesEnhanced,
+				TokensUsed:      0,
+				CacheHit:        true,
+				TotalIssueCount: s.lastAIResult.TotalIssueCount,
+			}
+			reapplyAIEnhancements(results, s.lastAIEnhancements)
+			if len(s.lastCausalInsights) > 0 {
+				applyCausalInsights(causalCtx, s.lastCausalInsights)
+			}
+			log.Info("AI analysis skipped (issues unchanged)", "hash", issueHash[:12])
+		} else {
+			// Run AI with extended timeout
+			aiCtx, aiCancel := context.WithTimeout(checkCtx2, 90*time.Second)
+			enhanced, tokens, totalCount, aiResp, aiErr := checker.EnhanceAllWithAI(aiCtx, results, checkCtx)
+			aiCancel()
+
+			if aiErr != nil {
+				// On failure, reuse last good result if available
+				if s.lastAIResult != nil && s.lastAIResult.LastError == "" {
+					aiStatus = &AIStatus{
+						Enabled:         enabled,
+						Provider:        provider.Name(),
+						IssuesEnhanced:  s.lastAIResult.IssuesEnhanced,
+						TokensUsed:      0,
+						CacheHit:        true,
+						TotalIssueCount: s.lastAIResult.TotalIssueCount,
+						LastError:       "retrying: " + aiErr.Error(),
+					}
+					reapplyAIEnhancements(results, s.lastAIEnhancements)
+					if len(s.lastCausalInsights) > 0 {
+						applyCausalInsights(causalCtx, s.lastCausalInsights)
+					}
+					log.Info("AI call failed, reusing last good result", "error", aiErr.Error())
+				} else {
+					aiStatus = &AIStatus{
+						Enabled:         enabled,
+						Provider:        provider.Name(),
+						TotalIssueCount: totalCount,
+						LastError:       aiErr.Error(),
+					}
+				}
+			} else if enhanced > 0 {
+				// Successful AI call with results — cache it
+				aiStatus = &AIStatus{
+					Enabled:          enabled,
+					Provider:         provider.Name(),
+					IssuesEnhanced:   enhanced,
+					TokensUsed:       tokens,
+					EstimatedCostUSD: estimateCost(provider.Name(), tokens),
+					IssuesCapped:     totalCount > enhanced && totalCount > 0,
+					TotalIssueCount:  totalCount,
+				}
+				s.lastIssueHash = issueHash
+				s.lastAIResult = aiStatus
+				s.lastAIEnhancements = snapshotAIEnhancements(results)
+
+				// Apply causal insights to groups
+				if aiResp != nil && len(aiResp.CausalInsights) > 0 {
+					applyCausalInsights(causalCtx, aiResp.CausalInsights)
+					s.lastCausalInsights = aiResp.CausalInsights
+				}
+			} else {
+				// AI returned 0 enhanced (likely truncated JSON) — reuse last good result if available
+				if s.lastAIResult != nil && s.lastAIResult.IssuesEnhanced > 0 {
+					aiStatus = &AIStatus{
+						Enabled:         enabled,
+						Provider:        provider.Name(),
+						IssuesEnhanced:  s.lastAIResult.IssuesEnhanced,
+						TokensUsed:      0,
+						CacheHit:        true,
+						TotalIssueCount: s.lastAIResult.TotalIssueCount,
+					}
+					reapplyAIEnhancements(results, s.lastAIEnhancements)
+					if len(s.lastCausalInsights) > 0 {
+						applyCausalInsights(causalCtx, s.lastCausalInsights)
+					}
+					log.Info("AI response truncated (0 enhanced), reusing last good result", "tokens", tokens)
+				} else {
+					aiStatus = &AIStatus{
+						Enabled:         enabled,
+						Provider:        provider.Name(),
+						TotalIssueCount: totalCount,
+						LastError:       "AI response truncated — retrying next cycle",
+					}
+					log.Info("AI response truncated, no cached result to fall back on", "tokens", tokens)
+				}
+			}
 		}
-		if aiErr != nil {
-			aiStatus.LastError = aiErr.Error()
-		}
+	}
+
+	// Set final phase on the AI status
+	if aiStatus != nil {
+		aiStatus.CheckPhase = "done"
 	}
 
 	// 9. Convert to dashboard format
@@ -335,17 +487,23 @@ func (s *Server) runCheck(ctx context.Context) {
 			summary.TotalIssues += len(result.Issues)
 
 			for _, issue := range result.Issues {
+				suggestion := issue.Suggestion
+				aiEnhanced := strings.Contains(suggestion, "AI Analysis:")
+				// When AI enhanced, show only the AI part
+				if aiEnhanced {
+					if idx := strings.Index(suggestion, "AI Analysis: "); idx >= 0 {
+						suggestion = suggestion[idx+len("AI Analysis: "):]
+					}
+				}
 				di := Issue{
 					Type:       issue.Type,
 					Severity:   issue.Severity,
 					Resource:   issue.Resource,
 					Namespace:  issue.Namespace,
 					Message:    issue.Message,
-					Suggestion: issue.Suggestion,
+					Suggestion: suggestion,
+					AIEnhanced: aiEnhanced,
 					Metadata:   issue.Metadata,
-				}
-				if strings.Contains(issue.Suggestion, "AI Analysis:") {
-					di.AIEnhanced = true
 				}
 				if issue.Metadata != nil {
 					if rc, ok := issue.Metadata["aiRootCause"]; ok {
@@ -426,6 +584,120 @@ func toCausalAnalysisContext(cc *causal.CausalContext) *ai.CausalAnalysisContext
 		UncorrelatedCount: cc.UncorrelatedCount,
 		TotalIssues:       cc.TotalIssues,
 	}
+}
+
+// computeIssueHash computes a SHA-256 hash of all issue signatures to detect changes.
+// Keys are sorted to ensure deterministic output across Go map iterations.
+func computeIssueHash(results map[string]*checker.CheckResult) string {
+	h := sha256.New()
+	keys := make([]string, 0, len(results))
+	for name := range results {
+		keys = append(keys, name)
+	}
+	sort.Strings(keys)
+	for _, name := range keys {
+		result := results[name]
+		if result.Error != nil {
+			continue
+		}
+		// Sort issues by stable key to ensure deterministic hash
+		issueKeys := make([]string, len(result.Issues))
+		for i, issue := range result.Issues {
+			issueKeys[i] = fmt.Sprintf("%s|%s|%s|%s|%s", name, issue.Type, issue.Severity, issue.Namespace, issue.Resource)
+		}
+		sort.Strings(issueKeys)
+		for _, k := range issueKeys {
+			fmt.Fprintln(h, k)
+		}
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// snapshotAIEnhancements captures AI-enhanced suggestions from results for later reapplication.
+func snapshotAIEnhancements(results map[string]*checker.CheckResult) map[string]map[string]aiEnhancement {
+	snapshot := make(map[string]map[string]aiEnhancement)
+	for name, result := range results {
+		if result.Error != nil {
+			continue
+		}
+		for _, issue := range result.Issues {
+			if !strings.Contains(issue.Suggestion, "AI Analysis:") {
+				continue
+			}
+			if snapshot[name] == nil {
+				snapshot[name] = make(map[string]aiEnhancement)
+			}
+			key := issue.Type + "|" + issue.Resource + "|" + issue.Namespace
+			snapshot[name][key] = aiEnhancement{
+				Suggestion: issue.Suggestion,
+				RootCause:  issue.Metadata["aiRootCause"],
+			}
+		}
+	}
+	return snapshot
+}
+
+// reapplyAIEnhancements restores cached AI suggestions onto fresh health check results.
+func reapplyAIEnhancements(results map[string]*checker.CheckResult, enhancements map[string]map[string]aiEnhancement) {
+	if enhancements == nil {
+		return
+	}
+	for name, issueEnhancements := range enhancements {
+		result, ok := results[name]
+		if !ok || result.Error != nil {
+			continue
+		}
+		for i := range result.Issues {
+			key := result.Issues[i].Type + "|" + result.Issues[i].Resource + "|" + result.Issues[i].Namespace
+			enh, ok := issueEnhancements[key]
+			if !ok {
+				continue
+			}
+			result.Issues[i].Suggestion = enh.Suggestion
+			if enh.RootCause != "" {
+				if result.Issues[i].Metadata == nil {
+					result.Issues[i].Metadata = make(map[string]string)
+				}
+				result.Issues[i].Metadata["aiRootCause"] = enh.RootCause
+			}
+		}
+	}
+}
+
+// applyCausalInsights enriches causal groups with AI-generated analysis.
+// It matches insights to groups by GroupID index (e.g., "group_0", "group_1").
+func applyCausalInsights(cc *causal.CausalContext, insights []ai.CausalGroupInsight) {
+	if cc == nil || len(cc.Groups) == 0 || len(insights) == 0 {
+		return
+	}
+	for _, insight := range insights {
+		idx, err := strconv.Atoi(strings.TrimPrefix(insight.GroupID, "group_"))
+		if err != nil || idx < 0 || idx >= len(cc.Groups) {
+			continue
+		}
+		cc.Groups[idx].AIRootCause = insight.AIRootCause
+		cc.Groups[idx].AISuggestion = insight.AISuggestion
+		cc.Groups[idx].AISteps = insight.AISteps
+		cc.Groups[idx].AIEnhanced = true
+	}
+}
+
+// estimateCost estimates the USD cost of an AI call based on provider and tokens.
+func estimateCost(provider string, tokens int) float64 {
+	if tokens <= 0 {
+		return 0
+	}
+	// Approximate cost per 1K tokens (input+output blended)
+	var costPer1K float64
+	switch provider {
+	case "anthropic":
+		costPer1K = 0.00125 // Haiku 3.5 blended
+	case "openai":
+		costPer1K = 0.005 // GPT-4o-mini blended
+	default:
+		return 0
+	}
+	return float64(tokens) / 1000.0 * costPer1K
 }
 
 // handleHealth returns current health status
@@ -595,6 +867,12 @@ func (s *Server) handlePostAISettings(w http.ResponseWriter, r *http.Request) {
 		s.aiConfig.Model = req.Model
 	}
 
+	// Invalidate AI cache so the next check uses the new provider immediately
+	s.lastIssueHash = ""
+	s.lastAIResult = nil
+	s.lastAIEnhancements = nil
+	s.lastCausalInsights = nil
+
 	// If the provider is an ai.Manager, use Reconfigure() so the controller's
 	// AI provider is also updated (Manager is shared between dashboard and controllers).
 	if mgr, ok := s.aiProvider.(*ai.Manager); ok {
@@ -618,6 +896,28 @@ func (s *Server) handlePostAISettings(w http.ResponseWriter, r *http.Request) {
 			ProviderReady: mgr.Available(),
 		}
 		log.Info("AI settings updated via dashboard (Manager)", "provider", resp.Provider, "enabled", resp.Enabled)
+
+		// Immediately update live AIStatus so the frontend knows the provider changed
+		s.mu.Lock()
+		if s.latest != nil {
+			s.latest.AIStatus = &AIStatus{
+				Enabled:  req.Enabled,
+				Provider: provider,
+				Pending:  true,
+			}
+		}
+		s.mu.Unlock()
+
+		// Trigger immediate check so user doesn't wait for next 30s cycle
+		go func() {
+			if s.checkInFlight.CompareAndSwap(false, true) {
+				defer s.checkInFlight.Store(false)
+				checkCtx, checkCancel := context.WithTimeout(context.Background(), s.checkTimeout)
+				defer checkCancel()
+				s.runCheck(checkCtx)
+			}
+		}()
+
 		w.Header().Set("Content-Type", "application/json")
 		if err := json.NewEncoder(w).Encode(resp); err != nil {
 			log.Error(err, "Failed to encode AI settings response")
@@ -642,9 +942,28 @@ func (s *Server) handlePostAISettings(w http.ResponseWriter, r *http.Request) {
 		HasAPIKey:     s.aiConfig.APIKey != "",
 		ProviderReady: provider.Available(),
 	}
+
+	// Immediately update live AIStatus so the frontend knows the provider changed
+	if s.latest != nil {
+		s.latest.AIStatus = &AIStatus{
+			Enabled:  s.aiEnabled,
+			Provider: s.aiConfig.Provider,
+			Pending:  true,
+		}
+	}
 	s.mu.Unlock()
 
 	log.Info("AI settings updated via dashboard", "provider", resp.Provider, "enabled", resp.Enabled)
+
+	// Trigger immediate check so user doesn't wait for next 30s cycle
+	go func() {
+		if s.checkInFlight.CompareAndSwap(false, true) {
+			defer s.checkInFlight.Store(false)
+			checkCtx, checkCancel := context.WithTimeout(context.Background(), s.checkTimeout)
+			defer checkCancel()
+			s.runCheck(checkCtx)
+		}
+	}()
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(resp); err != nil {

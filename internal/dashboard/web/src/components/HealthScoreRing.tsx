@@ -11,12 +11,20 @@ export function HealthScoreRing({ score }: Props) {
   return (
     <div className="flex flex-col items-center">
       <svg width="140" height="140" viewBox="0 0 140 140">
+        <defs>
+          <filter id="score-glow">
+            <feGaussianBlur stdDeviation="3" result="blur" />
+            <feMerge>
+              <feMergeNode in="blur" />
+              <feMergeNode in="SourceGraphic" />
+            </feMerge>
+          </filter>
+        </defs>
         <circle
           cx="70" cy="70" r={radius}
           fill="none"
-          stroke="currentColor"
+          stroke="var(--ring-track)"
           strokeWidth="10"
-          className="text-gray-200 dark:text-gray-700"
         />
         <circle
           cx="70" cy="70" r={radius}
@@ -28,19 +36,21 @@ export function HealthScoreRing({ score }: Props) {
           strokeDashoffset={offset}
           className="transition-all duration-700 ease-out"
           transform="rotate(-90 70 70)"
+          filter="url(#score-glow)"
         />
         <text
           x="70" y="70"
           textAnchor="middle"
           dominantBaseline="central"
-          className="fill-gray-900 dark:fill-gray-100 text-2xl font-bold"
+          fill="var(--text-primary)"
+          className="text-2xl font-bold"
           fontSize="28"
           fontWeight="bold"
         >
           {Math.round(score)}%
         </text>
       </svg>
-      <span className="text-sm text-gray-500 dark:text-gray-400 mt-1">Health Score</span>
+      <span className="text-sm mt-1" style={{ color: 'var(--text-secondary)' }}>Health Score</span>
     </div>
   )
 }

@@ -6,6 +6,12 @@ export interface AIStatus {
   lastError?: string
   issuesEnhanced: number
   tokensUsed: number
+  estimatedCostUsd?: number
+  cacheHit?: boolean
+  issuesCapped?: boolean
+  totalIssueCount?: number
+  pending?: boolean
+  checkPhase?: string // checkers, causal, ai, done
 }
 
 export interface HealthUpdate {
@@ -76,6 +82,10 @@ export interface CausalGroup {
   confidence: number
   firstSeen: string
   lastSeen: string
+  aiRootCause?: string
+  aiSuggestion?: string
+  aiSteps?: string[]
+  aiEnhanced?: boolean
 }
 
 export interface TimelineEvent {

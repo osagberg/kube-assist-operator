@@ -2,96 +2,71 @@
 
 [![Go Version](https://img.shields.io/badge/Go-1.25+-00ADD8?style=flat&logo=go)](https://go.dev/)
 [![Kubernetes](https://img.shields.io/badge/Kubernetes-1.25+-326CE5?style=flat&logo=kubernetes)](https://kubernetes.io/)
+[![Chart Version](https://img.shields.io/badge/Helm_Chart-v1.7.1-0F1689?style=flat&logo=helm)](charts/kube-assist)
+[![Tests](https://img.shields.io/badge/Tests-372_passing-success?style=flat)](https://github.com/osagberg/kube-assist-operator/actions/workflows/test.yml)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![CI](https://github.com/osagberg/kube-assist-operator/actions/workflows/ci.yaml/badge.svg)](https://github.com/osagberg/kube-assist-operator/actions/workflows/ci.yaml)
+[![CI](https://github.com/osagberg/kube-assist-operator/actions/workflows/test.yml/badge.svg)](https://github.com/osagberg/kube-assist-operator/actions/workflows/test.yml)
 
-**Kubernetes operator for workload diagnostics and cluster health monitoring.**
+**Kubernetes diagnostics that tell you *why* things break and *how* to fix them.**
 
-One command to diagnose your entire cluster. KubeAssist provides instant visibility into workload issues, certificate expiration, resource quotas, Flux GitOps status, and more -- with copy-able kubectl remediation commands for every issue it finds.
+Deploy the operator, get instant visibility into workload failures, certificate expiration, resource quotas, Flux GitOps status, and more. Every issue comes with copy-able `kubectl` commands, root cause analysis, and optional AI-enhanced suggestions -- all from a single binary with zero external dependencies.
 
-![Dashboard Screenshot](docs/dashboard-screenshot.png)
+![KubeAssist Dashboard](docs/dashboard-overview.png)
+*Full dashboard showing health ring, severity pills, health history chart, collapsible causal analysis with AI-enhanced groups, and pipeline progress indicator.*
 
-### Why KubeAssist?
+---
+
+## Why KubeAssist?
 
 Most monitoring tools tell you *what* is broken. KubeAssist tells you *why* and *how to fix it*.
 
-- **Zero-config value** -- deploy the operator, get immediate health insights with no setup
-- **Full-stack Kubernetes coverage** -- 8 checkers across workloads, storage, networking, secrets, quotas, and Flux GitOps
-- **Actionable, not just informational** -- every issue includes copy-able `kubectl` commands, root causes, and links to upstream docs
-- **AI root cause analysis** -- optional Anthropic/OpenAI integration for context-aware diagnostics, configurable at runtime
-- **GitOps-native** -- first-class Flux CD integration with graceful degradation when Flux isn't installed
-- **Causal analysis** -- temporal correlation, resource graph ownership chains, cross-checker rules, enhanced AI root cause analysis
+- **Zero-config value** -- deploy the operator and get immediate health insights with no setup required
+- **8 health checkers** -- full-stack coverage across workloads, secrets, storage, quotas, network policies, and Flux GitOps (HelmReleases, Kustomizations, GitRepositories)
+- **Actionable remediation** -- every issue includes copy-able `kubectl` commands, root causes, and links to upstream documentation
+- **Causal analysis engine** -- 4 cross-checker rules with confidence scoring, temporal correlation, and resource graph ownership chains to surface the *real* root cause
+- **AI-enhanced diagnostics** -- optional Anthropic (Claude) or OpenAI integration for context-aware root cause analysis, configurable at runtime from the dashboard
+- **Frosted glass dashboard** -- modern React 19 SPA with dark/light themes, severity pills for colorblind accessibility, collapsible sections, and a pipeline progress indicator
+- **GitOps-native** -- first-class Flux CD integration with graceful degradation when Flux is not installed
 - **Enterprise patterns** -- DataSource abstraction, pluggable notifiers, webhook validation, TTL cleanup, leader election
-- **Single binary** -- dashboard, API, operator, and CLI all compile into one Go binary with zero external dependencies
+- **Single binary** -- dashboard, API, operator, and CLI all compile into one Go binary (~22K lines of code: 20K Go + 2K TypeScript)
 
 ---
 
-## Table of Contents
+## Screenshots
 
-- [Features](#features)
-- [Quick Start](#quick-start)
-- [CLI Reference](#cli-reference)
-- [Health Checkers](#health-checkers)
-- [Custom Resources](#custom-resources)
-- [Dashboard](#dashboard)
-- [AI Integration](#ai-integration)
-- [Helm Installation](#helm-installation)
-- [Architecture](#architecture)
-- [CI/CD Pipeline](#cicd-pipeline)
-- [Development](#development)
-- [License](#license)
+<table>
+<tr>
+<td width="50%">
 
----
+**Dashboard Overview**
 
-## Features
+![Dashboard Overview](docs/dashboard-overview.png)
 
-### Instant Diagnostics
-- **8 built-in checkers** covering workloads, secrets, storage, quotas, network policies, and Flux GitOps
-- **Severity levels** (Critical/Warning/Info) with actionable fix suggestions
-- **Copy-able kubectl commands** on every issue -- paste and run, no guessing
-- **CLI and CRD interfaces** -- use whichever fits your workflow
+Health ring at 19%, severity pills (OK 15, CR 6, WR 28, IN 28), health history chart, collapsible causal analysis with AI-enhanced groups, and the pipeline progress indicator showing checker/causal/AI stages.
 
-### Modern React Dashboard
-- **React 19 + Vite + TypeScript + Tailwind CSS** -- embedded SPA via `go:embed`, single binary
-- **Indigo accent** with dark/light themes, responsive layout
-- **Runtime AI settings** -- enable AI, pick a provider, enter your API key, and choose a model, all from the dashboard without restarting the operator
-- **Live updates** via Server-Sent Events (SSE) with auto-reconnect, pause/resume
-- **Health score history** -- line chart visualization powered by recharts
-- **Connection indicator** -- green/yellow/red dot showing SSE status
-- **Toast notifications** for user actions and background events
-- **Search & filter** by namespace, severity, text
-- **Export** reports as JSON or CSV
-- **Keyboard shortcuts** for power users
-- **Health score** visualization with animated SVG ring
-- **Causal timeline** -- expandable group cards showing correlated issues with severity colors, rule labels, confidence scores, and root cause display
+</td>
+<td width="50%">
 
-### AI-Powered Suggestions
-- **Runtime configuration** -- switch providers and models from the dashboard at any time
-- **Enhanced diagnostics** with AI-generated root cause analysis
-- **Provider options** -- Anthropic Claude, OpenAI, or NoOp for testing
-- **Thread-safe AI Manager** -- `Reconfigure()` swaps providers without downtime
-- **Data sanitization** -- sensitive data redacted before AI calls
-- **Configurable** via CLI flags, env vars, Helm values, or the dashboard UI
+**AI Settings**
 
-### GitOps Native
-- **Flux integration** for HelmReleases, Kustomizations, GitRepositories
-- **Graceful degradation** -- Flux checkers automatically skip if Flux isn't installed
-- **Stale reconciliation detection** -- catch GitOps pipelines that stopped syncing
+![AI Settings Modal](docs/dashboard-ai-settings.png)
 
-### Production Ready
-- **Leader election** for HA deployments
-- **Prometheus metrics** for observability
-- **Minimal RBAC** -- least-privilege, read-only access to cluster resources
-- **Distroless container** with OCI labels -- secure, minimal attack surface
-- **Network policy** template for restricted egress
-- **186+ test cases** -- unit, integration, and E2E coverage across all packages
-- **Validating webhooks** reject invalid CRs at admission time
-- **TTL auto-cleanup** for completed/failed CRs (`ttlSecondsAfterFinished`)
-- **Security scanning** -- govulncheck in CI, Trivy container scan on release, Dependabot for automated dependency updates
-- **DataSource abstraction** -- pluggable backend interface (direct K8s API or enterprise cache)
-- **Webhook notifications** -- `spec.notify` on TeamHealthRequest for Slack/Mattermost/Discord/any HTTP endpoint
-- **Health score history** -- in-memory ring buffer with `/api/health/history` API
-- **Graceful degradation** -- Flux checkers skip cleanly when CRDs aren't installed; 50-namespace cap prevents runaway scans
+AI Settings modal with provider selection (Anthropic, OpenAI, NoOp), API key input, model picker, and "Provider ready" indicator. Saving settings immediately triggers a new analysis cycle.
+
+</td>
+</tr>
+<tr>
+<td colspan="2">
+
+**Issue List**
+
+![Issue List](docs/dashboard-issues.png)
+
+Sticky filter bar with severity tabs, workload checker cards with individual issues, severity pills (CR/WR/IN), AI badges, root causes, suggestions, and copy-able kubectl commands. Line-clamped suggestions expand on click.
+
+</td>
+</tr>
+</table>
 
 ---
 
@@ -135,14 +110,14 @@ helm install kube-assist charts/kube-assist \
   --set dashboard.enabled=true
 
 # Using Kustomize
-make deploy IMG=ghcr.io/osagberg/kube-assist-operator:v1.7.0
+make deploy IMG=ghcr.io/osagberg/kube-assist-operator:v1.7.1
 ```
 
 ---
 
 ## CLI Reference
 
-### `kubeassist` — Workload Diagnostics
+### `kubeassist` -- Workload Diagnostics
 
 Scans Deployments, StatefulSets, DaemonSets, and Pods for issues.
 
@@ -153,12 +128,12 @@ kubeassist [namespace] [flags]
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
 | `--all-namespaces` | `-A` | `true` | Scan all namespaces |
-| `--selector` | `-l` | — | Label selector (e.g., `app=api`) |
+| `--selector` | `-l` | -- | Label selector (e.g., `app=api`) |
 | `--output` | `-o` | `text` | Output format: `text` or `json` |
 | `--watch` | `-w` | `false` | Continuous monitoring mode |
-| `--workers` | — | `5` | Parallel diagnostic workers |
-| `--timeout` | — | `60s` | Timeout per diagnostic |
-| `--cleanup` | — | `true` | Delete CRs after displaying results |
+| `--workers` | -- | `5` | Parallel diagnostic workers |
+| `--timeout` | -- | `60s` | Timeout per diagnostic |
+| `--cleanup` | -- | `true` | Delete CRs after displaying results |
 
 **Examples:**
 
@@ -169,14 +144,14 @@ kubeassist production
 # Filter by label
 kubeassist -l app=frontend
 
-# Watch mode — continuous monitoring
+# Watch mode -- continuous monitoring
 kubeassist -w
 
 # JSON output for scripting
 kubeassist -o json | jq '.issues[] | select(.severity == "Critical")'
 ```
 
-### `kubeassist health` — Comprehensive Health Checks
+### `kubeassist health` -- Comprehensive Health Checks
 
 Runs all 8 checkers across specified namespaces.
 
@@ -187,11 +162,11 @@ kubeassist health [flags]
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
 | `--namespaces` | `-n` | current | Comma-separated namespace list |
-| `--namespace-selector` | — | — | Label selector for namespaces |
-| `--checks` | — | all | Comma-separated checker names |
+| `--namespace-selector` | -- | -- | Label selector for namespaces |
+| `--checks` | -- | all | Comma-separated checker names |
 | `--output` | `-o` | `text` | Output format: `text` or `json` |
-| `--timeout` | — | `120s` | Total check timeout |
-| `--cleanup` | — | `true` | Delete CR after displaying results |
+| `--timeout` | -- | `120s` | Total check timeout |
+| `--cleanup` | -- | `true` | Delete CR after displaying results |
 
 **Examples:**
 
@@ -399,7 +374,25 @@ spec:
 
 ## Dashboard
 
-The operator includes a real-time React dashboard (React 19 + Vite + TypeScript + Tailwind CSS) embedded in the Go binary via `go:embed`. Features an Indigo-accented modern UI, built-in AI settings, health score history charting (recharts), and Server-Sent Events (SSE) for live updates with auto-reconnect.
+The operator includes a real-time dashboard built with React 19, Vite, TypeScript, and Tailwind CSS, embedded in the Go binary via `go:embed`. No separate frontend deployment needed.
+
+### Frosted Glass UI
+
+The dashboard uses a frosted glass design language with translucent panels, blur effects, and smooth transitions across dark and light themes.
+
+![Dashboard Overview](docs/dashboard-overview.png)
+
+**Key interface elements:**
+
+- **Health ring** -- animated SVG ring showing overall cluster health percentage
+- **Severity pills** -- color-coded labels (CR/WR/IN/OK) replacing color-only indicators, designed for colorblind accessibility
+- **Health history chart** -- line chart visualization powered by recharts showing health score over time
+- **Pipeline progress indicator** -- visual `[Checkers] -> [Causal] -> [AI]` display showing which stage of analysis is currently running
+- **Collapsible sections** -- Causal Timeline, Causal Groups, and Checker Cards all collapse to keep the view manageable
+- **Sticky filter bar** -- stays pinned below the header during scroll with severity tabs, namespace/checker dropdowns, and text search
+- **Connection indicator** -- green/yellow/red dot showing SSE connection status
+- **Mobile hamburger menu** -- responsive layout with collapsed navigation at <768px viewport width
+- **Line-clamp suggestions** -- issue suggestions are truncated in list view; click to expand
 
 ### Enable Dashboard
 
@@ -432,19 +425,11 @@ open http://localhost:9090
 | `/api/health/history` | GET | Health score history (`?last=N`, `?since=RFC3339`) |
 | `/api/causal/groups` | GET | Causal correlation analysis (correlated issue groups) |
 
-### Features
+### Live Updates
 
-- **Redesigned UI** -- Modern Indigo accent, responsive layout, dark/light themes
-- **AI Settings Panel** -- Enable/disable AI, select provider (Anthropic/OpenAI/NoOp), enter API key, choose model, all at runtime without restarting the operator
-- **Copy-able kubectl Commands** -- Every issue includes specific remediation commands you can copy and paste
-- **Toast Notifications** -- Visual feedback for actions like triggering a check or saving AI settings
-- **Search** -- Filter issues by resource name, namespace, or message
-- **Filters** -- Namespace dropdown, checker dropdown, severity tabs
-- **Export** -- Download reports as JSON or CSV
-- **Collapsible Cards** -- Click checker headers to collapse/expand
-- **Health Score** -- Animated progress ring showing overall health
-- **Timeline** -- Visual history of last 5 health checks
-- **Keyboard Shortcuts**:
+The dashboard uses Server-Sent Events (SSE) for real-time updates with automatic reconnection and pause/resume support. Toast notifications provide visual feedback for user actions and background events. Export reports as JSON or CSV at any time.
+
+### Keyboard Shortcuts
 
 | Key | Action |
 |-----|--------|
@@ -462,15 +447,24 @@ open http://localhost:9090
 
 ## AI Integration
 
-KubeAssist can enhance health check suggestions using AI providers for context-aware root cause analysis and remediation guidance.
+KubeAssist enhances health check results with AI-generated root cause analysis and remediation guidance. Three providers are supported:
+
+| Provider | Default Model | Description |
+|----------|---------------|-------------|
+| **Anthropic** | Claude Haiku 4.5 | Context-aware diagnostics with structured output |
+| **OpenAI** | GPT-4o | Alternative provider with broad model selection |
+| **NoOp** | -- | Returns empty suggestions; useful for testing and development |
 
 ### Quick Setup (Dashboard)
 
-The fastest way to enable AI is through the dashboard UI:
+The fastest way to enable AI is through the dashboard:
 
-1. Open the dashboard and click the AI settings panel
-2. Toggle AI on, select a provider (Anthropic or OpenAI), enter your API key, and pick a model
-3. Click Save -- changes take effect immediately, no restart required
+1. Click the gear icon to open AI Settings
+2. Toggle AI on, select a provider, enter your API key, and pick a model
+3. Click Save -- the operator immediately triggers a new analysis cycle with AI enabled (no waiting for the next scheduled check)
+
+![AI Settings](docs/dashboard-ai-settings.png)
+*AI Settings modal showing Anthropic provider with "Provider ready" indicator.*
 
 ### Quick Setup (CLI)
 
@@ -489,7 +483,40 @@ ai:
     key: "api-key"
 ```
 
+### How AI Analysis Works
+
+1. **Batched calls** -- Issues are grouped and sent to the AI provider in batches to minimize API calls and reduce latency
+2. **Caching** -- AI responses are cached so repeated checks for the same issue pattern do not incur additional API costs
+3. **Data sanitization** -- Sensitive data (secrets, environment variables, API keys) is redacted before being sent to any AI provider
+4. **Thread-safe AI Manager** -- `Reconfigure()` swaps providers at runtime without downtime; the same manager instance is shared across the dashboard and controllers
+5. **Pipeline indicator** -- The dashboard shows a `[Checkers] -> [Causal] -> [AI]` progress bar so you can see exactly when AI analysis is running
+
 For full details on providers, data sanitization, API key management, and cost considerations, see the [AI Integration Guide](docs/ai-integration.md).
+
+---
+
+## Causal Analysis
+
+The causal analysis engine correlates issues across checkers to identify root causes that no single checker can detect on its own. It combines temporal correlation, resource graph ownership chains, and predefined cross-checker rules to surface the *real* reason your workloads are failing.
+
+### Cross-Checker Rules
+
+| Rule | Confidence | Description |
+|------|------------|-------------|
+| **OOM + Quota** | 0.85 | An OOMKilled container in a namespace with quota near its limit suggests the quota is the underlying constraint |
+| **Crash + ImagePull** | 0.80 | CrashLoopBackOff alongside ImagePullBackOff often indicates a registry or image configuration issue rather than an application bug |
+| **Flux Chain** | 0.90 | A failed GitRepository causes downstream Kustomization and HelmRelease failures; the engine traces the chain back to the source |
+| **PVC + Workload** | 0.75 | A pending PVC bound to a workload explains why pods are stuck in Pending state |
+
+### How It Works
+
+1. **Temporal correlation** -- Issues that appear within the same time window are grouped as potentially related
+2. **Resource graph** -- Kubernetes owner references are walked to connect pods, deployments, replica sets, and other resources into ownership chains
+3. **Rule matching** -- The 4 cross-checker rules above are evaluated against grouped issues to identify known causal patterns
+4. **AI enhancement** -- When AI is enabled, causal groups are enriched with AI-generated explanations that tie the correlated issues together into a coherent narrative
+5. **Confidence scoring** -- Each causal group carries a confidence score so you can prioritize investigation
+
+Causal groups appear in the dashboard as collapsible cards in the Causal Analysis section, showing the rule that matched, the confidence score, and the root cause. The `/api/causal/groups` endpoint returns the same data as JSON.
 
 ---
 
@@ -533,9 +560,7 @@ helm install kube-assist charts/kube-assist \
 | `ai.provider` | `noop` | AI provider: anthropic, openai, noop |
 | `ai.model` | (provider default) | AI model to use |
 | `ai.apiKeySecretRef.name` | -- | Secret containing API key |
-| `networkPolicy.enabled` | `false` | Enable network policy |
-| `webhook.enabled` | `false` | Enable validating admission webhooks |
-| `webhook.certManager.enabled` | `true` | Use cert-manager for webhook TLS |
+| `networkPolicy.enabled` | `true` | Enable network policy |
 
 ### Full Configuration
 
@@ -546,64 +571,70 @@ See [charts/kube-assist/values.yaml](charts/kube-assist/values.yaml) for all opt
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                              User Interface                              │
-├─────────────────────────────────┬───────────────────────────────────────┤
-│         CLI (kubeassist)        │         Dashboard (:9090)             │
-│  • kubeassist [namespace]       │  • Modern UI, Indigo accent           │
-│  • kubeassist health            │  • Real-time SSE updates              │
-│  • JSON/text output             │  • AI settings panel (runtime config) │
-│                                 │  • kubectl commands on every issue    │
-└─────────────────────────────────┴───────────────────────────────────────┘
-                                    │
-                        ┌───────────┴──────────┐
-                        ▼                      ▼
-┌──────────────────────────────┐ ┌────────────────────────────────────────┐
-│       AI Manager             │ │           Custom Resources              │
-│  • Thread-safe Reconfigure() │ ├────────────────────┬───────────────────┤
-│  • Shared across dashboard   │ │ TroubleshootRequest │ TeamHealthRequest │
-│    and controllers           │ │ • Target: any kind  │ • Scope: ns/sel   │
-│  • POST /api/settings/ai     │ │ • diagnose/logs/... │ • Configurable    │
-└──────────────────────────────┘ │ • issues+ConfigMaps │ • Per-checker cfg │
-                        │        └────────────────────┴───────────────────┘
-                        │                      │
-                        └───────────┬──────────┘
-                                    ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│                            Controllers                                   │
-├─────────────────────────────────┬───────────────────────────────────────┤
-│  TroubleshootRequestReconciler  │    TeamHealthRequestReconciler        │
-│  • Validates target exists      │    • Resolves namespace scope         │
-│  • Collects pod diagnostics     │    • Runs selected checkers           │
-│  • Stores logs/events           │    • Aggregates results               │
-│  • Structured logging           │    • Structured logging               │
-└─────────────────────────────────┴───────────────────────────────────────┘
-                                    │
-                                    ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│                          Checker Registry                                │
-├──────────┬──────────┬──────────┬──────────┬──────────┬─────────────────┤
-│workloads │ secrets  │   pvcs   │  quotas  │  netpol  │   Flux (3)      │
-│          │          │          │          │          │ • helmreleases  │
-│Deployment│ TLS cert │ Pending  │ Usage %  │ Coverage │ • kustomizations│
-│StatefulS │ expiry   │ Lost     │ exceeded │ rules    │ • gitrepos      │
-│DaemonSet │ empty    │ capacity │          │          │                 │
-│          │          │          │          │          │                 │
-│ Each checker includes kubectl remediation commands,                    │
-│ common root causes, and links to Kubernetes docs.                     │
-└──────────┴──────────┴──────────┴──────────┴──────────┴─────────────────┘
-                                    │
-                                    ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│                      DataSource Abstraction                              │
-│  • KubernetesDataSource (default) — direct K8s API calls                │
-│  • Pluggable interface — swap in enterprise cache or multi-cluster       │
-│  • Scope resolver — namespace filtering, label selectors, 50-ns cap     │
-├─────────────────────────────────────────────────────────────────────────┤
-│                         Kubernetes API                                   │
-│  Deployments • StatefulSets • DaemonSets • Pods • Events • Secrets      │
-│  PVCs • ResourceQuotas • NetworkPolicies • HelmReleases • Kustomizations│
-└─────────────────────────────────────────────────────────────────────────┘
++---------------------------------------------------------------------------+
+|                              User Interface                               |
++---------------------------------+-----------------------------------------+
+|         CLI (kubeassist)        |         Dashboard (:9090)               |
+|  - kubeassist [namespace]       |  - Frosted glass UI, dark/light themes  |
+|  - kubeassist health            |  - Real-time SSE updates                |
+|  - JSON/text output             |  - AI settings panel (runtime config)   |
+|                                 |  - Severity pills + pipeline indicator  |
++---------------------------------+-----------------------------------------+
+                                    |
+                        +-----------+----------+
+                        v                      v
++------------------------------+ +------------------------------------------+
+|       AI Manager             | |           Custom Resources                |
+|  - Thread-safe Reconfigure() | +--------------------+---------------------+
+|  - Shared across dashboard   | | TroubleshootRequest | TeamHealthRequest   |
+|    and controllers           | | - Target: any kind  | - Scope: ns/sel     |
+|  - POST /api/settings/ai     | | - diagnose/logs/... | - Configurable      |
++------------------------------+ | - issues+ConfigMaps | - Per-checker cfg   |
+                        |        +--------------------+---------------------+
+                        |                      |
+                        +-----------+----------+
+                                    v
++---------------------------------------------------------------------------+
+|                            Controllers                                    |
++---------------------------------+-----------------------------------------+
+|  TroubleshootRequestReconciler  |    TeamHealthRequestReconciler          |
+|  - Validates target exists      |    - Resolves namespace scope           |
+|  - Collects pod diagnostics     |    - Runs selected checkers             |
+|  - Stores logs/events           |    - Aggregates results                 |
+|  - Structured logging           |    - Structured logging                 |
++---------------------------------+-----------------------------------------+
+                                    |
+                                    v
++---------------------------------------------------------------------------+
+|                          Checker Registry                                 |
++----------+----------+----------+----------+----------+--------------------+
+|workloads | secrets  |   pvcs   |  quotas  |  netpol  |   Flux (3)        |
+|          |          |          |          |          | - helmreleases    |
+|Deployment| TLS cert | Pending  | Usage %  | Coverage | - kustomizations  |
+|StatefulS | expiry   | Lost     | exceeded | rules    | - gitrepos        |
+|DaemonSet | empty    | capacity |          |          |                   |
++----------+----------+----------+----------+----------+--------------------+
+                                    |
+                                    v
++---------------------------------------------------------------------------+
+|                       Causal Analysis Engine                              |
+|  - Temporal correlation across checker results                            |
+|  - Resource graph ownership chains (owner references)                     |
+|  - 4 cross-checker rules with confidence scoring                          |
+|  - AI-enhanced group explanations when AI is enabled                      |
++---------------------------------------------------------------------------+
+                                    |
+                                    v
++---------------------------------------------------------------------------+
+|                      DataSource Abstraction                               |
+|  - KubernetesDataSource (default) -- direct K8s API calls                 |
+|  - Pluggable interface -- swap in enterprise cache or multi-cluster       |
+|  - Scope resolver -- namespace filtering, label selectors, 50-ns cap     |
++---------------------------------------------------------------------------+
+|                         Kubernetes API                                    |
+|  Deployments - StatefulSets - DaemonSets - Pods - Events - Secrets       |
+|  PVCs - ResourceQuotas - NetworkPolicies - HelmReleases - Kustomizations |
++---------------------------------------------------------------------------+
 ```
 
 ---
@@ -624,23 +655,21 @@ Prometheus metrics available at `:8080/metrics`:
 
 Four GitHub Actions workflows enforce quality at every stage:
 
-| Workflow | Trigger | What It Does |
-|----------|---------|--------------|
-| **CI** | Push/PR to `main` | Lint (21 linters via golangci-lint), test, build, govulncheck |
-| **Release** | Tag `v*` | Multi-arch Docker build, GHCR push, Trivy scan, GitHub Release |
-| **Security** | Schedule + PR | govulncheck + Trivy vulnerability scanning |
-| **Dependabot** | Schedule | Automated dependency updates for Go modules and GitHub Actions |
+| Workflow | File | Trigger | What It Does |
+|----------|------|---------|--------------|
+| **Lint** | `lint.yml` | Push/PR to `main` | golangci-lint with 21 linters (staticcheck, gosec, errcheck, govet, ineffassign, misspell, and more) |
+| **Tests** | `test.yml` | Push/PR to `main` | Unit and integration tests, govulncheck, build verification |
+| **E2E Tests** | `test-e2e.yml` | Push/PR to `main` | End-to-end tests against a real cluster environment |
+| **Release** | `release.yml` | Tag `v*` | Multi-arch Docker build, GHCR push, Trivy container scan, GitHub Release |
 
-**Linting**: golangci-lint runs 21 linters including `staticcheck`, `gosec`, `errcheck`, `govet`, `ineffassign`, `misspell`, and more -- catching bugs, security issues, and style problems before they merge.
-
-**Container security**: Release images are built distroless (`gcr.io/distroless/static:nonroot`), scanned with Trivy, and published to GHCR with OCI labels and SBOMs.
+**Container security**: Release images are built distroless (`gcr.io/distroless/static:nonroot`), scanned with Trivy, and published to GHCR with OCI labels. Dependabot keeps Go modules and GitHub Actions dependencies up to date.
 
 ---
 
 ## Development
 
 ```bash
-# Run tests
+# Run tests (372 test cases)
 make test
 
 # Run operator locally
@@ -683,12 +712,13 @@ make install-cli
 - [x] DataSource abstraction for pluggable backends (v1.5.0)
 - [x] Webhook notification interface (`spec.notify` on TeamHealthRequest) (v1.5.1)
 - [x] Health score history with ring buffer (`/api/health/history`) (v1.5.1)
-- [x] React dashboard — React 19 + Vite + TypeScript + Tailwind SPA (v1.6.0)
-- [x] Causal analysis engine — temporal correlation, resource graph, cross-checker rules, enhanced AI context, timeline UI (v1.7.0)
+- [x] React dashboard -- React 19 + Vite + TypeScript + Tailwind SPA (v1.6.0)
+- [x] Causal analysis engine -- temporal correlation, resource graph, cross-checker rules, AI-enhanced context (v1.7.0)
+- [x] Frosted glass dashboard redesign -- dark/light themes, severity pills, pipeline indicator, collapsible causal timeline, instant AI trigger (v1.7.1)
 - [ ] Custom checker plugins
 
 ---
 
 ## License
 
-Apache License 2.0 — see [LICENSE](LICENSE) for details.
+Apache License 2.0 -- see [LICENSE](LICENSE) for details.

@@ -30,6 +30,7 @@ function App() {
   const [paused, setPaused] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
   const [showHelp, setShowHelp] = useState(false)
+  const [menuOpen, setMenuOpen] = useState(false)
   const searchRef = useRef<HTMLInputElement>(null)
   const nsRef = useRef<HTMLSelectElement>(null)
 
@@ -43,6 +44,7 @@ function App() {
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', dark)
+    document.documentElement.classList.toggle('light', !dark)
   }, [dark])
 
   const namespaces = useMemo(() => {
@@ -86,67 +88,114 @@ function App() {
 
   return (
     <ErrorBoundary>
-    <div className="min-h-screen bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100">
+    <div className="min-h-screen" style={{ color: 'var(--text-primary)' }}>
       {/* Header */}
-      <header className="bg-gradient-to-r from-indigo-600 to-purple-500 text-white px-6 py-4 shadow-lg">
+      <header className="glass-panel sticky top-0 z-40 px-6 py-3">
         <div className="max-w-7xl mx-auto flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <h1 className="text-xl font-bold">KubeAssist</h1>
-            <span className="text-xs bg-white/20 px-2 py-0.5 rounded-full">Dashboard</span>
-            <span className={`w-2 h-2 rounded-full ${connected ? 'bg-green-400 animate-pulse' : paused ? 'bg-yellow-400' : 'bg-red-400'}`} title={connected ? 'Connected' : paused ? 'Paused' : 'Disconnected'} role="status" aria-label={connected ? 'Connected to server' : paused ? 'Updates paused' : 'Disconnected from server'} />
+            <h1 className="text-lg font-semibold tracking-tight" style={{ color: 'var(--text-primary)' }}>KubeAssist</h1>
+            <span className="text-[11px] font-medium px-2.5 py-0.5 rounded-full bg-accent-muted text-accent">Dashboard</span>
+            <span className={`w-2 h-2 rounded-full ${connected ? 'severity-dot-healthy' : paused ? 'severity-dot-warning' : 'severity-dot-critical'}`} title={connected ? 'Connected' : paused ? 'Paused' : 'Disconnected'} role="status" aria-label={connected ? 'Connected to server' : paused ? 'Updates paused' : 'Disconnected from server'} />
           </div>
-          <div className="flex items-center gap-2">
-            <button onClick={togglePause} className="px-3 py-1.5 rounded-md bg-white/20 hover:bg-white/30 text-sm transition-colors" aria-label={paused ? 'Resume live updates' : 'Pause live updates'}>
+          {/* Desktop buttons */}
+          <div className="hidden md:flex items-center gap-2">
+            <button onClick={togglePause} className="glass-button px-3 py-1.5 rounded-lg text-sm" style={{ color: 'var(--text-secondary)' }} aria-label={paused ? 'Resume live updates' : 'Pause live updates'}>
               {paused ? 'Resume' : 'Pause'}
             </button>
-            <button onClick={handleTriggerCheck} className="px-3 py-1.5 rounded-md bg-white/20 hover:bg-white/30 text-sm transition-colors" aria-label="Refresh health data">
+            <button onClick={handleTriggerCheck} className="glass-button px-3 py-1.5 rounded-lg text-sm" style={{ color: 'var(--text-secondary)' }} aria-label="Refresh health data">
               Refresh
             </button>
-            <button onClick={() => setShowSettings(true)} className="px-3 py-1.5 rounded-md bg-white/20 hover:bg-white/30 text-sm transition-colors" aria-label="Open AI settings">
+            <button onClick={() => setShowSettings(true)} className="glass-button px-3 py-1.5 rounded-lg text-sm" style={{ color: 'var(--text-secondary)' }} aria-label="Open AI settings">
               AI Settings
             </button>
-            <button onClick={toggleTheme} className="px-3 py-1.5 rounded-md bg-white/20 hover:bg-white/30 text-sm transition-colors" aria-label={dark ? 'Switch to light theme' : 'Switch to dark theme'}>
+            <button onClick={toggleTheme} className="glass-button px-3 py-1.5 rounded-lg text-sm" style={{ color: 'var(--text-secondary)' }} aria-label={dark ? 'Switch to light theme' : 'Switch to dark theme'}>
               {dark ? 'Light' : 'Dark'}
             </button>
-            <button onClick={() => setShowHelp(true)} className="px-2 py-1.5 rounded-md bg-white/20 hover:bg-white/30 text-sm transition-colors font-mono" aria-label="Show keyboard shortcuts">
+            <button onClick={() => setShowHelp(true)} className="glass-button px-2.5 py-1.5 rounded-lg text-sm font-mono" style={{ color: 'var(--text-secondary)' }} aria-label="Show keyboard shortcuts">
               ?
             </button>
           </div>
+          {/* Mobile buttons */}
+          <div className="flex md:hidden items-center gap-2">
+            <button onClick={toggleTheme} className="glass-button px-3 py-1.5 rounded-lg text-sm" style={{ color: 'var(--text-secondary)' }} aria-label={dark ? 'Switch to light theme' : 'Switch to dark theme'}>
+              {dark ? 'Light' : 'Dark'}
+            </button>
+            <button onClick={() => setMenuOpen((o) => !o)} className="glass-button px-2.5 py-1.5 rounded-lg text-sm font-mono" style={{ color: 'var(--text-secondary)' }} aria-label="Open menu">
+              ...
+            </button>
+          </div>
+          {menuOpen && (
+            <>
+              <div className="fixed inset-0 z-40" onClick={() => setMenuOpen(false)} />
+              <div className="glass-elevated absolute right-4 top-14 rounded-xl p-2 flex flex-col gap-1 z-50">
+                <button onClick={() => { togglePause(); setMenuOpen(false) }} className="glass-button px-3 py-1.5 rounded-lg text-sm w-full text-left" style={{ color: 'var(--text-secondary)' }} aria-label={paused ? 'Resume live updates' : 'Pause live updates'}>
+                  {paused ? 'Resume' : 'Pause'}
+                </button>
+                <button onClick={() => { handleTriggerCheck(); setMenuOpen(false) }} className="glass-button px-3 py-1.5 rounded-lg text-sm w-full text-left" style={{ color: 'var(--text-secondary)' }} aria-label="Refresh health data">
+                  Refresh
+                </button>
+                <button onClick={() => { setShowSettings(true); setMenuOpen(false) }} className="glass-button px-3 py-1.5 rounded-lg text-sm w-full text-left" style={{ color: 'var(--text-secondary)' }} aria-label="Open AI settings">
+                  AI Settings
+                </button>
+                <button onClick={() => { setShowHelp(true); setMenuOpen(false) }} className="glass-button px-2.5 py-1.5 rounded-lg text-sm font-mono w-full text-left" style={{ color: 'var(--text-secondary)' }} aria-label="Show keyboard shortcuts">
+                  ?
+                </button>
+              </div>
+            </>
+          )}
         </div>
       </header>
 
       {/* AI Status Bar */}
       {health?.aiStatus && (
-        <div className={`px-6 py-1.5 text-xs font-medium ${
-          health.aiStatus.lastError
-            ? 'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300'
-            : health.aiStatus.issuesEnhanced > 0
-              ? 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300'
-              : 'bg-yellow-100 dark:bg-yellow-900/30 text-yellow-700 dark:text-yellow-300'
-        }`}>
-          <div className="max-w-7xl mx-auto flex items-center gap-2">
-            <span className="font-semibold">AI:</span>
+        <div className="glass-panel mx-6 mt-3 rounded-xl px-4 py-2 max-w-7xl lg:mx-auto">
+          <div className="flex items-center gap-2 text-xs font-medium">
+            <span className={
+              health.aiStatus.lastError ? 'severity-pill-critical' :
+              health.aiStatus.pending ? 'severity-pill-warning' :
+              health.aiStatus.issuesEnhanced > 0 ? 'severity-pill-healthy' :
+              'severity-pill-info'
+            }>
+              {health.aiStatus.lastError ? 'CR' :
+               health.aiStatus.pending ? 'WR' :
+               health.aiStatus.issuesEnhanced > 0 ? 'OK' :
+               'IN'}
+            </span>
+            <span style={{ color: 'var(--text-secondary)' }}>AI ({health.aiStatus.provider}):</span>
             {health.aiStatus.lastError ? (
-              <span>Error: {health.aiStatus.lastError}</span>
+              <span className="text-severity-critical">Error: {health.aiStatus.lastError}</span>
+            ) : health.aiStatus.cacheHit ? (
+              <span style={{ color: 'var(--text-secondary)' }}>Using cached results (no API call) — {health.aiStatus.issuesEnhanced} issues enhanced</span>
             ) : health.aiStatus.issuesEnhanced > 0 ? (
-              <span>{health.aiStatus.issuesEnhanced} issues enhanced ({health.aiStatus.provider}, {health.aiStatus.tokensUsed} tokens)</span>
+              <span style={{ color: 'var(--text-secondary)' }}>
+                {health.aiStatus.issuesEnhanced} issues enhanced
+                {health.aiStatus.issuesCapped && health.aiStatus.totalIssueCount
+                  ? ` of ${health.aiStatus.totalIssueCount}`
+                  : ''}
+                {' '}({health.aiStatus.tokensUsed >= 1000 ? `${(health.aiStatus.tokensUsed / 1000).toFixed(0)}K` : health.aiStatus.tokensUsed} tokens
+                {health.aiStatus.estimatedCostUsd ? `, ~$${health.aiStatus.estimatedCostUsd.toFixed(4)}` : ''})
+                {health.aiStatus.issuesCapped ? ' (capped)' : ''}
+              </span>
             ) : (
-              <span>Enabled but no issues enhanced</span>
+              <span style={{ color: 'var(--text-secondary)' }}>Enabled — waiting for results</span>
             )}
           </div>
+          {health.aiStatus.checkPhase && health.aiStatus.checkPhase !== 'done' && (
+            <PipelineIndicator phase={health.aiStatus.checkPhase} />
+          )}
         </div>
       )}
 
       <main className="max-w-7xl mx-auto px-6 py-8">
         {error && (
-          <div className="bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300 px-4 py-3 rounded-lg mb-6 border border-red-200 dark:border-red-800">
-            {error}
+          <div className="glass-panel rounded-xl mb-6 px-4 py-3 border-severity-critical-border" style={{ background: 'rgba(239, 68, 68, 0.08)' }}>
+            <span className="text-severity-critical text-sm">{error}</span>
           </div>
         )}
 
         {loading && !health && (
           <div className="flex items-center justify-center py-20">
-            <div className="w-8 h-8 border-4 border-indigo-200 border-t-indigo-600 rounded-full animate-spin" />
+            <div className="w-8 h-8 border-2 border-accent-muted border-t-accent rounded-full animate-spin" />
           </div>
         )}
 
@@ -156,10 +205,10 @@ function App() {
             <div className="flex flex-col md:flex-row items-start gap-6">
               <HealthScoreRing score={healthScore} />
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4 flex-1 w-full">
-                <MetricCard label="Healthy" value={health.summary.totalHealthy} color="green" />
-                <MetricCard label="Critical" value={health.summary.criticalCount} color="red" />
-                <MetricCard label="Warnings" value={health.summary.warningCount} color="yellow" />
-                <MetricCard label="Info" value={health.summary.infoCount} color="blue" />
+                <MetricCard label="Healthy" value={health.summary.totalHealthy} severity="healthy" />
+                <MetricCard label="Critical" value={health.summary.criticalCount} severity="critical" />
+                <MetricCard label="Warnings" value={health.summary.warningCount} severity="warning" />
+                <MetricCard label="Info" value={health.summary.infoCount} severity="info" />
               </div>
             </div>
 
@@ -170,6 +219,7 @@ function App() {
             <CausalTimeline />
 
             {/* Filters */}
+            <div className="sticky top-14 z-30 glass-panel -mx-6 px-6 py-3 rounded-none">
             <div className="flex flex-col md:flex-row gap-3 items-start md:items-center justify-between">
               <SeverityTabs active={severity} onChange={setSeverity} summary={health.summary} />
               <div className="flex gap-2 items-center flex-wrap">
@@ -177,6 +227,7 @@ function App() {
                 <NamespaceFilter namespaces={namespaces} selected={namespace} onChange={setNamespace} selectRef={nsRef} />
                 <ExportButton health={health} />
               </div>
+            </div>
             </div>
 
             {/* Checker Cards */}
@@ -196,9 +247,9 @@ function App() {
             </div>
 
             {/* Timestamp */}
-            <div className="text-center text-xs text-gray-400 pt-4">
+            <div className="text-center text-xs pt-4" style={{ color: 'var(--text-tertiary)' }}>
               Last updated: {new Date(health.timestamp).toLocaleString()}
-              {paused && <span className="ml-2 text-yellow-500">(updates paused)</span>}
+              {paused && <span className="ml-2 text-severity-warning">(updates paused)</span>}
             </div>
           </div>
         )}
@@ -222,17 +273,51 @@ function App() {
   )
 }
 
-function MetricCard({ label, value, color }: { label: string; value: number; color: string }) {
-  const styles: Record<string, string> = {
-    green: 'border-l-green-500 text-green-600 dark:text-green-400',
-    red: 'border-l-red-500 text-red-600 dark:text-red-400',
-    yellow: 'border-l-yellow-500 text-yellow-600 dark:text-yellow-400',
-    blue: 'border-l-blue-500 text-blue-600 dark:text-blue-400',
-  }
+const pipelineStages = ['checkers', 'causal', 'ai'] as const
+const stageLabels: Record<string, string> = { checkers: 'Checkers', causal: 'Causal', ai: 'AI' }
+
+function PipelineIndicator({ phase }: { phase: string }) {
+  const activeIdx = pipelineStages.indexOf(phase as typeof pipelineStages[number])
   return (
-    <div className={`bg-white dark:bg-gray-800 rounded-lg p-4 border-l-4 shadow-sm ${styles[color]}`}>
-      <div className="text-sm text-gray-500 dark:text-gray-400">{label}</div>
-      <div className="text-2xl font-bold">{value}</div>
+    <div className="flex items-center gap-1.5 mt-2">
+      {pipelineStages.map((stage, i) => {
+        const done = i < activeIdx
+        const active = i === activeIdx
+        return (
+          <div key={stage} className="flex items-center gap-1.5">
+            {i > 0 && (
+              <svg className="w-3 h-3" style={{ color: done ? 'var(--text-secondary)' : 'var(--text-tertiary)' }} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+              </svg>
+            )}
+            <span
+              className={`px-2 py-0.5 rounded-md text-[10px] font-semibold transition-all duration-300 ${
+                done ? 'glass-inset text-accent' :
+                active ? 'bg-accent/20 text-accent border border-accent/30' :
+                'glass-inset'
+              }`}
+              style={!done && !active ? { color: 'var(--text-tertiary)' } : undefined}
+            >
+              {done ? '✓ ' : active ? '⏳ ' : ''}{stageLabels[stage]}
+            </span>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+function MetricCard({ label, value, severity }: { label: string; value: number; severity: string }) {
+  const pillClass = `severity-pill-${severity}`
+  const pillLabels: Record<string, string> = { healthy: 'OK', critical: 'CR', warning: 'WR', info: 'IN' }
+  const pillText = pillLabels[severity] ?? '??'
+  return (
+    <div className="glass-panel rounded-xl p-4 transition-all duration-200">
+      <div className="flex items-center gap-2 mb-2">
+        <span className={pillClass}>{pillText}</span>
+        <span className="text-sm" style={{ color: 'var(--text-secondary)' }}>{label}</span>
+      </div>
+      <div className="text-2xl font-bold" style={{ color: 'var(--text-primary)' }}>{value}</div>
     </div>
   )
 }

@@ -5,15 +5,30 @@ interface Props {
   issue: Issue
 }
 
-const severityConfig = {
-  Critical: { bg: 'bg-red-50 dark:bg-red-900/20', border: 'border-red-400', icon: '!', iconBg: 'bg-red-500' },
-  Warning: { bg: 'bg-yellow-50 dark:bg-yellow-900/20', border: 'border-yellow-400', icon: '!', iconBg: 'bg-yellow-500' },
-  Info: { bg: 'bg-blue-50 dark:bg-blue-900/20', border: 'border-blue-400', icon: 'i', iconBg: 'bg-blue-500' },
+const severityPills: Record<string, string> = {
+  Critical: 'severity-pill-critical',
+  Warning: 'severity-pill-warning',
+  Info: 'severity-pill-info',
+}
+
+const severityLabels: Record<string, string> = {
+  Critical: 'CR',
+  Warning: 'WR',
+  Info: 'IN',
+}
+
+function stripIssueRefs(text: string): string {
+  return text
+    .replace(/\s*\((?:see\s+)?(?:issue|group)_\d+\)/gi, '')
+    .replace(/\b(?:issue|group)_\d+\b/gi, '')
+    .trim()
 }
 
 export function IssueRow({ issue }: Props) {
   const [copied, setCopied] = useState(false)
-  const cfg = severityConfig[issue.severity] ?? severityConfig.Info
+  const [showFull, setShowFull] = useState(false)
+  const pillClass = severityPills[issue.severity] ?? severityPills.Info
+  const pillText = severityLabels[issue.severity] ?? 'IN'
 
   const copyCommand = () => {
     const cmd = extractCommand(issue.suggestion)
@@ -28,41 +43,46 @@ export function IssueRow({ issue }: Props) {
   const cmd = extractCommand(issue.suggestion)
 
   return (
-    <div className={`px-4 py-3 border-l-4 ${cfg.border} ${cfg.bg}`}>
+    <div className="px-4 py-2 transition-all duration-200 hover:bg-glass-200">
       <div className="flex items-start justify-between gap-2">
-        <div className="flex items-start gap-2 min-w-0">
-          <span className={`${cfg.iconBg} text-white text-xs w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5 font-bold`}>
-            {cfg.icon}
-          </span>
+        <div className="flex items-start gap-2.5 min-w-0">
+          <span className={`${pillClass} mt-0.5`}>{pillText}</span>
           <div className="min-w-0">
             <div className="font-medium text-sm flex items-center gap-1.5">
               <span>
-                <span className="text-gray-500 dark:text-gray-400">{issue.namespace}/</span>
-                {issue.resource}
+                <span style={{ color: 'var(--text-tertiary)' }}>{issue.namespace}/</span>
+                <span style={{ color: 'var(--text-primary)' }}>{issue.resource}</span>
               </span>
               {issue.aiEnhanced && (
-                <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-semibold bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300">
+                <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-semibold bg-ai-bg text-ai border border-ai-border">
                   AI
                 </span>
               )}
             </div>
-            <div className="text-sm text-gray-600 dark:text-gray-300 mt-0.5">{issue.message}</div>
+            <div className="text-sm mt-0.5" style={{ color: 'var(--text-secondary)' }}>{issue.message}</div>
             {issue.rootCause && (
-              <div className="text-xs text-gray-600 dark:text-gray-400 mt-1 italic">
-                Root cause: {issue.rootCause}
+              <div className="text-xs mt-0.5 italic break-words" style={{ color: 'var(--text-tertiary)' }}>
+                Root cause: {stripIssueRefs(issue.rootCause)}
               </div>
             )}
             {issue.suggestion && (
-              <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">{issue.suggestion}</div>
+              <div
+                className={`text-xs mt-0.5 break-words cursor-pointer ${showFull ? '' : 'line-clamp-1'}`}
+                style={{ color: 'var(--text-tertiary)' }}
+                onClick={() => setShowFull(!showFull)}
+                title={showFull ? 'Click to collapse' : 'Click to expand'}
+              >
+                {stripIssueRefs(issue.suggestion)}
+              </div>
             )}
             {cmd && (
-              <div className="mt-2 flex items-center gap-2">
-                <code className="text-xs bg-gray-100 dark:bg-gray-900 px-2 py-1 rounded font-mono break-all">
+              <div className="mt-1.5 flex items-center gap-2">
+                <code className="text-xs glass-inset px-2 py-1 rounded-md font-mono break-all" style={{ color: 'var(--text-secondary)' }}>
                   {cmd}
                 </code>
                 <button
                   onClick={copyCommand}
-                  className="text-xs text-indigo-600 dark:text-indigo-400 hover:underline flex-shrink-0"
+                  className="text-xs text-accent hover:underline flex-shrink-0 transition-all duration-200"
                 >
                   {copied ? 'Copied!' : 'Copy'}
                 </button>
