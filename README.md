@@ -715,7 +715,10 @@ make install-cli
 - [x] React dashboard -- React 19 + Vite + TypeScript + Tailwind SPA (v1.6.0)
 - [x] Causal analysis engine -- temporal correlation, resource graph, cross-checker rules, AI-enhanced context (v1.7.0)
 - [x] Frosted glass dashboard redesign -- dark/light themes, severity pills, pipeline indicator, collapsible causal timeline, instant AI trigger (v1.7.1)
-- [ ] Custom checker plugins
+- [ ] Custom checker plugins — CRD-driven health checks with CEL expressions (`CheckPlugin` CR, hot-reload registry)
+- [ ] "Explain this cluster" AI mode — narrative summary of cluster health with risk level, top issues, and trend direction
+- [ ] Predictive health — trend analysis via linear regression on health history, score projection, risky checker detection
+- [ ] Cross-cluster via ConsoleDataSource — multi-cluster aggregation through pluggable `DataSource` interface
 
 ---
 
