@@ -45,8 +45,35 @@ type AnalysisRequest struct {
 	// ClusterContext provides additional cluster information
 	ClusterContext ClusterContext `json:"clusterContext"`
 
+	// CausalContext provides correlation data for root cause analysis.
+	// When present, the AI provider should use it to give deeper analysis.
+	CausalContext *CausalAnalysisContext `json:"causalContext,omitempty"`
+
 	// MaxTokens limits the response length (provider-specific)
 	MaxTokens int `json:"maxTokens,omitempty"`
+}
+
+// CausalAnalysisContext is a simplified representation of causal correlation
+// data that can be included in AI analysis requests.
+type CausalAnalysisContext struct {
+	// Groups are the correlated issue groups with inferred root causes.
+	Groups []CausalGroupSummary `json:"groups"`
+
+	// UncorrelatedCount is the number of issues not matching any rule.
+	UncorrelatedCount int `json:"uncorrelatedCount"`
+
+	// TotalIssues is the total number of issues analyzed.
+	TotalIssues int `json:"totalIssues"`
+}
+
+// CausalGroupSummary is a condensed view of a CausalGroup for AI consumption.
+type CausalGroupSummary struct {
+	Rule       string   `json:"rule"`
+	Title      string   `json:"title"`
+	RootCause  string   `json:"rootCause,omitempty"`
+	Severity   string   `json:"severity"`
+	Confidence float64  `json:"confidence"`
+	Resources  []string `json:"resources"`
 }
 
 // IssueContext contains sanitized issue information for AI analysis

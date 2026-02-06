@@ -33,6 +33,7 @@ import (
 
 	assistv1alpha1 "github.com/osagberg/kube-assist-operator/api/v1alpha1"
 	"github.com/osagberg/kube-assist-operator/internal/ai"
+	"github.com/osagberg/kube-assist-operator/internal/causal"
 	"github.com/osagberg/kube-assist-operator/internal/checker"
 	"github.com/osagberg/kube-assist-operator/internal/checker/workload"
 	"github.com/osagberg/kube-assist-operator/internal/datasource"
@@ -56,6 +57,7 @@ type TeamHealthRequestReconciler struct {
 	AIProvider       ai.Provider
 	AIEnabled        bool
 	DataSource       datasource.DataSource
+	Correlator       *causal.Correlator
 	NotifierRegistry *notifier.Registry
 }
 
@@ -140,22 +142,45 @@ func (r *TeamHealthRequestReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	// Determine which checkers to run
 	checkerNames := r.getCheckerNames(healthReq.Spec.Checks)
 
-	// Build check context
+	// Build check context — AI is disabled during RunAll so we can run
+	// causal correlation first, then enhance with AI using correlation data.
 	checkCtx := &checker.CheckContext{
 		DataSource: r.DataSource,
 		Namespaces: namespaces,
 		Config:     r.buildCheckerConfig(healthReq.Spec.Config),
 		AIProvider: r.AIProvider,
-		AIEnabled:  r.AIEnabled,
+		AIEnabled:  false, // AI runs after causal analysis
 	}
 
 	// Create timeout context for checker execution
 	checkerCtx, cancelCheckers := context.WithTimeout(ctx, DefaultCheckerTimeout)
 	defer cancelCheckers()
 
-	// Run checkers with timeout
+	// Run checkers with timeout (without AI)
 	log.Info("Running checkers", "checkers", checkerNames, "namespaces", len(namespaces))
 	results := r.Registry.RunAll(checkerCtx, checkCtx, checkerNames)
+
+	// Run causal correlation, then AI enhancement with causal context
+	if r.Correlator != nil {
+		causalCtx := r.Correlator.Analyze(causal.CorrelationInput{
+			Results:   results,
+			Timestamp: time.Now(),
+		})
+		if causalCtx != nil && len(causalCtx.Groups) > 0 {
+			log.Info("Causal analysis complete", "groups", len(causalCtx.Groups), "uncorrelated", causalCtx.UncorrelatedCount)
+			checkCtx.CausalContext = causal.ToAIContext(causalCtx)
+		}
+	}
+
+	// Now run AI enhancement with causal context included
+	if r.AIEnabled && r.AIProvider != nil {
+		checkCtx.AIEnabled = true
+		for _, result := range results {
+			if result != nil && result.Error == nil && len(result.Issues) > 0 {
+				_ = result.EnhanceWithAI(checkerCtx, checkCtx)
+			}
+		}
+	}
 
 	// Convert results to API format
 	totalHealthy := 0

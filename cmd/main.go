@@ -42,6 +42,7 @@ import (
 
 	assistv1alpha1 "github.com/osagberg/kube-assist-operator/api/v1alpha1"
 	"github.com/osagberg/kube-assist-operator/internal/ai"
+	"github.com/osagberg/kube-assist-operator/internal/causal"
 	"github.com/osagberg/kube-assist-operator/internal/checker"
 	"github.com/osagberg/kube-assist-operator/internal/checker/flux"
 	"github.com/osagberg/kube-assist-operator/internal/checker/resource"
@@ -290,6 +291,7 @@ func main() {
 		AIProvider: aiManager,
 		AIEnabled:  enableAI,
 		DataSource: ds,
+		Correlator: causal.NewCorrelator(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "TeamHealthRequest")
 		os.Exit(1)

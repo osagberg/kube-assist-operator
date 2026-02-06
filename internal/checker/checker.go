@@ -89,6 +89,10 @@ type CheckContext struct {
 
 	// ClusterContext provides context for AI analysis
 	ClusterContext ai.ClusterContext
+
+	// CausalContext provides correlation data for enhanced AI root cause analysis.
+	// Set after running the causal correlator on checker results.
+	CausalContext *ai.CausalAnalysisContext
 }
 
 // Checker is the interface all health checkers must implement
@@ -156,6 +160,7 @@ func (r *CheckResult) EnhanceWithAI(ctx context.Context, checkCtx *CheckContext)
 	request := ai.AnalysisRequest{
 		Issues:         issueContexts,
 		ClusterContext: checkCtx.ClusterContext,
+		CausalContext:  checkCtx.CausalContext,
 	}
 
 	// Sanitize before sending to AI

@@ -200,15 +200,26 @@ func (p *AnthropicProvider) buildPrompt(request AnalysisRequest) string {
 	issuesJSON, _ := json.MarshalIndent(request.Issues, "", "  ")
 	contextJSON, _ := json.MarshalIndent(request.ClusterContext, "", "  ")
 
-	return fmt.Sprintf(`Analyze these Kubernetes health check issues and provide enhanced suggestions:
+	prompt := fmt.Sprintf(`Analyze these Kubernetes health check issues and provide enhanced suggestions:
 
 Cluster Context:
 %s
 
 Issues:
+%s`, contextJSON, issuesJSON)
+
+	if request.CausalContext != nil && len(request.CausalContext.Groups) > 0 {
+		causalJSON, _ := json.MarshalIndent(request.CausalContext, "", "  ")
+		prompt += fmt.Sprintf(`
+
+Causal Correlation Analysis (issues have been automatically grouped by likely root cause):
 %s
 
-Provide a JSON response with enhanced suggestions for each issue.`, contextJSON, issuesJSON)
+Use the correlation data above to provide deeper root cause analysis. Correlated issues should be analyzed together.`, causalJSON)
+	}
+
+	prompt += "\n\nProvide a JSON response with enhanced suggestions for each issue."
+	return prompt
 }
 
 func (p *AnthropicProvider) parseResponse(content string, tokensUsed int) *AnalysisResponse {

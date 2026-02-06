@@ -18,6 +18,7 @@ package ai
 
 import (
 	"context"
+	"fmt"
 )
 
 // NoOpProvider is a no-operation provider that returns static suggestions
@@ -39,16 +40,21 @@ func (p *NoOpProvider) Available() bool {
 }
 
 // Analyze returns the static suggestions without AI enhancement
-func (p *NoOpProvider) Analyze(ctx context.Context, request AnalysisRequest) (*AnalysisResponse, error) {
+func (p *NoOpProvider) Analyze(_ context.Context, request AnalysisRequest) (*AnalysisResponse, error) {
 	response := &AnalysisResponse{
 		EnhancedSuggestions: make(map[string]EnhancedSuggestion),
 	}
 
 	for _, issue := range request.Issues {
 		key := issue.Namespace + "/" + issue.Resource
+		rootCause := "This is a test suggestion from the NoOp AI provider."
+		if request.CausalContext != nil && len(request.CausalContext.Groups) > 0 {
+			rootCause = fmt.Sprintf("[NoOp AI] Causal context: %d groups, %d total issues",
+				len(request.CausalContext.Groups), request.CausalContext.TotalIssues)
+		}
 		response.EnhancedSuggestions[key] = EnhancedSuggestion{
 			Suggestion: "[NoOp AI] " + issue.StaticSuggestion,
-			RootCause:  "This is a test suggestion from the NoOp AI provider.",
+			RootCause:  rootCause,
 			Confidence: 1.0, // Full confidence for testing
 		}
 	}
