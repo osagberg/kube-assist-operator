@@ -532,4 +532,3 @@ func (s *Server) handleHealthHistory(w http.ResponseWriter, r *http.Request) {
 	// Default: return last 50
 	_ = json.NewEncoder(w).Encode(s.history.Last(50))
 }
-

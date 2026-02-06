@@ -51,12 +51,12 @@ const (
 // TeamHealthRequestReconciler reconciles a TeamHealthRequest object
 type TeamHealthRequestReconciler struct {
 	client.Client
-	Scheme            *runtime.Scheme
-	Registry          *checker.Registry
-	AIProvider        ai.Provider
-	AIEnabled         bool
-	DataSource        datasource.DataSource
-	NotifierRegistry  *notifier.Registry
+	Scheme           *runtime.Scheme
+	Registry         *checker.Registry
+	AIProvider       ai.Provider
+	AIEnabled        bool
+	DataSource       datasource.DataSource
+	NotifierRegistry *notifier.Registry
 }
 
 // +kubebuilder:rbac:groups=assist.cluster.local,resources=teamhealthrequests,verbs=get;list;watch;create;update;patch;delete

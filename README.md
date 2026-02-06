@@ -1,14 +1,27 @@
 # KubeAssist
 
-[![Go Version](https://img.shields.io/badge/Go-1.22+-00ADD8?style=flat&logo=go)](https://go.dev/)
+[![Go Version](https://img.shields.io/badge/Go-1.25+-00ADD8?style=flat&logo=go)](https://go.dev/)
 [![Kubernetes](https://img.shields.io/badge/Kubernetes-1.25+-326CE5?style=flat&logo=kubernetes)](https://kubernetes.io/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![CI](https://github.com/osagberg/kube-assist-operator/actions/workflows/ci.yaml/badge.svg)](https://github.com/osagberg/kube-assist-operator/actions/workflows/ci.yaml)
 
 **Kubernetes operator for workload diagnostics and cluster health monitoring.**
 
 One command to diagnose your entire cluster. KubeAssist provides instant visibility into workload issues, certificate expiration, resource quotas, Flux GitOps status, and more -- with copy-able kubectl remediation commands for every issue it finds.
 
 ![Dashboard Screenshot](docs/dashboard-screenshot.png)
+
+### Why KubeAssist?
+
+Most monitoring tools tell you *what* is broken. KubeAssist tells you *why* and *how to fix it*.
+
+- **Zero-config value** -- deploy the operator, get immediate health insights with no setup
+- **Full-stack Kubernetes coverage** -- 8 checkers across workloads, storage, networking, secrets, quotas, and Flux GitOps
+- **Actionable, not just informational** -- every issue includes copy-able `kubectl` commands, root causes, and links to upstream docs
+- **AI root cause analysis** -- optional Anthropic/OpenAI integration for context-aware diagnostics, configurable at runtime
+- **GitOps-native** -- first-class Flux CD integration with graceful degradation when Flux isn't installed
+- **Enterprise patterns** -- DataSource abstraction, pluggable notifiers, webhook validation, TTL cleanup, leader election
+- **Single binary** -- dashboard, API, operator, and CLI all compile into one Go binary with zero external dependencies
 
 ---
 
@@ -23,6 +36,7 @@ One command to diagnose your entire cluster. KubeAssist provides instant visibil
 - [AI Integration](#ai-integration)
 - [Helm Installation](#helm-installation)
 - [Architecture](#architecture)
+- [CI/CD Pipeline](#cicd-pipeline)
 - [Development](#development)
 - [License](#license)
 
@@ -36,7 +50,7 @@ One command to diagnose your entire cluster. KubeAssist provides instant visibil
 - **Copy-able kubectl commands** on every issue -- paste and run, no guessing
 - **CLI and CRD interfaces** -- use whichever fits your workflow
 
-### Modern Dashboard (v1.4.0)
+### Modern Dashboard
 - **Redesigned UI** with Indigo accent, dark/light themes, responsive layout
 - **Runtime AI settings** -- enable AI, pick a provider, enter your API key, and choose a model, all from the dashboard without restarting the operator
 - **Live updates** via Server-Sent Events (SSE) every 30 seconds
@@ -65,10 +79,14 @@ One command to diagnose your entire cluster. KubeAssist provides instant visibil
 - **Minimal RBAC** -- least-privilege, read-only access to cluster resources
 - **Distroless container** with OCI labels -- secure, minimal attack surface
 - **Network policy** template for restricted egress
-- **69% controller test coverage** with full E2E tests
+- **186+ test cases** -- unit, integration, and E2E coverage across all packages
 - **Validating webhooks** reject invalid CRs at admission time
 - **TTL auto-cleanup** for completed/failed CRs (`ttlSecondsAfterFinished`)
 - **Security scanning** -- govulncheck in CI, Trivy container scan on release, Dependabot for automated dependency updates
+- **DataSource abstraction** -- pluggable backend interface (direct K8s API or enterprise cache)
+- **Webhook notifications** -- `spec.notify` on TeamHealthRequest for Slack/Mattermost/Discord/any HTTP endpoint
+- **Health score history** -- in-memory ring buffer with `/api/health/history` API
+- **Graceful degradation** -- Flux checkers skip cleanly when CRDs aren't installed; 50-namespace cap prevents runaway scans
 
 ---
 
@@ -376,7 +394,7 @@ spec:
 
 ## Dashboard
 
-The operator includes a redesigned real-time web dashboard (v1.4.0) with an Indigo-accented modern UI, built-in AI settings, and Server-Sent Events (SSE) for live updates every 30 seconds.
+The operator includes a real-time web dashboard with an Indigo-accented modern UI, built-in AI settings, health score history, and Server-Sent Events (SSE) for live updates every 30 seconds.
 
 ### Enable Dashboard
 
@@ -571,6 +589,11 @@ See [charts/kube-assist/values.yaml](charts/kube-assist/values.yaml) for all opt
                                     │
                                     ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
+│                      DataSource Abstraction                              │
+│  • KubernetesDataSource (default) — direct K8s API calls                │
+│  • Pluggable interface — swap in enterprise cache or multi-cluster       │
+│  • Scope resolver — namespace filtering, label selectors, 50-ns cap     │
+├─────────────────────────────────────────────────────────────────────────┤
 │                         Kubernetes API                                   │
 │  Deployments • StatefulSets • DaemonSets • Pods • Events • Secrets      │
 │  PVCs • ResourceQuotas • NetworkPolicies • HelmReleases • Kustomizations│
@@ -588,6 +611,23 @@ Prometheus metrics available at `:8080/metrics`:
 | `kubeassist_reconcile_total` | Counter | name, namespace, result | Total reconciliations |
 | `kubeassist_reconcile_duration_seconds` | Histogram | name, namespace | Reconciliation duration |
 | `kubeassist_issues_total` | Gauge | namespace, severity | Issues by severity |
+
+---
+
+## CI/CD Pipeline
+
+Four GitHub Actions workflows enforce quality at every stage:
+
+| Workflow | Trigger | What It Does |
+|----------|---------|--------------|
+| **CI** | Push/PR to `main` | Lint (21 linters via golangci-lint), test, build, govulncheck |
+| **Release** | Tag `v*` | Multi-arch Docker build, GHCR push, Trivy scan, GitHub Release |
+| **Security** | Schedule + PR | govulncheck + Trivy vulnerability scanning |
+| **Dependabot** | Schedule | Automated dependency updates for Go modules and GitHub Actions |
+
+**Linting**: golangci-lint runs 21 linters including `staticcheck`, `gosec`, `errcheck`, `govet`, `ineffassign`, `misspell`, and more -- catching bugs, security issues, and style problems before they merge.
+
+**Container security**: Release images are built distroless (`gcr.io/distroless/static:nonroot`), scanned with Trivy, and published to GHCR with OCI labels and SBOMs.
 
 ---
 
