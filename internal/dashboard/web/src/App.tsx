@@ -12,6 +12,7 @@ import { NamespaceFilter } from './components/NamespaceFilter'
 import { ExportButton } from './components/ExportButton'
 import { SettingsModal } from './components/SettingsModal'
 import { HistoryChart } from './components/HistoryChart'
+import { CausalTimeline } from './components/CausalTimeline'
 import { useKeyboardShortcuts, KeyboardShortcutsHelp } from './components/KeyboardShortcuts'
 import { ToastContainer, showToast } from './components/Toast'
 
@@ -140,6 +141,9 @@ function App() {
 
             {/* History Chart */}
             <HistoryChart />
+
+            {/* Causal Analysis */}
+            <CausalTimeline />
 
             {/* Filters */}
             <div className="flex flex-col md:flex-row gap-3 items-start md:items-center justify-between">

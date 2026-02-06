@@ -3,6 +3,7 @@ import type {
   AISettingsResponse,
   AISettingsRequest,
   HealthSnapshot,
+  CausalContext,
 } from '../types'
 
 const BASE = '/api'
@@ -45,6 +46,11 @@ export function fetchHealthHistory(params?: { last?: number; since?: string }): 
   if (params?.last) url.searchParams.set('last', String(params.last))
   if (params?.since) url.searchParams.set('since', params.since)
   return json<HealthSnapshot[]>(url.toString())
+}
+
+/** GET /api/causal/groups — causal correlation analysis */
+export function fetchCausalGroups(): Promise<CausalContext> {
+  return json<CausalContext>(`${BASE}/causal/groups`)
 }
 
 /** GET /api/events — SSE stream (returns EventSource, caller manages lifecycle) */

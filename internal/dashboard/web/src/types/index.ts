@@ -47,6 +47,31 @@ export interface AISettingsRequest {
   model?: string
 }
 
+// Causal analysis types matching internal/causal/types.go
+export interface CausalContext {
+  groups: CausalGroup[]
+  uncorrelatedCount: number
+  totalIssues: number
+}
+
+export interface CausalGroup {
+  id: string
+  title: string
+  rootCause?: string
+  severity: 'Critical' | 'Warning' | 'Info'
+  events: TimelineEvent[]
+  rule: string
+  confidence: number
+  firstSeen: string
+  lastSeen: string
+}
+
+export interface TimelineEvent {
+  timestamp: string
+  checker: string
+  issue: Issue
+}
+
 // Health history types matching internal/history/ringbuffer.go
 export interface HealthSnapshot {
   timestamp: string
