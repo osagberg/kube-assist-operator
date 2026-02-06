@@ -21,6 +21,9 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Ensure web assets for go:embed
+        run: make ensure-web-assets
+
       - uses: golangci/golangci-lint-action@v8
         with:
           version: v2.7.2

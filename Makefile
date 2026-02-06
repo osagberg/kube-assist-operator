@@ -53,8 +53,15 @@ generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and
 fmt: ## Run go fmt against code.
 	go fmt ./...
 
+.PHONY: ensure-web-assets
+ensure-web-assets: ## Ensure web/dist exists for go:embed (placeholder if SPA not built).
+	@if [ ! -f internal/dashboard/web/dist/index.html ]; then \
+		mkdir -p internal/dashboard/web/dist; \
+		echo '<!doctype html><html><head><title>KubeAssist</title></head><body><p>Run make build-web for full dashboard</p></body></html>' > internal/dashboard/web/dist/index.html; \
+	fi
+
 .PHONY: vet
-vet: ## Run go vet against code.
+vet: ensure-web-assets ## Run go vet against code.
 	go vet ./...
 
 .PHONY: test
@@ -91,7 +98,7 @@ cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests
 	@$(KIND) delete cluster --name $(KIND_CLUSTER)
 
 .PHONY: lint
-lint: golangci-lint ## Run golangci-lint linter
+lint: golangci-lint ensure-web-assets ## Run golangci-lint linter
 	"$(GOLANGCI_LINT)" run
 
 .PHONY: lint-fix
