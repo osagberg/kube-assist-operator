@@ -104,8 +104,12 @@ lint-config: golangci-lint ## Verify golangci-lint linter configuration
 
 ##@ Build
 
+.PHONY: build-web
+build-web: ## Build React dashboard SPA.
+	cd internal/dashboard/web && npm install --prefer-offline && npm run build
+
 .PHONY: build
-build: manifests generate fmt vet ## Build manager binary.
+build: build-web manifests generate fmt vet ## Build manager binary.
 	go build -o bin/manager cmd/main.go
 
 .PHONY: build-cli

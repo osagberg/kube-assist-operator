@@ -21,6 +21,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"strconv"
 	"strings"
@@ -143,7 +144,15 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/api/check", s.handleTriggerCheck)
 	mux.HandleFunc("/api/settings/ai", s.handleAISettings)
 
-	// Dashboard UI
+	// React SPA (new dashboard at /app)
+	spaFS, err := fs.Sub(webAssets, "web/dist")
+	if err != nil {
+		log.Error(err, "Failed to create sub filesystem for SPA assets")
+	} else {
+		mux.Handle("/app/", http.StripPrefix("/app/", http.FileServer(http.FS(spaFS))))
+	}
+
+	// Legacy dashboard UI (template.go — will be removed in Chunk 4)
 	mux.HandleFunc("/", s.handleDashboard)
 
 	server := &http.Server{

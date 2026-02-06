@@ -1,3 +1,11 @@
+# Build the React dashboard SPA
+FROM node:22-alpine AS web-builder
+WORKDIR /web
+COPY internal/dashboard/web/package.json internal/dashboard/web/package-lock.json* ./
+RUN npm install --prefer-offline
+COPY internal/dashboard/web/ .
+RUN npm run build
+
 # Build the manager binary
 FROM golang:1.25 AS builder
 ARG TARGETOS
@@ -13,6 +21,9 @@ RUN go mod download
 
 # Copy the Go source (relies on .dockerignore to filter)
 COPY . .
+
+# Copy built SPA assets from web-builder
+COPY --from=web-builder /web/dist internal/dashboard/web/dist
 
 # Build a statically linked binary with debug info stripped for smaller image
 RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
