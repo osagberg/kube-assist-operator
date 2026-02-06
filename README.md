@@ -111,7 +111,7 @@ helm install kube-assist charts/kube-assist \
   --set dashboard.enabled=true
 
 # Using Kustomize
-make deploy IMG=ghcr.io/osagberg/kube-assist-operator:v1.4.0
+make deploy IMG=ghcr.io/osagberg/kube-assist-operator:v1.5.0
 ```
 
 ---
@@ -508,6 +508,8 @@ helm install kube-assist charts/kube-assist \
 | `ai.model` | (provider default) | AI model to use |
 | `ai.apiKeySecretRef.name` | -- | Secret containing API key |
 | `networkPolicy.enabled` | `false` | Enable network policy |
+| `webhook.enabled` | `false` | Enable validating admission webhooks |
+| `webhook.certManager.enabled` | `true` | Use cert-manager for webhook TLS |
 
 ### Full Configuration
 
@@ -630,6 +632,7 @@ make install-cli
 - [x] TTL auto-cleanup for completed CRs (v1.5.0)
 - [x] Validating admission webhooks (v1.5.0)
 - [x] Test helper utilities and reduced boilerplate (v1.5.0)
+- [x] DataSource abstraction for pluggable backends (v1.5.0)
 - [ ] Slack/PagerDuty alerting integration
 - [ ] Historical trend analysis
 - [ ] Custom checker plugins
