@@ -26,3 +26,8 @@ jobs:
         run: |
           go mod tidy
           make test
+
+      - name: Run vulnerability check
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...

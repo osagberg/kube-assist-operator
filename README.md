@@ -68,6 +68,7 @@ One command to diagnose your entire cluster. KubeAssist provides instant visibil
 - **69% controller test coverage** with full E2E tests
 - **Validating webhooks** reject invalid CRs at admission time
 - **TTL auto-cleanup** for completed/failed CRs (`ttlSecondsAfterFinished`)
+- **Security scanning** -- govulncheck in CI, Trivy container scan on release, Dependabot for automated dependency updates
 
 ---
 
