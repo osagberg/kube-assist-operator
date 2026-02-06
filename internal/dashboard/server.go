@@ -29,6 +29,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	assistv1alpha1 "github.com/osagberg/kube-assist-operator/api/v1alpha1"
@@ -233,9 +234,11 @@ func (s *Server) runHealthChecker(ctx context.Context) {
 
 // runCheck performs a health check and broadcasts results
 func (s *Server) runCheck(ctx context.Context) {
-	// Resolve namespaces via scope resolver
+	// Resolve namespaces via scope resolver — scan all non-system namespaces
 	resolver := scope.NewResolver(s.client, "default")
-	namespaces, err := resolver.ResolveNamespaces(ctx, assistv1alpha1.ScopeConfig{})
+	namespaces, err := resolver.ResolveNamespaces(ctx, assistv1alpha1.ScopeConfig{
+		NamespaceSelector: &metav1.LabelSelector{},
+	})
 	if err != nil {
 		log.Error(err, "Failed to resolve namespaces")
 		namespaces = []string{"default"}
