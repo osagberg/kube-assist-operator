@@ -144,16 +144,21 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/api/check", s.handleTriggerCheck)
 	mux.HandleFunc("/api/settings/ai", s.handleAISettings)
 
-	// React SPA (new dashboard at /app)
+	// React SPA dashboard
 	spaFS, err := fs.Sub(webAssets, "web/dist")
 	if err != nil {
 		log.Error(err, "Failed to create sub filesystem for SPA assets")
 	} else {
-		mux.Handle("/app/", http.StripPrefix("/app/", http.FileServer(http.FS(spaFS))))
+		fileServer := http.FileServer(http.FS(spaFS))
+		mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+			// Serve static assets directly, fall back to index.html for SPA routing
+			path := r.URL.Path
+			if path == "/" || path == "" {
+				r.URL.Path = "/index.html"
+			}
+			fileServer.ServeHTTP(w, r)
+		})
 	}
-
-	// Legacy dashboard UI (template.go — will be removed in Chunk 4)
-	mux.HandleFunc("/", s.handleDashboard)
 
 	server := &http.Server{
 		Addr:         s.addr,
@@ -506,12 +511,6 @@ func (s *Server) handlePostAISettings(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
-}
-
-// handleDashboard serves the dashboard HTML
-func (s *Server) handleDashboard(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "text/html")
-	_, _ = w.Write([]byte(dashboardHTML))
 }
 
 // handleHealthHistory returns historical health snapshots

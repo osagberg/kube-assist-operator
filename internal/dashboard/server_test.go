@@ -37,31 +37,24 @@ const (
 	providerAnthropic = "anthropic"
 )
 
-func TestServer_HandleDashboard(t *testing.T) {
-	scheme := runtime.NewScheme()
-	client := fake.NewClientBuilder().WithScheme(scheme).Build()
-	registry := checker.NewRegistry()
-
-	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
-
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	rr := httptest.NewRecorder()
-
-	server.handleDashboard(rr, req)
-
-	if rr.Code != http.StatusOK {
-		t.Errorf("handleDashboard() status = %d, want %d", rr.Code, http.StatusOK)
+func TestServer_SPAEmbed(t *testing.T) {
+	// Verify that the embedded SPA assets exist and can be accessed
+	entries, err := webAssets.ReadDir("web/dist")
+	if err != nil {
+		t.Fatalf("webAssets.ReadDir() error = %v", err)
 	}
 
-	contentType := rr.Header().Get("Content-Type")
-	if contentType != "text/html" {
-		t.Errorf("handleDashboard() Content-Type = %s, want text/html", contentType)
+	if len(entries) == 0 {
+		t.Error("expected embedded SPA assets to contain files")
 	}
 
-	// Check that HTML contains expected content
-	body := rr.Body.String()
-	if len(body) < 100 {
-		t.Error("handleDashboard() returned too short response")
+	// Check index.html exists
+	data, err := webAssets.ReadFile("web/dist/index.html")
+	if err != nil {
+		t.Fatalf("webAssets.ReadFile(index.html) error = %v", err)
+	}
+	if len(data) < 50 {
+		t.Error("index.html too short")
 	}
 }
 
