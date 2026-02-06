@@ -180,10 +180,16 @@ func TestDefaultConfig(t *testing.T) {
 	if config.Provider != "noop" {
 		t.Errorf("Provider = %s, want noop", config.Provider)
 	}
-	if config.MaxTokens != 4096 {
-		t.Errorf("MaxTokens = %d, want 4096", config.MaxTokens)
+	if config.MaxTokens != 16384 {
+		t.Errorf("MaxTokens = %d, want 16384", config.MaxTokens)
 	}
-	if config.Timeout != 30 {
-		t.Errorf("Timeout = %d, want 30", config.Timeout)
+	if config.Timeout != 60 {
+		t.Errorf("Timeout = %d, want 60", config.Timeout)
+	}
+	if config.MaxIssues != 15 {
+		t.Errorf("MaxIssues = %d, want 15", config.MaxIssues)
+	}
+	if config.MinConfidence != 0.3 {
+		t.Errorf("MinConfidence = %f, want 0.3", config.MinConfidence)
 	}
 }

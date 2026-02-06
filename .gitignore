@@ -32,3 +32,4 @@ go.work
 # React dashboard build artifacts
 internal/dashboard/web/node_modules/
 internal/dashboard/web/dist/
+internal/dashboard/web/tsconfig.tsbuildinfo

@@ -20,6 +20,7 @@ package checker
 import (
 	"context"
 	"fmt"
+	"sort"
 
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -98,6 +99,12 @@ type CheckContext struct {
 	// CausalContext provides correlation data for enhanced AI root cause analysis.
 	// Set after running the causal correlator on checker results.
 	CausalContext *ai.CausalAnalysisContext
+
+	// MaxIssues caps the number of issues sent to AI (0 = use default)
+	MaxIssues int
+
+	// MinConfidence is the minimum AI confidence threshold (0 = use default 0.3)
+	MinConfidence float64
 }
 
 // Checker is the interface all health checkers must implement
@@ -198,12 +205,16 @@ func (r *CheckResult) EnhanceWithAI(ctx context.Context, checkCtx *CheckContext)
 			enhanced, ok = response.EnhancedSuggestions[r.Issues[i].Type+"/"+r.Issues[i].Resource]
 		}
 		if ok {
-			if enhanced.Suggestion != "" && enhanced.Confidence > 0.5 {
+			minConf := checkCtx.MinConfidence
+			if minConf <= 0 {
+				minConf = defaultMinConfidence
+			}
+			if enhanced.Suggestion != "" && enhanced.Confidence > minConf {
 				// Append AI suggestion to existing suggestion
 				if r.Issues[i].Suggestion != "" {
 					r.Issues[i].Suggestion += "\n\nAI Analysis: " + enhanced.Suggestion
 				} else {
-					r.Issues[i].Suggestion = enhanced.Suggestion
+					r.Issues[i].Suggestion = "AI Analysis: " + enhanced.Suggestion
 				}
 
 				// Add root cause if available
@@ -222,9 +233,9 @@ func (r *CheckResult) EnhanceWithAI(ctx context.Context, checkCtx *CheckContext)
 
 // EnhanceAllWithAI collects issues from all results and makes a single batched AI call.
 // It uses index-based keys ("issue_0", "issue_1", ...) so the AI response keys match exactly.
-func EnhanceAllWithAI(ctx context.Context, results map[string]*CheckResult, checkCtx *CheckContext) (int, int, error) {
+func EnhanceAllWithAI(ctx context.Context, results map[string]*CheckResult, checkCtx *CheckContext) (int, int, int, *ai.AnalysisResponse, error) {
 	if !checkCtx.AIEnabled || checkCtx.AIProvider == nil || !checkCtx.AIProvider.Available() {
-		return 0, 0, nil
+		return 0, 0, 0, nil, nil
 	}
 
 	// Track which result and index each issue came from
@@ -254,7 +265,34 @@ func EnhanceAllWithAI(ctx context.Context, results map[string]*CheckResult, chec
 	}
 
 	if len(issueContexts) == 0 {
-		return 0, 0, nil
+		return 0, 0, 0, nil, nil
+	}
+
+	// Cap issues by severity to stay within token limits
+	maxIssues := checkCtx.MaxIssues
+	if maxIssues <= 0 {
+		maxIssues = defaultMaxAIIssues
+	}
+	totalIssueCount := len(issueContexts)
+	if len(issueContexts) > maxIssues {
+		type indexed struct {
+			ctx ai.IssueContext
+			ref issueRef
+		}
+		pairs := make([]indexed, len(issueContexts))
+		for i := range issueContexts {
+			pairs[i] = indexed{issueContexts[i], refs[i]}
+		}
+		sort.SliceStable(pairs, func(i, j int) bool {
+			return severityRank(pairs[i].ctx.Severity) < severityRank(pairs[j].ctx.Severity)
+		})
+		for i := range pairs[:maxIssues] {
+			issueContexts[i] = pairs[i].ctx
+			refs[i] = pairs[i].ref
+		}
+		issueContexts = issueContexts[:maxIssues]
+		refs = refs[:maxIssues]
+		log.Info("Capped AI issues", "total", totalIssueCount, "sent", maxIssues)
 	}
 
 	// Sanitize before sending to AI
@@ -269,7 +307,7 @@ func EnhanceAllWithAI(ctx context.Context, results map[string]*CheckResult, chec
 	response, err := checkCtx.AIProvider.Analyze(ctx, sanitizedRequest)
 	if err != nil {
 		log.Error(err, "AI batch analysis failed", "provider", checkCtx.AIProvider.Name(), "issues", len(issueContexts))
-		return 0, 0, err
+		return 0, 0, totalIssueCount, nil, err
 	}
 
 	// Distribute suggestions back to their original issues
@@ -280,7 +318,11 @@ func EnhanceAllWithAI(ctx context.Context, results map[string]*CheckResult, chec
 		if !ok {
 			continue
 		}
-		if enhanced.Suggestion != "" && enhanced.Confidence > 0.5 {
+		minConf := checkCtx.MinConfidence
+		if minConf <= 0 {
+			minConf = defaultMinConfidence
+		}
+		if enhanced.Suggestion != "" && enhanced.Confidence > minConf {
 			issue := &results[ref.checkerName].Issues[ref.issueIdx]
 			if issue.Suggestion != "" {
 				issue.Suggestion += "\n\nAI Analysis: " + enhanced.Suggestion
@@ -304,5 +346,25 @@ func EnhanceAllWithAI(ctx context.Context, results map[string]*CheckResult, chec
 		"tokens", response.TokensUsed,
 	)
 
-	return issuesEnhanced, response.TokensUsed, nil
+	return issuesEnhanced, response.TokensUsed, totalIssueCount, response, nil
+}
+
+// defaultMaxAIIssues is the maximum number of issues to send to AI in a single batch.
+const defaultMaxAIIssues = 15
+
+// defaultMinConfidence is the minimum confidence threshold for AI suggestions.
+const defaultMinConfidence = 0.3
+
+// severityRank returns a sort rank for severity (lower = higher priority).
+func severityRank(s string) int {
+	switch s {
+	case SeverityCritical:
+		return 0
+	case SeverityWarning:
+		return 1
+	case SeverityInfo:
+		return 2
+	default:
+		return 3
+	}
 }

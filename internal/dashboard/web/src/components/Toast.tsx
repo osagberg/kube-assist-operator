@@ -31,10 +31,19 @@ export function ToastContainer() {
 
   if (toasts.length === 0) return null
 
-  const colors = {
-    success: 'bg-green-500',
-    error: 'bg-red-500',
-    info: 'bg-indigo-500',
+  const styles: Record<string, { borderColor: string; textClass: string }> = {
+    success: {
+      borderColor: 'rgba(34, 197, 94, 0.3)',
+      textClass: 'text-severity-healthy',
+    },
+    error: {
+      borderColor: 'rgba(239, 68, 68, 0.3)',
+      textClass: 'text-severity-critical',
+    },
+    info: {
+      borderColor: 'rgba(99, 102, 241, 0.3)',
+      textClass: 'text-accent',
+    },
   }
 
   return (
@@ -42,7 +51,8 @@ export function ToastContainer() {
       {toasts.map((t) => (
         <div
           key={t.id}
-          className={`${colors[t.type]} text-white px-4 py-2 rounded-lg shadow-lg text-sm animate-slide-up`}
+          className={`glass-panel rounded-xl px-4 py-2 text-sm animate-slide-up border ${styles[t.type].textClass}`}
+          style={{ borderColor: styles[t.type].borderColor }}
         >
           {t.text}
         </div>

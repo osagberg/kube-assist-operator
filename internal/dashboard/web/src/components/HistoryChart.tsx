@@ -22,25 +22,28 @@ export function HistoryChart() {
   }))
 
   return (
-    <div className="bg-white dark:bg-gray-800 rounded-lg shadow p-4">
-      <h3 className="text-sm font-semibold mb-3 text-gray-600 dark:text-gray-300">Health Score History</h3>
+    <div className="glass-panel rounded-xl p-4 transition-all duration-200">
+      <h3 className="text-sm font-semibold mb-3" style={{ color: 'var(--text-secondary)' }}>Health Score History</h3>
       <ResponsiveContainer width="100%" height={180}>
         <LineChart data={chartData}>
-          <CartesianGrid strokeDasharray="3 3" stroke="currentColor" className="text-gray-200 dark:text-gray-700" />
-          <XAxis dataKey="time" tick={{ fontSize: 11 }} stroke="#9CA3AF" />
-          <YAxis domain={[0, 100]} tick={{ fontSize: 11 }} stroke="#9CA3AF" />
+          <CartesianGrid strokeDasharray="3 3" stroke="var(--chart-grid)" />
+          <XAxis dataKey="time" tick={{ fontSize: 11, fill: 'var(--chart-axis)' }} stroke="var(--chart-grid)" />
+          <YAxis domain={[0, 100]} tick={{ fontSize: 11, fill: 'var(--chart-axis)' }} stroke="var(--chart-grid)" />
           <Tooltip
             contentStyle={{
-              backgroundColor: 'var(--tw-bg-opacity, #1F2937)',
-              border: 'none',
-              borderRadius: '8px',
+              backgroundColor: 'var(--tooltip-bg)',
+              border: '1px solid var(--glass-border)',
+              borderRadius: '12px',
               fontSize: '12px',
+              backdropFilter: 'blur(20px)',
+              WebkitBackdropFilter: 'blur(20px)',
+              color: 'var(--text-primary)',
             }}
           />
           <Line
             type="monotone"
             dataKey="score"
-            stroke="#4F46E5"
+            stroke="#6366F1"
             strokeWidth={2}
             dot={false}
             name="Health %"

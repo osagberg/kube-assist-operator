@@ -86,6 +86,7 @@ func main() {
 	var aiProvider string
 	var aiAPIKey string
 	var aiModel string
+	var aiCheckInterval int
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
@@ -103,6 +104,8 @@ func main() {
 		"API key for AI provider (or use KUBE_ASSIST_AI_API_KEY env var).")
 	flag.StringVar(&aiModel, "ai-model", "",
 		"AI model to use (provider default if empty).")
+	flag.IntVar(&aiCheckInterval, "ai-check-interval", 10,
+		"Run AI analysis every N health checks (default: 10, ~5 min at 30s interval).")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
@@ -323,7 +326,8 @@ func main() {
 	// Start dashboard server if enabled
 	if enableDashboard {
 		dashboardServer := dashboard.NewServer(ds, registry, dashboardAddr).
-			WithAI(aiManager, enableAI)
+			WithAI(aiManager, enableAI).
+			WithAICheckInterval(aiCheckInterval)
 		go func() {
 			setupLog.Info("starting dashboard server", "addr", dashboardAddr)
 			if err := dashboardServer.Start(ctx); err != nil {

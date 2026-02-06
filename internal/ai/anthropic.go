@@ -23,7 +23,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 	"time"
 )
 
@@ -57,12 +56,12 @@ func NewAnthropicProvider(config Config) *AnthropicProvider {
 
 	maxTokens := config.MaxTokens
 	if maxTokens == 0 {
-		maxTokens = 4096
+		maxTokens = 16384
 	}
 
 	timeout := time.Duration(config.Timeout) * time.Second
 	if timeout == 0 {
-		timeout = 30 * time.Second
+		timeout = 90 * time.Second
 	}
 
 	return &AnthropicProvider{
@@ -124,7 +123,7 @@ func (p *AnthropicProvider) Analyze(ctx context.Context, request AnalysisRequest
 		return nil, ErrNotConfigured
 	}
 
-	prompt := p.buildPrompt(request)
+	prompt := BuildPrompt(request)
 
 	anthropicReq := anthropicRequest{
 		Model:     p.model,
@@ -194,65 +193,5 @@ func (p *AnthropicProvider) Analyze(ctx context.Context, request AnalysisRequest
 	}
 
 	tokensUsed := anthropicResp.Usage.InputTokens + anthropicResp.Usage.OutputTokens
-	return p.parseResponse(textContent, tokensUsed), nil
-}
-
-func (p *AnthropicProvider) buildPrompt(request AnalysisRequest) string {
-	contextJSON, _ := json.MarshalIndent(request.ClusterContext, "", "  ")
-
-	var issueLines strings.Builder
-	for i, issue := range request.Issues {
-		issueJSON, _ := json.Marshal(issue)
-		fmt.Fprintf(&issueLines, "issue_%d: %s\n", i, issueJSON)
-	}
-
-	prompt := fmt.Sprintf(`Analyze these Kubernetes health check issues and provide enhanced suggestions.
-Use the exact issue key (issue_0, issue_1, ...) in your response.
-
-Cluster Context:
-%s
-
-Issues:
-%s`, contextJSON, issueLines.String())
-
-	if request.CausalContext != nil && len(request.CausalContext.Groups) > 0 {
-		causalJSON, _ := json.MarshalIndent(request.CausalContext, "", "  ")
-		prompt += fmt.Sprintf(`
-
-Causal Correlation Analysis (issues have been automatically grouped by likely root cause):
-%s
-
-Use the correlation data above to provide deeper root cause analysis. Correlated issues should be analyzed together.`, causalJSON)
-	}
-
-	prompt += "\n\nProvide a JSON response with enhanced suggestions for each issue."
-	return prompt
-}
-
-func (p *AnthropicProvider) parseResponse(content string, tokensUsed int) *AnalysisResponse {
-	// Try to parse as JSON
-	var result struct {
-		Suggestions map[string]EnhancedSuggestion `json:"suggestions"`
-		Summary     string                        `json:"summary"`
-	}
-
-	cleaned := extractJSON(content)
-	if err := json.Unmarshal([]byte(cleaned), &result); err != nil {
-		preview := content
-		if len(preview) > 200 {
-			preview = preview[:200] + "..."
-		}
-		log.Error(err, "Failed to parse AI response as JSON", "provider", "anthropic", "preview", preview)
-		return &AnalysisResponse{
-			EnhancedSuggestions: make(map[string]EnhancedSuggestion),
-			Summary:             content,
-			TokensUsed:          tokensUsed,
-		}
-	}
-
-	return &AnalysisResponse{
-		EnhancedSuggestions: result.Suggestions,
-		Summary:             result.Summary,
-		TokensUsed:          tokensUsed,
-	}
+	return ParseResponse(textContent, tokensUsed, ProviderNameAnthropic), nil
 }

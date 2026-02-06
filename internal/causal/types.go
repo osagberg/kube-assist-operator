@@ -53,6 +53,18 @@ type CausalGroup struct {
 
 	// LastSeen is the latest timestamp among the events.
 	LastSeen time.Time `json:"lastSeen"`
+
+	// AIRootCause is the AI-generated deep root cause analysis.
+	AIRootCause string `json:"aiRootCause,omitempty"`
+
+	// AISuggestion is the AI-generated actionable recommendation.
+	AISuggestion string `json:"aiSuggestion,omitempty"`
+
+	// AISteps is an ordered list of AI-generated remediation steps.
+	AISteps []string `json:"aiSteps,omitempty"`
+
+	// AIEnhanced is true when this group has been analyzed by AI.
+	AIEnhanced bool `json:"aiEnhanced,omitempty"`
 }
 
 // TimelineEvent wraps a checker issue with timing metadata.

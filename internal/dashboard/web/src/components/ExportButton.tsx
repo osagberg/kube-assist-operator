@@ -26,13 +26,15 @@ export function ExportButton({ health }: Props) {
     <div className="flex gap-1">
       <button
         onClick={exportJSON}
-        className="px-2 py-1 text-xs rounded border border-gray-200 dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-700"
+        className="px-2 py-1 text-xs glass-button rounded-lg"
+        style={{ color: 'var(--text-secondary)' }}
       >
         JSON
       </button>
       <button
         onClick={exportCSV}
-        className="px-2 py-1 text-xs rounded border border-gray-200 dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-700"
+        className="px-2 py-1 text-xs glass-button rounded-lg"
+        style={{ color: 'var(--text-secondary)' }}
       >
         CSV
       </button>

@@ -41,14 +41,20 @@ export function SettingsModal({ open, onClose, settings, onSave }: Props) {
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center glass-backdrop animate-fade-in" onClick={onClose}>
       <div
-        className="bg-white dark:bg-gray-800 rounded-xl shadow-2xl w-full max-w-md p-6 space-y-4"
+        className="glass-elevated rounded-2xl animate-slide-up w-full max-w-md p-6 space-y-4"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between">
-          <h2 className="text-lg font-semibold">AI Settings</h2>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200">
+          <h2 className="text-lg font-semibold" style={{ color: 'var(--text-primary)' }}>AI Settings</h2>
+          <button
+            onClick={onClose}
+            className="transition-all duration-200 hover:opacity-80"
+            style={{ color: 'var(--text-tertiary)' }}
+            onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--text-primary)')}
+            onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--text-tertiary)')}
+          >
             <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
             </svg>
@@ -56,20 +62,21 @@ export function SettingsModal({ open, onClose, settings, onSave }: Props) {
         </div>
 
         {error && (
-          <div className="text-sm text-red-500 bg-red-50 dark:bg-red-900/30 px-3 py-2 rounded">{error}</div>
+          <div className="text-sm bg-severity-critical-bg text-severity-critical rounded-lg px-3 py-2">{error}</div>
         )}
 
         <label className="flex items-center gap-2">
-          <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} className="rounded" />
-          <span className="text-sm">Enable AI suggestions</span>
+          <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} className="rounded transition-all duration-200" />
+          <span className="text-sm" style={{ color: 'var(--text-secondary)' }}>Enable AI suggestions</span>
         </label>
 
         <div>
-          <label className="text-sm text-gray-500">Provider</label>
+          <label className="text-sm" style={{ color: 'var(--text-tertiary)' }}>Provider</label>
           <select
             value={provider}
             onChange={(e) => setProvider(e.target.value)}
-            className="w-full mt-1 px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-sm"
+            className="w-full mt-1 px-3 py-2 glass-inset rounded-xl text-sm transition-all duration-200"
+            style={{ color: 'var(--text-primary)' }}
           >
             <option value="noop">NoOp (testing)</option>
             <option value="anthropic">Anthropic (Claude)</option>
@@ -78,24 +85,26 @@ export function SettingsModal({ open, onClose, settings, onSave }: Props) {
         </div>
 
         <div>
-          <label className="text-sm text-gray-500">API Key</label>
+          <label className="text-sm" style={{ color: 'var(--text-tertiary)' }}>API Key</label>
           <input
             type="password"
             value={apiKey}
             onChange={(e) => setApiKey(e.target.value)}
             placeholder={settings?.hasApiKey ? '••••••••' : 'Enter API key'}
-            className="w-full mt-1 px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-sm"
+            className="w-full mt-1 px-3 py-2 glass-inset rounded-xl text-sm transition-all duration-200"
+            style={{ color: 'var(--text-primary)' }}
           />
         </div>
 
         <div>
-          <label className="text-sm text-gray-500">Model (optional)</label>
+          <label className="text-sm" style={{ color: 'var(--text-tertiary)' }}>Model (optional)</label>
           <input
             type="text"
             value={model}
             onChange={(e) => setModel(e.target.value)}
             placeholder="Provider default"
-            className="w-full mt-1 px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-sm"
+            className="w-full mt-1 px-3 py-2 glass-inset rounded-xl text-sm transition-all duration-200"
+            style={{ color: 'var(--text-primary)' }}
           />
         </div>
 
@@ -103,12 +112,12 @@ export function SettingsModal({ open, onClose, settings, onSave }: Props) {
         {settings && (
           <div className="text-xs space-y-1">
             <div className="flex items-center gap-1.5">
-              <span className={`w-2 h-2 rounded-full ${settings.providerReady ? 'bg-green-500' : 'bg-gray-300 dark:bg-gray-600'}`} />
-              <span className={settings.providerReady ? 'text-green-600 dark:text-green-400' : 'text-gray-400'}>
+              <span className={settings.providerReady ? 'severity-dot-healthy' : 'w-2 h-2 rounded-full bg-glass-300'} />
+              <span style={{ color: settings.providerReady ? 'var(--text-secondary)' : 'var(--text-tertiary)' }}>
                 {settings.providerReady ? 'Provider ready' : 'Provider not configured'}
               </span>
             </div>
-            <p className="text-gray-400 dark:text-gray-500">
+            <p style={{ color: 'var(--text-tertiary)' }}>
               Default Anthropic model: claude-haiku-4-5 (cost-efficient). Override above for Sonnet.
             </p>
           </div>
@@ -117,14 +126,15 @@ export function SettingsModal({ open, onClose, settings, onSave }: Props) {
         <div className="flex justify-end gap-2 pt-2">
           <button
             onClick={onClose}
-            className="px-4 py-2 text-sm rounded-lg border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700"
+            className="px-4 py-2 text-sm glass-button rounded-lg transition-all duration-200"
+            style={{ color: 'var(--text-secondary)' }}
           >
             Cancel
           </button>
           <button
             onClick={handleSave}
             disabled={saving}
-            className="px-4 py-2 text-sm rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50"
+            className="px-4 py-2 text-sm glass-button-primary rounded-lg transition-all duration-200 disabled:opacity-50"
           >
             {saving ? 'Saving...' : 'Save'}
           </button>

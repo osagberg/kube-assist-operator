@@ -60,7 +60,7 @@ func NewOpenAIProvider(config Config) *OpenAIProvider {
 
 	maxTokens := config.MaxTokens
 	if maxTokens == 0 {
-		maxTokens = 4096
+		maxTokens = 16384
 	}
 
 	timeout := time.Duration(config.Timeout) * time.Second
@@ -126,7 +126,7 @@ func (p *OpenAIProvider) Analyze(ctx context.Context, request AnalysisRequest) (
 		return nil, ErrNotConfigured
 	}
 
-	prompt := p.buildPrompt(request)
+	prompt := BuildPrompt(request)
 
 	openAIReq := openAIRequest{
 		Model: p.model,
@@ -189,81 +189,21 @@ func (p *OpenAIProvider) Analyze(ctx context.Context, request AnalysisRequest) (
 		return nil, fmt.Errorf("no response from API")
 	}
 
-	return p.parseResponse(openAIResp.Choices[0].Message.Content, openAIResp.Usage.TotalTokens), nil
-}
-
-func (p *OpenAIProvider) buildPrompt(request AnalysisRequest) string {
-	contextJSON, _ := json.MarshalIndent(request.ClusterContext, "", "  ")
-
-	var issueLines strings.Builder
-	for i, issue := range request.Issues {
-		issueJSON, _ := json.Marshal(issue)
-		fmt.Fprintf(&issueLines, "issue_%d: %s\n", i, issueJSON)
-	}
-
-	prompt := fmt.Sprintf(`Analyze these Kubernetes health check issues and provide enhanced suggestions.
-Use the exact issue key (issue_0, issue_1, ...) in your response.
-
-Cluster Context:
-%s
-
-Issues:
-%s`, contextJSON, issueLines.String())
-
-	if request.CausalContext != nil && len(request.CausalContext.Groups) > 0 {
-		causalJSON, _ := json.MarshalIndent(request.CausalContext, "", "  ")
-		prompt += fmt.Sprintf(`
-
-Causal Correlation Analysis (issues have been automatically grouped by likely root cause):
-%s
-
-Use the correlation data above to provide deeper root cause analysis. Correlated issues should be analyzed together.`, causalJSON)
-	}
-
-	prompt += "\n\nProvide a JSON response with enhanced suggestions for each issue."
-	return prompt
-}
-
-func (p *OpenAIProvider) parseResponse(content string, tokensUsed int) *AnalysisResponse {
-	// Try to parse as JSON
-	var result struct {
-		Suggestions map[string]EnhancedSuggestion `json:"suggestions"`
-		Summary     string                        `json:"summary"`
-	}
-
-	cleaned := extractJSON(content)
-	if err := json.Unmarshal([]byte(cleaned), &result); err != nil {
-		// Log the parse failure for debugging
-		preview := content
-		if len(preview) > 200 {
-			preview = preview[:200] + "..."
-		}
-		log.Error(err, "Failed to parse AI response as JSON", "provider", "openai", "preview", preview)
-		return &AnalysisResponse{
-			EnhancedSuggestions: make(map[string]EnhancedSuggestion),
-			Summary:             content,
-			TokensUsed:          tokensUsed,
-		}
-	}
-
-	return &AnalysisResponse{
-		EnhancedSuggestions: result.Suggestions,
-		Summary:             result.Summary,
-		TokensUsed:          tokensUsed,
-	}
+	return ParseResponse(openAIResp.Choices[0].Message.Content, openAIResp.Usage.TotalTokens, ProviderNameOpenAI), nil
 }
 
 // extractJSON strips markdown code fences from AI responses.
 // AI models often wrap JSON in ```json ... ``` blocks.
 // Handles truncated responses where the closing fence is missing.
 func extractJSON(content string) string {
-	// Try ```json ... ``` (with or without closing fence)
-	if idx := strings.Index(content, "```json"); idx >= 0 {
+	// Try ```json ... ``` (case-insensitive, with or without closing fence)
+	lower := strings.ToLower(content)
+	if idx := strings.Index(lower, "```json"); idx >= 0 {
 		start := idx + 7
 		if end := strings.Index(content[start:], "```"); end >= 0 {
 			return strings.TrimSpace(content[start : start+end])
 		}
-		// No closing fence (truncated response) — take everything after opening
+		// No closing fence (truncated response) -- take everything after opening
 		return strings.TrimSpace(content[start:])
 	}
 	// Try bare ``` ... ```
@@ -305,4 +245,24 @@ Respond in JSON format with this structure:
   "summary": "Overall analysis summary"
 }
 
-Keep suggestions concise but actionable. Focus on the most impactful fixes.`
+Keep suggestions concise but actionable. Focus on the most impactful fixes.
+
+IMPORTANT: Do NOT reference other issues by their index key (e.g., "see issue_7") in suggestion text. Each suggestion must be self-contained and understandable on its own. Use resource names instead if you need to reference related issues.
+
+When causal correlation data is provided in the request, also analyze each correlation group and provide deeper root cause analysis. Include a "causalInsights" array in your JSON response:
+
+{
+  "suggestions": { ... },
+  "causalInsights": [
+    {
+      "groupID": "group_0",
+      "aiRootCause": "Detailed analysis of why this correlation exists",
+      "aiSuggestion": "Recommended resolution approach",
+      "aiSteps": ["Step 1", "Step 2"],
+      "confidence": 0.85
+    }
+  ],
+  "summary": "Overall analysis summary"
+}
+
+Each causalInsight must use the exact group key (group_0, group_1, ...) as the "groupID" value. If no causal correlation data is provided, omit the causalInsights array entirely.`

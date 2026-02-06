@@ -59,5 +59,17 @@ func (p *NoOpProvider) Analyze(_ context.Context, request AnalysisRequest) (*Ana
 		}
 	}
 
+	// Generate mock causal insights when causal context is available
+	if request.CausalContext != nil {
+		for i, group := range request.CausalContext.Groups {
+			response.CausalInsights = append(response.CausalInsights, CausalGroupInsight{
+				GroupID:      fmt.Sprintf("group_%d", i),
+				AIRootCause:  fmt.Sprintf("[NoOp AI] Root cause for %s: %s", group.Rule, group.RootCause),
+				AISuggestion: fmt.Sprintf("[NoOp AI] Suggestion for %s group", group.Rule),
+				Confidence:   0.9,
+			})
+		}
+	}
+
 	return response, nil
 }

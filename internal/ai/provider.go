@@ -19,7 +19,11 @@ package ai
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"regexp"
+	"strings"
 )
 
 // ErrNotConfigured is returned when AI provider is not configured
@@ -123,6 +127,9 @@ type AnalysisResponse struct {
 	// EnhancedSuggestions maps issue identifiers to enhanced suggestions
 	EnhancedSuggestions map[string]EnhancedSuggestion `json:"enhancedSuggestions"`
 
+	// CausalInsights contains AI analysis for causal correlation groups.
+	CausalInsights []CausalGroupInsight `json:"causalInsights,omitempty"`
+
 	// Summary provides an overall analysis summary
 	Summary string `json:"summary,omitempty"`
 
@@ -148,6 +155,24 @@ type EnhancedSuggestion struct {
 	Confidence float64 `json:"confidence,omitempty"`
 }
 
+// CausalGroupInsight contains AI-generated analysis for a causal correlation group.
+type CausalGroupInsight struct {
+	// GroupID identifies which correlation group produced this insight (e.g., "group_0").
+	GroupID string `json:"groupID"`
+
+	// AIRootCause is the AI-generated deep root cause analysis.
+	AIRootCause string `json:"aiRootCause"`
+
+	// AISuggestion is the AI-generated actionable recommendation.
+	AISuggestion string `json:"aiSuggestion"`
+
+	// AISteps is an ordered list of remediation steps.
+	AISteps []string `json:"aiSteps,omitempty"`
+
+	// Confidence is the AI's confidence level (0-1).
+	Confidence float64 `json:"confidence"`
+}
+
 // Config holds AI provider configuration
 type Config struct {
 	// Provider is the AI provider to use ("openai", "anthropic", "noop")
@@ -167,13 +192,140 @@ type Config struct {
 
 	// Timeout is the request timeout in seconds
 	Timeout int `json:"timeout,omitempty"`
+
+	// MaxIssues caps the number of issues sent to AI per batch (0 = use default 15)
+	MaxIssues int `json:"maxIssues,omitempty"`
+
+	// MinConfidence is the minimum confidence threshold for AI suggestions (0 = use default 0.3)
+	MinConfidence float64 `json:"minConfidence,omitempty"`
 }
 
 // DefaultConfig returns a default configuration with NoOp provider
 func DefaultConfig() Config {
 	return Config{
-		Provider:  "noop",
-		MaxTokens: 4096,
-		Timeout:   30,
+		Provider:      "noop",
+		MaxTokens:     16384,
+		Timeout:       60,
+		MaxIssues:     15,
+		MinConfidence: 0.3,
+	}
+}
+
+// BuildPrompt constructs the user prompt for AI analysis from an AnalysisRequest.
+func BuildPrompt(request AnalysisRequest) string {
+	contextJSON, _ := json.MarshalIndent(request.ClusterContext, "", "  ")
+
+	var issueLines strings.Builder
+	for i, issue := range request.Issues {
+		issueJSON, _ := json.Marshal(issue)
+		fmt.Fprintf(&issueLines, "issue_%d: %s\n", i, issueJSON)
+	}
+
+	prompt := fmt.Sprintf(`Analyze these Kubernetes health check issues and provide enhanced suggestions.
+Use the exact issue key (issue_0, issue_1, ...) in your response.
+
+Cluster Context:
+%s
+
+Issues:
+%s`, contextJSON, issueLines.String())
+
+	if request.CausalContext != nil && len(request.CausalContext.Groups) > 0 {
+		var groupLines strings.Builder
+		for i, group := range request.CausalContext.Groups {
+			groupJSON, _ := json.Marshal(group)
+			fmt.Fprintf(&groupLines, "group_%d: %s\n", i, groupJSON)
+		}
+		prompt += fmt.Sprintf(`
+
+Causal Correlation Analysis (issues have been automatically grouped by likely root cause):
+Total issues: %d, Uncorrelated: %d
+
+Groups:
+%s
+Use the correlation data above to provide deeper root cause analysis. Correlated issues should be analyzed together.
+For each group, use the exact group key (group_0, group_1, ...) as the "groupID" value in your causalInsights response.`,
+			request.CausalContext.TotalIssues,
+			request.CausalContext.UncorrelatedCount,
+			groupLines.String())
+	}
+
+	prompt += "\n\nProvide a JSON response with enhanced suggestions for each issue."
+	return prompt
+}
+
+var issueRefPattern = regexp.MustCompile(`\s*\((?:see\s+)?(?:issue|group)_\d+\)`)
+var bareIssueRefPattern = regexp.MustCompile(`\b(?:issue|group)_\d+\b`)
+
+// StripIssueReferences removes AI internal references (e.g., "issue_0", "group_1") from user-facing text.
+func StripIssueReferences(text string) string {
+	text = issueRefPattern.ReplaceAllString(text, "")
+	text = bareIssueRefPattern.ReplaceAllString(text, "")
+	return strings.TrimSpace(text)
+}
+
+// ParseResponse parses raw AI response content into an AnalysisResponse.
+func ParseResponse(content string, tokensUsed int, providerName string) *AnalysisResponse {
+	var result struct {
+		Suggestions    map[string]EnhancedSuggestion `json:"suggestions"`
+		CausalInsights []CausalGroupInsight          `json:"causalInsights"`
+		Summary        string                        `json:"summary"`
+	}
+
+	cleaned := extractJSON(content)
+	if err := json.Unmarshal([]byte(cleaned), &result); err != nil {
+		preview := content
+		if len(preview) > 200 {
+			preview = preview[:200] + "..."
+		}
+		log.Error(err, "Failed to parse AI response as JSON", "provider", providerName, "preview", preview)
+		return &AnalysisResponse{
+			EnhancedSuggestions: make(map[string]EnhancedSuggestion),
+			Summary:             content,
+			TokensUsed:          tokensUsed,
+		}
+	}
+
+	// Strip issue/group references from user-facing text fields
+	for k, s := range result.Suggestions {
+		s.Suggestion = StripIssueReferences(s.Suggestion)
+		s.RootCause = StripIssueReferences(s.RootCause)
+		for j, step := range s.Steps {
+			s.Steps[j] = StripIssueReferences(step)
+		}
+		result.Suggestions[k] = s
+	}
+	for i := range result.CausalInsights {
+		result.CausalInsights[i].AIRootCause = StripIssueReferences(result.CausalInsights[i].AIRootCause)
+		result.CausalInsights[i].AISuggestion = StripIssueReferences(result.CausalInsights[i].AISuggestion)
+		for j, step := range result.CausalInsights[i].AISteps {
+			result.CausalInsights[i].AISteps[j] = StripIssueReferences(step)
+		}
+	}
+
+	// Clamp confidence values to 0.0-1.0
+	for k, s := range result.Suggestions {
+		if s.Confidence < 0 {
+			s.Confidence = 0
+		}
+		if s.Confidence > 1 {
+			s.Confidence = 1
+		}
+		result.Suggestions[k] = s
+	}
+	for i := range result.CausalInsights {
+		if result.CausalInsights[i].Confidence < 0 {
+			result.CausalInsights[i].Confidence = 0
+		}
+		if result.CausalInsights[i].Confidence > 1 {
+			result.CausalInsights[i].Confidence = 1
+		}
+	}
+
+	return &AnalysisResponse{
+		EnhancedSuggestions: result.Suggestions,
+		CausalInsights:      result.CausalInsights,
+		Summary:             result.Summary,
+		TokensUsed:          tokensUsed,
 	}
 }

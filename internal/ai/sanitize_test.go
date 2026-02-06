@@ -245,3 +245,55 @@ func TestSanitizer_AddPattern_Invalid(t *testing.T) {
 		t.Error("AddPattern() should return error for invalid regex")
 	}
 }
+
+func TestSanitizer_SanitizeAnalysisRequest_PreservesCausalContext(t *testing.T) {
+	s := NewSanitizer()
+
+	causalCtx := &CausalAnalysisContext{
+		Groups: []CausalGroupSummary{
+			{
+				Rule:       "cascade-failure",
+				Title:      "Cascading OOM",
+				RootCause:  "Memory pressure from deployment/api",
+				Severity:   "Critical",
+				Confidence: 0.85,
+				Resources:  []string{"default/deployment/api", "default/deployment/worker"},
+			},
+		},
+		UncorrelatedCount: 2,
+		TotalIssues:       5,
+	}
+
+	request := AnalysisRequest{
+		Issues: []IssueContext{
+			{
+				Type:    "OOMKilled",
+				Message: "Container killed due to OOM",
+			},
+		},
+		ClusterContext: ClusterContext{
+			KubernetesVersion: "1.28",
+			Namespaces:        []string{"default"},
+		},
+		CausalContext: causalCtx,
+		MaxTokens:     2000,
+	}
+
+	sanitized := s.SanitizeAnalysisRequest(request)
+
+	if sanitized.CausalContext == nil {
+		t.Fatal("CausalContext should be preserved after sanitization")
+	}
+
+	if len(sanitized.CausalContext.Groups) != 1 {
+		t.Errorf("CausalContext.Groups length = %d, want 1", len(sanitized.CausalContext.Groups))
+	}
+
+	if sanitized.CausalContext.Groups[0].Rule != "cascade-failure" {
+		t.Errorf("CausalContext.Groups[0].Rule = %s, want cascade-failure", sanitized.CausalContext.Groups[0].Rule)
+	}
+
+	if sanitized.CausalContext.TotalIssues != 5 {
+		t.Errorf("CausalContext.TotalIssues = %d, want 5", sanitized.CausalContext.TotalIssues)
+	}
+}

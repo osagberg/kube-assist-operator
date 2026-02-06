@@ -8,11 +8,11 @@ interface Props {
   summary: Summary
 }
 
-const tabs: { key: Severity; label: string; color: string }[] = [
-  { key: 'all', label: 'All', color: 'bg-indigo-600' },
-  { key: 'Critical', label: 'Critical', color: 'bg-red-500' },
-  { key: 'Warning', label: 'Warning', color: 'bg-yellow-500' },
-  { key: 'Info', label: 'Info', color: 'bg-blue-500' },
+const tabs: { key: Severity; label: string; activeBadge: string; }[] = [
+  { key: 'all', label: 'All', activeBadge: 'bg-accent-muted text-accent' },
+  { key: 'Critical', label: 'Critical', activeBadge: 'bg-severity-critical-bg text-severity-critical' },
+  { key: 'Warning', label: 'Warning', activeBadge: 'bg-severity-warning-bg text-severity-warning' },
+  { key: 'Info', label: 'Info', activeBadge: 'bg-severity-info-bg text-severity-info' },
 ]
 
 function getCount(summary: Summary, key: Severity): number {
@@ -24,7 +24,7 @@ function getCount(summary: Summary, key: Severity): number {
 
 export function SeverityTabs({ active, onChange, summary }: Props) {
   return (
-    <div className="flex gap-1 bg-gray-100 dark:bg-gray-800 rounded-lg p-1">
+    <div className="flex gap-1 glass-inset rounded-xl p-1">
       {tabs.map((tab) => {
         const count = getCount(summary, tab.key)
         const isActive = active === tab.key
@@ -32,14 +32,17 @@ export function SeverityTabs({ active, onChange, summary }: Props) {
           <button
             key={tab.key}
             onClick={() => onChange(tab.key)}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-all duration-200 ${
               isActive
-                ? 'bg-white dark:bg-gray-700 shadow-sm text-gray-900 dark:text-gray-100'
-                : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300'
+                ? 'glass-panel shadow-glass-sm'
+                : 'hover:bg-glass-200'
             }`}
+            style={{ color: isActive ? 'var(--text-primary)' : 'var(--text-tertiary)' }}
           >
             {tab.label}
-            <span className={`text-xs px-1.5 py-0.5 rounded-full text-white ${isActive ? tab.color : 'bg-gray-300 dark:bg-gray-600'}`}>
+            <span className={`text-xs px-1.5 py-0.5 rounded-full ${isActive ? tab.activeBadge : 'bg-glass-200'}`}
+              style={isActive ? undefined : { color: 'var(--text-tertiary)' }}
+            >
               {count}
             </span>
           </button>

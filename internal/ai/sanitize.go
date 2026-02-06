@@ -155,6 +155,7 @@ func (s *Sanitizer) SanitizeResourceName(name string) string {
 func (s *Sanitizer) SanitizeAnalysisRequest(req AnalysisRequest) AnalysisRequest {
 	sanitized := AnalysisRequest{
 		ClusterContext: req.ClusterContext, // Cluster context is generally safe
+		CausalContext:  req.CausalContext,  // Causal context is pre-sanitized
 		MaxTokens:      req.MaxTokens,
 	}
 

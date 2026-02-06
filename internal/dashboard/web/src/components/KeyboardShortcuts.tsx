@@ -94,23 +94,28 @@ export function KeyboardShortcutsHelp({ open, onClose }: HelpProps) {
   if (!open) return null
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center glass-backdrop animate-fade-in" onClick={onClose}>
       <div
-        className="bg-white dark:bg-gray-800 rounded-xl shadow-2xl w-full max-w-sm p-6"
+        className="glass-elevated rounded-2xl animate-slide-up w-full max-w-sm p-6"
         onClick={(e) => e.stopPropagation()}
       >
-        <h2 className="text-lg font-semibold mb-4">Keyboard Shortcuts</h2>
+        <h2 className="text-lg font-semibold mb-4" style={{ color: 'var(--text-primary)' }}>Keyboard Shortcuts</h2>
         <div className="space-y-2">
           {shortcuts.map(([key, desc]) => (
             <div key={key} className="flex items-center justify-between text-sm">
-              <kbd className="bg-gray-100 dark:bg-gray-700 px-2 py-0.5 rounded font-mono text-xs">{key}</kbd>
-              <span className="text-gray-600 dark:text-gray-300">{desc}</span>
+              <kbd
+                className="glass-inset rounded-md font-mono px-2 py-0.5 text-xs"
+                style={{ color: 'var(--text-secondary)' }}
+              >
+                {key}
+              </kbd>
+              <span style={{ color: 'var(--text-secondary)' }}>{desc}</span>
             </div>
           ))}
         </div>
         <button
           onClick={onClose}
-          className="mt-4 w-full py-2 text-sm rounded-lg bg-indigo-600 text-white hover:bg-indigo-700"
+          className="mt-4 w-full py-2 text-sm glass-button-primary rounded-lg transition-all duration-200"
         >
           Close
         </button>

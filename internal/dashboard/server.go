@@ -298,6 +298,142 @@ func (s *Server) broadcastPhase(phase string) {
 	}
 }
 
+// runAIAnalysis handles AI caching, throttling, and enhancement of check results.
+// Extracted from runCheck to reduce cyclomatic complexity.
+func (s *Server) runAIAnalysis(
+	ctx context.Context,
+	results map[string]*checker.CheckResult,
+	causalCtx *causal.CausalContext,
+	checkCtx *checker.CheckContext,
+	enabled bool,
+	provider ai.Provider,
+) *AIStatus {
+	s.checkCounter++
+	issueHash := computeIssueHash(results)
+
+	if !enabled || provider == nil || !provider.Available() {
+		return nil
+	}
+
+	hashChanged := issueHash != s.lastIssueHash
+	intervalDue := s.checkCounter%uint64(s.aiCheckInterval) == 0
+	if !hashChanged && s.lastAIResult != nil && !intervalDue {
+		reapplyAIEnhancements(results, s.lastAIEnhancements)
+		if len(s.lastCausalInsights) > 0 {
+			applyCausalInsights(causalCtx, s.lastCausalInsights)
+		}
+		log.Info("AI analysis skipped (issues unchanged)", "hash", issueHash[:12])
+		return &AIStatus{
+			Enabled:         enabled,
+			Provider:        provider.Name(),
+			IssuesEnhanced:  s.lastAIResult.IssuesEnhanced,
+			CacheHit:        true,
+			TotalIssueCount: s.lastAIResult.TotalIssueCount,
+			CheckPhase:      "done",
+		}
+	}
+
+	aiCtx, aiCancel := context.WithTimeout(ctx, 90*time.Second)
+	enhanced, tokens, totalCount, aiResp, aiErr := checker.EnhanceAllWithAI(aiCtx, results, checkCtx)
+	aiCancel()
+
+	if aiErr != nil {
+		return s.handleAIError(aiErr, results, causalCtx, enabled, provider, totalCount)
+	}
+
+	if enhanced > 0 {
+		status := &AIStatus{
+			Enabled:          enabled,
+			Provider:         provider.Name(),
+			IssuesEnhanced:   enhanced,
+			TokensUsed:       tokens,
+			EstimatedCostUSD: estimateCost(provider.Name(), tokens),
+			IssuesCapped:     totalCount > enhanced && totalCount > 0,
+			TotalIssueCount:  totalCount,
+			CheckPhase:       "done",
+		}
+		s.lastIssueHash = issueHash
+		s.lastAIResult = status
+		s.lastAIEnhancements = snapshotAIEnhancements(results)
+		if aiResp != nil && len(aiResp.CausalInsights) > 0 {
+			applyCausalInsights(causalCtx, aiResp.CausalInsights)
+			s.lastCausalInsights = aiResp.CausalInsights
+		}
+		return status
+	}
+
+	// AI returned 0 enhanced (likely truncated JSON)
+	return s.handleAITruncated(results, causalCtx, enabled, provider, totalCount, tokens)
+}
+
+// handleAIError handles AI call failure, reusing cached results when available.
+func (s *Server) handleAIError(
+	aiErr error,
+	results map[string]*checker.CheckResult,
+	causalCtx *causal.CausalContext,
+	enabled bool,
+	provider ai.Provider,
+	totalCount int,
+) *AIStatus {
+	if s.lastAIResult != nil && s.lastAIResult.LastError == "" {
+		reapplyAIEnhancements(results, s.lastAIEnhancements)
+		if len(s.lastCausalInsights) > 0 {
+			applyCausalInsights(causalCtx, s.lastCausalInsights)
+		}
+		log.Info("AI call failed, reusing last good result", "error", aiErr.Error())
+		return &AIStatus{
+			Enabled:         enabled,
+			Provider:        provider.Name(),
+			IssuesEnhanced:  s.lastAIResult.IssuesEnhanced,
+			CacheHit:        true,
+			TotalIssueCount: s.lastAIResult.TotalIssueCount,
+			LastError:       "retrying: " + aiErr.Error(),
+			CheckPhase:      "done",
+		}
+	}
+	return &AIStatus{
+		Enabled:         enabled,
+		Provider:        provider.Name(),
+		TotalIssueCount: totalCount,
+		LastError:       aiErr.Error(),
+		CheckPhase:      "done",
+	}
+}
+
+// handleAITruncated handles AI responses with 0 enhanced issues, reusing cached results when available.
+func (s *Server) handleAITruncated(
+	results map[string]*checker.CheckResult,
+	causalCtx *causal.CausalContext,
+	enabled bool,
+	provider ai.Provider,
+	totalCount int,
+	tokens int,
+) *AIStatus {
+	if s.lastAIResult != nil && s.lastAIResult.IssuesEnhanced > 0 {
+		reapplyAIEnhancements(results, s.lastAIEnhancements)
+		if len(s.lastCausalInsights) > 0 {
+			applyCausalInsights(causalCtx, s.lastCausalInsights)
+		}
+		log.Info("AI response truncated (0 enhanced), reusing last good result", "tokens", tokens)
+		return &AIStatus{
+			Enabled:         enabled,
+			Provider:        provider.Name(),
+			IssuesEnhanced:  s.lastAIResult.IssuesEnhanced,
+			CacheHit:        true,
+			TotalIssueCount: s.lastAIResult.TotalIssueCount,
+			CheckPhase:      "done",
+		}
+	}
+	log.Info("AI response truncated, no cached result to fall back on", "tokens", tokens)
+	return &AIStatus{
+		Enabled:         enabled,
+		Provider:        provider.Name(),
+		TotalIssueCount: totalCount,
+		LastError:       "AI response truncated — retrying next cycle",
+		CheckPhase:      "done",
+	}
+}
+
 // runCheck performs a health check and broadcasts results
 func (s *Server) runCheck(ctx context.Context) {
 	// 1. Resolve namespaces via scope resolver — scan all non-system namespaces
@@ -357,113 +493,7 @@ func (s *Server) runCheck(ctx context.Context) {
 
 	s.broadcastPhase("ai")
 
-	// 8. AI caching and throttling
-	s.checkCounter++
-	issueHash := computeIssueHash(results)
-
-	var aiStatus *AIStatus
-	if enabled && provider != nil && provider.Available() {
-		hashChanged := issueHash != s.lastIssueHash
-		intervalDue := s.checkCounter%uint64(s.aiCheckInterval) == 0
-		if !hashChanged && s.lastAIResult != nil && !intervalDue {
-			// Reuse cached AI result and reapply enhancements
-			aiStatus = &AIStatus{
-				Enabled:         enabled,
-				Provider:        provider.Name(),
-				IssuesEnhanced:  s.lastAIResult.IssuesEnhanced,
-				TokensUsed:      0,
-				CacheHit:        true,
-				TotalIssueCount: s.lastAIResult.TotalIssueCount,
-			}
-			reapplyAIEnhancements(results, s.lastAIEnhancements)
-			if len(s.lastCausalInsights) > 0 {
-				applyCausalInsights(causalCtx, s.lastCausalInsights)
-			}
-			log.Info("AI analysis skipped (issues unchanged)", "hash", issueHash[:12])
-		} else {
-			// Run AI with extended timeout
-			aiCtx, aiCancel := context.WithTimeout(checkCtx2, 90*time.Second)
-			enhanced, tokens, totalCount, aiResp, aiErr := checker.EnhanceAllWithAI(aiCtx, results, checkCtx)
-			aiCancel()
-
-			if aiErr != nil {
-				// On failure, reuse last good result if available
-				if s.lastAIResult != nil && s.lastAIResult.LastError == "" {
-					aiStatus = &AIStatus{
-						Enabled:         enabled,
-						Provider:        provider.Name(),
-						IssuesEnhanced:  s.lastAIResult.IssuesEnhanced,
-						TokensUsed:      0,
-						CacheHit:        true,
-						TotalIssueCount: s.lastAIResult.TotalIssueCount,
-						LastError:       "retrying: " + aiErr.Error(),
-					}
-					reapplyAIEnhancements(results, s.lastAIEnhancements)
-					if len(s.lastCausalInsights) > 0 {
-						applyCausalInsights(causalCtx, s.lastCausalInsights)
-					}
-					log.Info("AI call failed, reusing last good result", "error", aiErr.Error())
-				} else {
-					aiStatus = &AIStatus{
-						Enabled:         enabled,
-						Provider:        provider.Name(),
-						TotalIssueCount: totalCount,
-						LastError:       aiErr.Error(),
-					}
-				}
-			} else if enhanced > 0 {
-				// Successful AI call with results — cache it
-				aiStatus = &AIStatus{
-					Enabled:          enabled,
-					Provider:         provider.Name(),
-					IssuesEnhanced:   enhanced,
-					TokensUsed:       tokens,
-					EstimatedCostUSD: estimateCost(provider.Name(), tokens),
-					IssuesCapped:     totalCount > enhanced && totalCount > 0,
-					TotalIssueCount:  totalCount,
-				}
-				s.lastIssueHash = issueHash
-				s.lastAIResult = aiStatus
-				s.lastAIEnhancements = snapshotAIEnhancements(results)
-
-				// Apply causal insights to groups
-				if aiResp != nil && len(aiResp.CausalInsights) > 0 {
-					applyCausalInsights(causalCtx, aiResp.CausalInsights)
-					s.lastCausalInsights = aiResp.CausalInsights
-				}
-			} else {
-				// AI returned 0 enhanced (likely truncated JSON) — reuse last good result if available
-				if s.lastAIResult != nil && s.lastAIResult.IssuesEnhanced > 0 {
-					aiStatus = &AIStatus{
-						Enabled:         enabled,
-						Provider:        provider.Name(),
-						IssuesEnhanced:  s.lastAIResult.IssuesEnhanced,
-						TokensUsed:      0,
-						CacheHit:        true,
-						TotalIssueCount: s.lastAIResult.TotalIssueCount,
-					}
-					reapplyAIEnhancements(results, s.lastAIEnhancements)
-					if len(s.lastCausalInsights) > 0 {
-						applyCausalInsights(causalCtx, s.lastCausalInsights)
-					}
-					log.Info("AI response truncated (0 enhanced), reusing last good result", "tokens", tokens)
-				} else {
-					aiStatus = &AIStatus{
-						Enabled:         enabled,
-						Provider:        provider.Name(),
-						TotalIssueCount: totalCount,
-						LastError:       "AI response truncated — retrying next cycle",
-					}
-					log.Info("AI response truncated, no cached result to fall back on", "tokens", tokens)
-				}
-			}
-		}
-	}
-
-	// Set final phase on the AI status
-	if aiStatus != nil {
-		aiStatus.CheckPhase = "done"
-	}
+	aiStatus := s.runAIAnalysis(checkCtx2, results, causalCtx, checkCtx, enabled, provider)
 
 	// 9. Convert to dashboard format
 	update := &HealthUpdate{
@@ -607,7 +637,7 @@ func computeIssueHash(results map[string]*checker.CheckResult) string {
 		}
 		sort.Strings(issueKeys)
 		for _, k := range issueKeys {
-			fmt.Fprintln(h, k)
+			_, _ = fmt.Fprintln(h, k)
 		}
 	}
 	return hex.EncodeToString(h.Sum(nil))
