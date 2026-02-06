@@ -1,5 +1,7 @@
-import { useState, useEffect, useRef, useMemo } from 'react'
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { useHealth } from './hooks/useHealth'
+import { useSSE } from './hooks/useSSE'
+import { useSettings } from './hooks/useSettings'
 import { triggerCheck } from './api/client'
 import { HealthScoreRing } from './components/HealthScoreRing'
 import { CheckerCard } from './components/CheckerCard'
@@ -8,18 +10,34 @@ import type { Severity } from './components/SeverityTabs'
 import { SearchBar } from './components/SearchBar'
 import { NamespaceFilter } from './components/NamespaceFilter'
 import { ExportButton } from './components/ExportButton'
+import { SettingsModal } from './components/SettingsModal'
+import { HistoryChart } from './components/HistoryChart'
+import { useKeyboardShortcuts, KeyboardShortcutsHelp } from './components/KeyboardShortcuts'
 import { ToastContainer, showToast } from './components/Toast'
 
+const severityKeys: Severity[] = ['all', 'Critical', 'Warning', 'Info']
+
 function App() {
-  const { health, error, loading, refresh } = useHealth()
+  const { health, error, loading, refresh, setHealth } = useHealth()
   const [dark, setDark] = useState(() =>
     window.matchMedia('(prefers-color-scheme: dark)').matches
   )
   const [search, setSearch] = useState('')
   const [severity, setSeverity] = useState<Severity>('all')
   const [namespace, setNamespace] = useState('')
+  const [paused, setPaused] = useState(false)
+  const [showSettings, setShowSettings] = useState(false)
+  const [showHelp, setShowHelp] = useState(false)
   const searchRef = useRef<HTMLInputElement>(null)
   const nsRef = useRef<HTMLSelectElement>(null)
+
+  const { settings, save: saveSettings } = useSettings()
+  const { data: sseData, connected } = useSSE(paused)
+
+  // Update health from SSE
+  useEffect(() => {
+    if (sseData) setHealth(sseData)
+  }, [sseData, setHealth])
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', dark)
@@ -46,6 +64,24 @@ function App() {
     }
   }
 
+  const toggleTheme = useCallback(() => setDark((d) => !d), [])
+  const togglePause = useCallback(() => {
+    setPaused((p) => {
+      showToast(p ? 'Live updates resumed' : 'Live updates paused', 'info')
+      return !p
+    })
+  }, [])
+
+  useKeyboardShortcuts({
+    onToggleTheme: toggleTheme,
+    onRefresh: handleTriggerCheck,
+    onFocusSearch: () => searchRef.current?.focus(),
+    onFocusNamespace: () => nsRef.current?.focus(),
+    onTogglePause: togglePause,
+    onSeverity: (i) => setSeverity(severityKeys[i] ?? 'all'),
+    onShowHelp: () => setShowHelp(true),
+  })
+
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100">
       {/* Header */}
@@ -54,19 +90,23 @@ function App() {
           <div className="flex items-center gap-3">
             <h1 className="text-xl font-bold">KubeAssist</h1>
             <span className="text-xs bg-white/20 px-2 py-0.5 rounded-full">Dashboard</span>
+            <span className={`w-2 h-2 rounded-full ${connected ? 'bg-green-400 animate-pulse' : paused ? 'bg-yellow-400' : 'bg-red-400'}`} title={connected ? 'Connected' : paused ? 'Paused' : 'Disconnected'} />
           </div>
           <div className="flex items-center gap-2">
-            <button
-              onClick={handleTriggerCheck}
-              className="px-3 py-1.5 rounded-md bg-white/20 hover:bg-white/30 text-sm transition-colors"
-            >
+            <button onClick={togglePause} className="px-3 py-1.5 rounded-md bg-white/20 hover:bg-white/30 text-sm transition-colors">
+              {paused ? 'Resume' : 'Pause'}
+            </button>
+            <button onClick={handleTriggerCheck} className="px-3 py-1.5 rounded-md bg-white/20 hover:bg-white/30 text-sm transition-colors">
               Refresh
             </button>
-            <button
-              onClick={() => setDark(!dark)}
-              className="px-3 py-1.5 rounded-md bg-white/20 hover:bg-white/30 text-sm transition-colors"
-            >
+            <button onClick={() => setShowSettings(true)} className="px-3 py-1.5 rounded-md bg-white/20 hover:bg-white/30 text-sm transition-colors">
+              AI Settings
+            </button>
+            <button onClick={toggleTheme} className="px-3 py-1.5 rounded-md bg-white/20 hover:bg-white/30 text-sm transition-colors">
               {dark ? 'Light' : 'Dark'}
+            </button>
+            <button onClick={() => setShowHelp(true)} className="px-2 py-1.5 rounded-md bg-white/20 hover:bg-white/30 text-sm transition-colors font-mono">
+              ?
             </button>
           </div>
         </div>
@@ -91,40 +131,22 @@ function App() {
             <div className="flex flex-col md:flex-row items-start gap-6">
               <HealthScoreRing score={healthScore} />
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4 flex-1 w-full">
-                <MetricCard
-                  label="Healthy"
-                  value={health.summary.totalHealthy}
-                  color="green"
-                />
-                <MetricCard
-                  label="Critical"
-                  value={health.summary.criticalCount}
-                  color="red"
-                />
-                <MetricCard
-                  label="Warnings"
-                  value={health.summary.warningCount}
-                  color="yellow"
-                />
-                <MetricCard
-                  label="Info"
-                  value={health.summary.infoCount}
-                  color="blue"
-                />
+                <MetricCard label="Healthy" value={health.summary.totalHealthy} color="green" />
+                <MetricCard label="Critical" value={health.summary.criticalCount} color="red" />
+                <MetricCard label="Warnings" value={health.summary.warningCount} color="yellow" />
+                <MetricCard label="Info" value={health.summary.infoCount} color="blue" />
               </div>
             </div>
+
+            {/* History Chart */}
+            <HistoryChart />
 
             {/* Filters */}
             <div className="flex flex-col md:flex-row gap-3 items-start md:items-center justify-between">
               <SeverityTabs active={severity} onChange={setSeverity} summary={health.summary} />
               <div className="flex gap-2 items-center flex-wrap">
                 <SearchBar value={search} onChange={setSearch} inputRef={searchRef} />
-                <NamespaceFilter
-                  namespaces={namespaces}
-                  selected={namespace}
-                  onChange={setNamespace}
-                  selectRef={nsRef}
-                />
+                <NamespaceFilter namespaces={namespaces} selected={namespace} onChange={setNamespace} selectRef={nsRef} />
                 <ExportButton health={health} />
               </div>
             </div>
@@ -148,11 +170,24 @@ function App() {
             {/* Timestamp */}
             <div className="text-center text-xs text-gray-400 pt-4">
               Last updated: {new Date(health.timestamp).toLocaleString()}
+              {paused && <span className="ml-2 text-yellow-500">(updates paused)</span>}
             </div>
           </div>
         )}
       </main>
 
+      {/* Modals */}
+      <SettingsModal
+        open={showSettings}
+        onClose={() => setShowSettings(false)}
+        settings={settings}
+        onSave={async (req) => {
+          const result = await saveSettings(req)
+          showToast('AI settings saved', 'success')
+          return result
+        }}
+      />
+      <KeyboardShortcutsHelp open={showHelp} onClose={() => setShowHelp(false)} />
       <ToastContainer />
     </div>
   )
