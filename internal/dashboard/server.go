@@ -167,7 +167,7 @@ func (s *Server) Start(ctx context.Context) error {
 
 	server := &http.Server{
 		Addr:         s.addr,
-		Handler:      mux,
+		Handler:      securityHeaders(mux),
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 30 * time.Second,
 	}
@@ -343,11 +343,15 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	s.mu.RUnlock()
 
 	if latest == nil {
-		_ = json.NewEncoder(w).Encode(map[string]string{"status": "initializing"})
+		if err := json.NewEncoder(w).Encode(map[string]string{"status": "initializing"}); err != nil {
+			log.Error(err, "Failed to encode response", "handler", "handleHealth")
+		}
 		return
 	}
 
-	_ = json.NewEncoder(w).Encode(latest)
+	if err := json.NewEncoder(w).Encode(latest); err != nil {
+		log.Error(err, "Failed to encode response", "handler", "handleHealth")
+	}
 }
 
 // handleSSE handles Server-Sent Events connections
@@ -410,7 +414,9 @@ func (s *Server) handleTriggerCheck(w http.ResponseWriter, r *http.Request) {
 	go s.runCheck(context.Background())
 
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]string{"status": "check triggered"})
+	if err := json.NewEncoder(w).Encode(map[string]string{"status": "check triggered"}); err != nil {
+		log.Error(err, "Failed to encode response", "handler", "handleTriggerCheck")
+	}
 }
 
 // handleAISettings handles GET and POST for /api/settings/ai
@@ -438,7 +444,9 @@ func (s *Server) handleGetAISettings(w http.ResponseWriter, _ *http.Request) {
 	s.mu.RUnlock()
 
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(resp)
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		log.Error(err, "Failed to encode response", "handler", "handleGetAISettings")
+	}
 }
 
 // handlePostAISettings updates AI configuration at runtime
@@ -522,7 +530,9 @@ func (s *Server) handlePostAISettings(w http.ResponseWriter, r *http.Request) {
 	log.Info("AI settings updated via dashboard", "provider", resp.Provider, "enabled", resp.Enabled)
 
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(resp)
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		log.Error(err, "Failed to encode response", "handler", "handlePostAISettings")
+	}
 }
 
 // handleHealthHistory returns historical health snapshots
@@ -535,7 +545,9 @@ func (s *Server) handleHealthHistory(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "invalid 'last' parameter", http.StatusBadRequest)
 			return
 		}
-		_ = json.NewEncoder(w).Encode(s.history.Last(n))
+		if err := json.NewEncoder(w).Encode(s.history.Last(n)); err != nil {
+			log.Error(err, "Failed to encode response", "handler", "handleHealthHistory")
+		}
 		return
 	}
 
@@ -545,12 +557,16 @@ func (s *Server) handleHealthHistory(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "invalid 'since' parameter, use RFC3339", http.StatusBadRequest)
 			return
 		}
-		_ = json.NewEncoder(w).Encode(s.history.Since(t))
+		if err := json.NewEncoder(w).Encode(s.history.Since(t)); err != nil {
+			log.Error(err, "Failed to encode response", "handler", "handleHealthHistory")
+		}
 		return
 	}
 
 	// Default: return last 50
-	_ = json.NewEncoder(w).Encode(s.history.Last(50))
+	if err := json.NewEncoder(w).Encode(s.history.Last(50)); err != nil {
+		log.Error(err, "Failed to encode response", "handler", "handleHealthHistory")
+	}
 }
 
 // handleCausalGroups returns the latest causal correlation analysis
@@ -562,9 +578,22 @@ func (s *Server) handleCausalGroups(w http.ResponseWriter, _ *http.Request) {
 	s.mu.RUnlock()
 
 	if cc == nil {
-		_ = json.NewEncoder(w).Encode(&causal.CausalContext{})
+		if err := json.NewEncoder(w).Encode(&causal.CausalContext{}); err != nil {
+			log.Error(err, "Failed to encode response", "handler", "handleCausalGroups")
+		}
 		return
 	}
 
-	_ = json.NewEncoder(w).Encode(cc)
+	if err := json.NewEncoder(w).Encode(cc); err != nil {
+		log.Error(err, "Failed to encode response", "handler", "handleCausalGroups")
+	}
+}
+
+func securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		next.ServeHTTP(w, r)
+	})
 }

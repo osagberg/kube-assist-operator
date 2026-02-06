@@ -15,6 +15,7 @@ import { HistoryChart } from './components/HistoryChart'
 import { CausalTimeline } from './components/CausalTimeline'
 import { useKeyboardShortcuts, KeyboardShortcutsHelp } from './components/KeyboardShortcuts'
 import { ToastContainer, showToast } from './components/Toast'
+import { ErrorBoundary } from './components/ErrorBoundary'
 
 const severityKeys: Severity[] = ['all', 'Critical', 'Warning', 'Info']
 
@@ -84,6 +85,7 @@ function App() {
   })
 
   return (
+    <ErrorBoundary>
     <div className="min-h-screen bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100">
       {/* Header */}
       <header className="bg-gradient-to-r from-indigo-600 to-purple-500 text-white px-6 py-4 shadow-lg">
@@ -91,22 +93,22 @@ function App() {
           <div className="flex items-center gap-3">
             <h1 className="text-xl font-bold">KubeAssist</h1>
             <span className="text-xs bg-white/20 px-2 py-0.5 rounded-full">Dashboard</span>
-            <span className={`w-2 h-2 rounded-full ${connected ? 'bg-green-400 animate-pulse' : paused ? 'bg-yellow-400' : 'bg-red-400'}`} title={connected ? 'Connected' : paused ? 'Paused' : 'Disconnected'} />
+            <span className={`w-2 h-2 rounded-full ${connected ? 'bg-green-400 animate-pulse' : paused ? 'bg-yellow-400' : 'bg-red-400'}`} title={connected ? 'Connected' : paused ? 'Paused' : 'Disconnected'} role="status" aria-label={connected ? 'Connected to server' : paused ? 'Updates paused' : 'Disconnected from server'} />
           </div>
           <div className="flex items-center gap-2">
-            <button onClick={togglePause} className="px-3 py-1.5 rounded-md bg-white/20 hover:bg-white/30 text-sm transition-colors">
+            <button onClick={togglePause} className="px-3 py-1.5 rounded-md bg-white/20 hover:bg-white/30 text-sm transition-colors" aria-label={paused ? 'Resume live updates' : 'Pause live updates'}>
               {paused ? 'Resume' : 'Pause'}
             </button>
-            <button onClick={handleTriggerCheck} className="px-3 py-1.5 rounded-md bg-white/20 hover:bg-white/30 text-sm transition-colors">
+            <button onClick={handleTriggerCheck} className="px-3 py-1.5 rounded-md bg-white/20 hover:bg-white/30 text-sm transition-colors" aria-label="Refresh health data">
               Refresh
             </button>
-            <button onClick={() => setShowSettings(true)} className="px-3 py-1.5 rounded-md bg-white/20 hover:bg-white/30 text-sm transition-colors">
+            <button onClick={() => setShowSettings(true)} className="px-3 py-1.5 rounded-md bg-white/20 hover:bg-white/30 text-sm transition-colors" aria-label="Open AI settings">
               AI Settings
             </button>
-            <button onClick={toggleTheme} className="px-3 py-1.5 rounded-md bg-white/20 hover:bg-white/30 text-sm transition-colors">
+            <button onClick={toggleTheme} className="px-3 py-1.5 rounded-md bg-white/20 hover:bg-white/30 text-sm transition-colors" aria-label={dark ? 'Switch to light theme' : 'Switch to dark theme'}>
               {dark ? 'Light' : 'Dark'}
             </button>
-            <button onClick={() => setShowHelp(true)} className="px-2 py-1.5 rounded-md bg-white/20 hover:bg-white/30 text-sm transition-colors font-mono">
+            <button onClick={() => setShowHelp(true)} className="px-2 py-1.5 rounded-md bg-white/20 hover:bg-white/30 text-sm transition-colors font-mono" aria-label="Show keyboard shortcuts">
               ?
             </button>
           </div>
@@ -194,6 +196,7 @@ function App() {
       <KeyboardShortcutsHelp open={showHelp} onClose={() => setShowHelp(false)} />
       <ToastContainer />
     </div>
+    </ErrorBoundary>
   )
 }
 

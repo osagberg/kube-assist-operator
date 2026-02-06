@@ -28,8 +28,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	"github.com/osagberg/kube-assist-operator/internal/ai"
+	"github.com/osagberg/kube-assist-operator/internal/causal"
 	"github.com/osagberg/kube-assist-operator/internal/checker"
 	"github.com/osagberg/kube-assist-operator/internal/datasource"
+	"github.com/osagberg/kube-assist-operator/internal/history"
 )
 
 const (
@@ -497,5 +499,250 @@ func TestServer_WithAI(t *testing.T) {
 	}
 	if server.aiConfig.Provider != providerNoop {
 		t.Errorf("WithAI should set aiConfig.Provider to provider name, got %q", server.aiConfig.Provider)
+	}
+}
+
+func TestServer_HandleHealthHistory_Last(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	// Add 3 snapshots
+	for i := range 3 {
+		server.history.Add(history.HealthSnapshot{
+			Timestamp:    time.Now().Add(time.Duration(i) * time.Minute),
+			TotalHealthy: i + 1,
+			TotalIssues:  0,
+			HealthScore:  100,
+		})
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/health/history?last=2", nil)
+	rr := httptest.NewRecorder()
+
+	server.handleHealthHistory(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("handleHealthHistory(?last=2) status = %d, want %d", rr.Code, http.StatusOK)
+	}
+
+	var snapshots []history.HealthSnapshot
+	if err := json.Unmarshal(rr.Body.Bytes(), &snapshots); err != nil {
+		t.Fatalf("handleHealthHistory(?last=2) returned invalid JSON: %v", err)
+	}
+
+	if len(snapshots) != 2 {
+		t.Errorf("handleHealthHistory(?last=2) returned %d snapshots, want 2", len(snapshots))
+	}
+}
+
+func TestServer_HandleHealthHistory_Since(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	now := time.Now()
+	early := now.Add(-10 * time.Minute)
+	mid := now.Add(-5 * time.Minute)
+	late := now
+
+	server.history.Add(history.HealthSnapshot{Timestamp: early, TotalHealthy: 1, HealthScore: 100})
+	server.history.Add(history.HealthSnapshot{Timestamp: mid, TotalHealthy: 2, HealthScore: 100})
+	server.history.Add(history.HealthSnapshot{Timestamp: late, TotalHealthy: 3, HealthScore: 100})
+
+	sinceTime := mid.UTC().Format(time.RFC3339)
+	req := httptest.NewRequest(http.MethodGet, "/api/health/history?since="+sinceTime, nil)
+	rr := httptest.NewRecorder()
+
+	server.handleHealthHistory(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("handleHealthHistory(?since=...) status = %d, want %d", rr.Code, http.StatusOK)
+	}
+
+	var snapshots []history.HealthSnapshot
+	if err := json.Unmarshal(rr.Body.Bytes(), &snapshots); err != nil {
+		t.Fatalf("handleHealthHistory(?since=...) returned invalid JSON: %v", err)
+	}
+
+	if len(snapshots) < 2 {
+		t.Errorf("handleHealthHistory(?since=...) returned %d snapshots, want at least 2", len(snapshots))
+	}
+}
+
+func TestServer_HandleHealthHistory_Default(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	server.history.Add(history.HealthSnapshot{
+		Timestamp:    time.Now(),
+		TotalHealthy: 5,
+		HealthScore:  100,
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/health/history", nil)
+	rr := httptest.NewRecorder()
+
+	server.handleHealthHistory(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("handleHealthHistory() default status = %d, want %d", rr.Code, http.StatusOK)
+	}
+
+	var snapshots []history.HealthSnapshot
+	if err := json.Unmarshal(rr.Body.Bytes(), &snapshots); err != nil {
+		t.Fatalf("handleHealthHistory() default returned invalid JSON: %v", err)
+	}
+
+	if len(snapshots) != 1 {
+		t.Errorf("handleHealthHistory() default returned %d snapshots, want 1", len(snapshots))
+	}
+}
+
+func TestServer_HandleHealthHistory_InvalidLast(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/health/history?last=abc", nil)
+	rr := httptest.NewRecorder()
+
+	server.handleHealthHistory(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("handleHealthHistory(?last=abc) status = %d, want %d", rr.Code, http.StatusBadRequest)
+	}
+}
+
+func TestServer_HandleHealthHistory_InvalidSince(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/health/history?since=notadate", nil)
+	rr := httptest.NewRecorder()
+
+	server.handleHealthHistory(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("handleHealthHistory(?since=notadate) status = %d, want %d", rr.Code, http.StatusBadRequest)
+	}
+}
+
+func TestServer_HandleCausalGroups_NoData(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/causal/groups", nil)
+	rr := httptest.NewRecorder()
+
+	server.handleCausalGroups(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("handleCausalGroups() no data status = %d, want %d", rr.Code, http.StatusOK)
+	}
+
+	var cc causal.CausalContext
+	if err := json.Unmarshal(rr.Body.Bytes(), &cc); err != nil {
+		t.Fatalf("handleCausalGroups() no data returned invalid JSON: %v", err)
+	}
+
+	if len(cc.Groups) != 0 {
+		t.Errorf("handleCausalGroups() no data returned %d groups, want 0", len(cc.Groups))
+	}
+}
+
+func TestServer_HandleCausalGroups_WithData(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	server.latestCausal = &causal.CausalContext{
+		Groups: []causal.CausalGroup{
+			{
+				ID:         "test-group-1",
+				Title:      "OOM in namespace default",
+				Severity:   "critical",
+				Rule:       "oom-correlation",
+				Confidence: 0.9,
+				FirstSeen:  time.Now(),
+				LastSeen:   time.Now(),
+			},
+		},
+		TotalIssues:       3,
+		UncorrelatedCount: 1,
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/causal/groups", nil)
+	rr := httptest.NewRecorder()
+
+	server.handleCausalGroups(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("handleCausalGroups() with data status = %d, want %d", rr.Code, http.StatusOK)
+	}
+
+	var cc causal.CausalContext
+	if err := json.Unmarshal(rr.Body.Bytes(), &cc); err != nil {
+		t.Fatalf("handleCausalGroups() with data returned invalid JSON: %v", err)
+	}
+
+	if len(cc.Groups) != 1 {
+		t.Errorf("handleCausalGroups() with data returned %d groups, want 1", len(cc.Groups))
+	}
+	if cc.Groups[0].ID != "test-group-1" {
+		t.Errorf("handleCausalGroups() group ID = %q, want %q", cc.Groups[0].ID, "test-group-1")
+	}
+	if cc.TotalIssues != 3 {
+		t.Errorf("handleCausalGroups() totalIssues = %d, want 3", cc.TotalIssues)
+	}
+}
+
+func TestServer_SecurityHeaders(t *testing.T) {
+	handler := securityHeaders(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("securityHeaders status = %d, want %d", rr.Code, http.StatusOK)
+	}
+
+	csp := rr.Header().Get("Content-Security-Policy")
+	if csp == "" {
+		t.Error("expected Content-Security-Policy header to be set")
+	}
+	if csp != "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'" {
+		t.Errorf("Content-Security-Policy = %q, want expected CSP value", csp)
+	}
+
+	xcto := rr.Header().Get("X-Content-Type-Options")
+	if xcto != "nosniff" {
+		t.Errorf("X-Content-Type-Options = %q, want %q", xcto, "nosniff")
+	}
+
+	xfo := rr.Header().Get("X-Frame-Options")
+	if xfo != "DENY" {
+		t.Errorf("X-Frame-Options = %q, want %q", xfo, "DENY")
 	}
 }

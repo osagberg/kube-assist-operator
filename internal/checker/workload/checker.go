@@ -25,10 +25,13 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/osagberg/kube-assist-operator/internal/checker"
 	"github.com/osagberg/kube-assist-operator/internal/datasource"
 )
+
+var log = logf.Log.WithName("workload-checker")
 
 const (
 	// CheckerName is the identifier for this checker
@@ -72,12 +75,14 @@ func (c *Checker) Check(ctx context.Context, checkCtx *checker.CheckContext) (*c
 		// Check Deployments
 		deployments := &appsv1.DeploymentList{}
 		if err := checkCtx.DataSource.List(ctx, deployments, client.InNamespace(ns)); err != nil {
+			log.Error(err, "Failed to list deployments", "namespace", ns)
 			continue
 		}
 
 		for _, deploy := range deployments.Items {
 			pods, err := c.getPodsForWorkload(ctx, checkCtx.DataSource, ns, deploy.Spec.Selector)
 			if err != nil {
+				log.Error(err, "Failed to get pods for deployment", "namespace", ns, "deployment", deploy.Name)
 				continue
 			}
 
@@ -94,12 +99,14 @@ func (c *Checker) Check(ctx context.Context, checkCtx *checker.CheckContext) (*c
 		// Check StatefulSets
 		statefulsets := &appsv1.StatefulSetList{}
 		if err := checkCtx.DataSource.List(ctx, statefulsets, client.InNamespace(ns)); err != nil {
+			log.Error(err, "Failed to list statefulsets", "namespace", ns)
 			continue
 		}
 
 		for _, sts := range statefulsets.Items {
 			pods, err := c.getPodsForWorkload(ctx, checkCtx.DataSource, ns, sts.Spec.Selector)
 			if err != nil {
+				log.Error(err, "Failed to get pods for statefulset", "namespace", ns, "statefulset", sts.Name)
 				continue
 			}
 
@@ -116,12 +123,14 @@ func (c *Checker) Check(ctx context.Context, checkCtx *checker.CheckContext) (*c
 		// Check DaemonSets
 		daemonsets := &appsv1.DaemonSetList{}
 		if err := checkCtx.DataSource.List(ctx, daemonsets, client.InNamespace(ns)); err != nil {
+			log.Error(err, "Failed to list daemonsets", "namespace", ns)
 			continue
 		}
 
 		for _, ds := range daemonsets.Items {
 			pods, err := c.getPodsForWorkload(ctx, checkCtx.DataSource, ns, ds.Spec.Selector)
 			if err != nil {
+				log.Error(err, "Failed to get pods for daemonset", "namespace", ns, "daemonset", ds.Name)
 				continue
 			}
 
