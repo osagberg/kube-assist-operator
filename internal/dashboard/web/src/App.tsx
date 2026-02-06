@@ -1,102 +1,173 @@
-import { useState, useEffect } from 'react'
-import type { HealthUpdate } from './types'
-import { fetchHealth } from './api/client'
+import { useState, useEffect, useRef, useMemo } from 'react'
+import { useHealth } from './hooks/useHealth'
+import { triggerCheck } from './api/client'
+import { HealthScoreRing } from './components/HealthScoreRing'
+import { CheckerCard } from './components/CheckerCard'
+import { SeverityTabs } from './components/SeverityTabs'
+import type { Severity } from './components/SeverityTabs'
+import { SearchBar } from './components/SearchBar'
+import { NamespaceFilter } from './components/NamespaceFilter'
+import { ExportButton } from './components/ExportButton'
+import { ToastContainer, showToast } from './components/Toast'
 
 function App() {
-  const [health, setHealth] = useState<HealthUpdate | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  const { health, error, loading, refresh } = useHealth()
   const [dark, setDark] = useState(() =>
     window.matchMedia('(prefers-color-scheme: dark)').matches
   )
+  const [search, setSearch] = useState('')
+  const [severity, setSeverity] = useState<Severity>('all')
+  const [namespace, setNamespace] = useState('')
+  const searchRef = useRef<HTMLInputElement>(null)
+  const nsRef = useRef<HTMLSelectElement>(null)
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', dark)
   }, [dark])
 
-  useEffect(() => {
-    fetchHealth()
-      .then(setHealth)
-      .catch((e) => setError(e.message))
-  }, [])
+  const namespaces = useMemo(() => {
+    if (!health) return []
+    return health.namespaces ?? []
+  }, [health])
+
+  const healthScore = useMemo(() => {
+    if (!health) return 100
+    const total = health.summary.totalHealthy + health.summary.totalIssues
+    return total === 0 ? 100 : (health.summary.totalHealthy / total) * 100
+  }, [health])
+
+  const handleTriggerCheck = async () => {
+    try {
+      await triggerCheck()
+      showToast('Health check triggered', 'success')
+      setTimeout(refresh, 2000)
+    } catch {
+      showToast('Failed to trigger check', 'error')
+    }
+  }
 
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100">
-      <header className="bg-indigo-600 text-white px-6 py-4 flex items-center justify-between">
-        <h1 className="text-xl font-bold">KubeAssist Dashboard</h1>
-        <button
-          onClick={() => setDark(!dark)}
-          className="px-3 py-1 rounded bg-indigo-700 hover:bg-indigo-800 text-sm"
-        >
-          {dark ? 'Light' : 'Dark'}
-        </button>
+      {/* Header */}
+      <header className="bg-gradient-to-r from-indigo-600 to-purple-500 text-white px-6 py-4 shadow-lg">
+        <div className="max-w-7xl mx-auto flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <h1 className="text-xl font-bold">KubeAssist</h1>
+            <span className="text-xs bg-white/20 px-2 py-0.5 rounded-full">Dashboard</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleTriggerCheck}
+              className="px-3 py-1.5 rounded-md bg-white/20 hover:bg-white/30 text-sm transition-colors"
+            >
+              Refresh
+            </button>
+            <button
+              onClick={() => setDark(!dark)}
+              className="px-3 py-1.5 rounded-md bg-white/20 hover:bg-white/30 text-sm transition-colors"
+            >
+              {dark ? 'Light' : 'Dark'}
+            </button>
+          </div>
+        </div>
       </header>
 
       <main className="max-w-7xl mx-auto px-6 py-8">
         {error && (
-          <div className="bg-red-100 dark:bg-red-900 text-red-700 dark:text-red-200 px-4 py-3 rounded mb-6">
+          <div className="bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300 px-4 py-3 rounded-lg mb-6 border border-red-200 dark:border-red-800">
             {error}
           </div>
         )}
 
-        {!health && !error && (
-          <div className="text-center py-12 text-gray-500">Loading health data...</div>
+        {loading && !health && (
+          <div className="flex items-center justify-center py-20">
+            <div className="w-8 h-8 border-4 border-indigo-200 border-t-indigo-600 rounded-full animate-spin" />
+          </div>
         )}
 
         {health && (
           <div className="space-y-6">
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-              <SummaryCard label="Health Score" value={`${Math.round(health.summary.totalHealthy / Math.max(health.summary.totalHealthy + health.summary.totalIssues, 1) * 100)}%`} color="indigo" />
-              <SummaryCard label="Critical" value={String(health.summary.criticalCount)} color="red" />
-              <SummaryCard label="Warnings" value={String(health.summary.warningCount)} color="yellow" />
-              <SummaryCard label="Info" value={String(health.summary.infoCount)} color="blue" />
+            {/* Summary Row */}
+            <div className="flex flex-col md:flex-row items-start gap-6">
+              <HealthScoreRing score={healthScore} />
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 flex-1 w-full">
+                <MetricCard
+                  label="Healthy"
+                  value={health.summary.totalHealthy}
+                  color="green"
+                />
+                <MetricCard
+                  label="Critical"
+                  value={health.summary.criticalCount}
+                  color="red"
+                />
+                <MetricCard
+                  label="Warnings"
+                  value={health.summary.warningCount}
+                  color="yellow"
+                />
+                <MetricCard
+                  label="Info"
+                  value={health.summary.infoCount}
+                  color="blue"
+                />
+              </div>
             </div>
 
+            {/* Filters */}
+            <div className="flex flex-col md:flex-row gap-3 items-start md:items-center justify-between">
+              <SeverityTabs active={severity} onChange={setSeverity} summary={health.summary} />
+              <div className="flex gap-2 items-center flex-wrap">
+                <SearchBar value={search} onChange={setSearch} inputRef={searchRef} />
+                <NamespaceFilter
+                  namespaces={namespaces}
+                  selected={namespace}
+                  onChange={setNamespace}
+                  selectRef={nsRef}
+                />
+                <ExportButton health={health} />
+              </div>
+            </div>
+
+            {/* Checker Cards */}
             <div className="space-y-4">
-              {Object.entries(health.results).map(([name, result]) => (
-                <div key={name} className="bg-white dark:bg-gray-800 rounded-lg shadow p-4">
-                  <div className="flex items-center justify-between mb-2">
-                    <h3 className="font-semibold text-lg capitalize">{name}</h3>
-                    <span className="text-sm text-gray-500">
-                      {result.healthy} healthy, {result.issues.length} issues
-                    </span>
-                  </div>
-                  {result.error && (
-                    <div className="text-red-500 text-sm">{result.error}</div>
-                  )}
-                  {result.issues.length > 0 && (
-                    <ul className="space-y-2 mt-2">
-                      {result.issues.map((issue, i) => (
-                        <li key={i} className="text-sm border-l-4 pl-3 py-1" style={{
-                          borderColor: issue.severity === 'Critical' ? '#EF4444' : issue.severity === 'Warning' ? '#F59E0B' : '#3B82F6'
-                        }}>
-                          <div className="font-medium">{issue.resource} — {issue.message}</div>
-                          {issue.suggestion && (
-                            <div className="text-gray-500 dark:text-gray-400 mt-1">{issue.suggestion}</div>
-                          )}
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
-              ))}
+              {Object.entries(health.results)
+                .sort(([, a], [, b]) => b.issues.length - a.issues.length)
+                .map(([name, result]) => (
+                  <CheckerCard
+                    key={name}
+                    name={name}
+                    result={result}
+                    search={search}
+                    severity={severity}
+                    namespace={namespace}
+                  />
+                ))}
+            </div>
+
+            {/* Timestamp */}
+            <div className="text-center text-xs text-gray-400 pt-4">
+              Last updated: {new Date(health.timestamp).toLocaleString()}
             </div>
           </div>
         )}
       </main>
+
+      <ToastContainer />
     </div>
   )
 }
 
-function SummaryCard({ label, value, color }: { label: string; value: string; color: string }) {
-  const colorMap: Record<string, string> = {
-    indigo: 'bg-indigo-100 dark:bg-indigo-900 text-indigo-700 dark:text-indigo-200',
-    red: 'bg-red-100 dark:bg-red-900 text-red-700 dark:text-red-200',
-    yellow: 'bg-yellow-100 dark:bg-yellow-900 text-yellow-700 dark:text-yellow-200',
-    blue: 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200',
+function MetricCard({ label, value, color }: { label: string; value: number; color: string }) {
+  const styles: Record<string, string> = {
+    green: 'border-l-green-500 text-green-600 dark:text-green-400',
+    red: 'border-l-red-500 text-red-600 dark:text-red-400',
+    yellow: 'border-l-yellow-500 text-yellow-600 dark:text-yellow-400',
+    blue: 'border-l-blue-500 text-blue-600 dark:text-blue-400',
   }
   return (
-    <div className={`rounded-lg p-4 ${colorMap[color] ?? ''}`}>
-      <div className="text-sm font-medium">{label}</div>
+    <div className={`bg-white dark:bg-gray-800 rounded-lg p-4 border-l-4 shadow-sm ${styles[color]}`}>
+      <div className="text-sm text-gray-500 dark:text-gray-400">{label}</div>
       <div className="text-2xl font-bold">{value}</div>
     </div>
   )
