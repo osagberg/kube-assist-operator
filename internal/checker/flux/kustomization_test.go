@@ -23,10 +23,9 @@ import (
 
 	kustomizev1 "github.com/fluxcd/kustomize-controller/api/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	"github.com/osagberg/kube-assist-operator/internal/checker"
+	"github.com/osagberg/kube-assist-operator/internal/testutil"
 )
 
 // Test issue types
@@ -43,9 +42,6 @@ func TestKustomizationChecker_Name(t *testing.T) {
 }
 
 func TestKustomizationChecker_CheckHealthyKustomization(t *testing.T) {
-	scheme := runtime.NewScheme()
-	_ = kustomizev1.AddToScheme(scheme)
-
 	ks := &kustomizev1.Kustomization{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "healthy-ks",
@@ -69,16 +65,8 @@ func TestKustomizationChecker_CheckHealthyKustomization(t *testing.T) {
 		},
 	}
 
-	client := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(ks).
-		Build()
-
 	c := NewKustomizationChecker()
-	checkCtx := &checker.CheckContext{
-		Client:     client,
-		Namespaces: []string{"flux-system"},
-	}
+	checkCtx := testutil.NewCheckContext(t, []string{"flux-system"}, ks)
 
 	result, err := c.Check(context.Background(), checkCtx)
 	if err != nil {
@@ -94,9 +82,6 @@ func TestKustomizationChecker_CheckHealthyKustomization(t *testing.T) {
 }
 
 func TestKustomizationChecker_ChecktestIssueTypeSuspendedKustomization(t *testing.T) {
-	scheme := runtime.NewScheme()
-	_ = kustomizev1.AddToScheme(scheme)
-
 	ks := &kustomizev1.Kustomization{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "suspended-ks",
@@ -107,16 +92,8 @@ func TestKustomizationChecker_ChecktestIssueTypeSuspendedKustomization(t *testin
 		},
 	}
 
-	client := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(ks).
-		Build()
-
 	c := NewKustomizationChecker()
-	checkCtx := &checker.CheckContext{
-		Client:     client,
-		Namespaces: []string{"flux-system"},
-	}
+	checkCtx := testutil.NewCheckContext(t, []string{"flux-system"}, ks)
 
 	result, err := c.Check(context.Background(), checkCtx)
 	if err != nil {
@@ -136,9 +113,6 @@ func TestKustomizationChecker_ChecktestIssueTypeSuspendedKustomization(t *testin
 }
 
 func TestKustomizationChecker_CheckBuildFailed(t *testing.T) {
-	scheme := runtime.NewScheme()
-	_ = kustomizev1.AddToScheme(scheme)
-
 	ks := &kustomizev1.Kustomization{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "failed-ks",
@@ -160,16 +134,8 @@ func TestKustomizationChecker_CheckBuildFailed(t *testing.T) {
 		},
 	}
 
-	client := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(ks).
-		Build()
-
 	c := NewKustomizationChecker()
-	checkCtx := &checker.CheckContext{
-		Client:     client,
-		Namespaces: []string{"flux-system"},
-	}
+	checkCtx := testutil.NewCheckContext(t, []string{"flux-system"}, ks)
 
 	result, err := c.Check(context.Background(), checkCtx)
 	if err != nil {
@@ -189,9 +155,6 @@ func TestKustomizationChecker_CheckBuildFailed(t *testing.T) {
 }
 
 func TestKustomizationChecker_CheckHealthCheckFailed(t *testing.T) {
-	scheme := runtime.NewScheme()
-	_ = kustomizev1.AddToScheme(scheme)
-
 	ks := &kustomizev1.Kustomization{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "unhealthy-ks",
@@ -220,23 +183,14 @@ func TestKustomizationChecker_CheckHealthCheckFailed(t *testing.T) {
 		},
 	}
 
-	client := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(ks).
-		Build()
-
 	c := NewKustomizationChecker()
-	checkCtx := &checker.CheckContext{
-		Client:     client,
-		Namespaces: []string{"flux-system"},
-	}
+	checkCtx := testutil.NewCheckContext(t, []string{"flux-system"}, ks)
 
 	result, err := c.Check(context.Background(), checkCtx)
 	if err != nil {
 		t.Fatalf("Check() error = %v", err)
 	}
 
-	// Should have both HealthCheckFailed and UnhealthyResources issues
 	foundHealthCheckFailed := false
 	foundUnhealthy := false
 	for _, issue := range result.Issues {
@@ -256,9 +210,6 @@ func TestKustomizationChecker_CheckHealthCheckFailed(t *testing.T) {
 }
 
 func TestKustomizationChecker_CheckPendingChanges(t *testing.T) {
-	scheme := runtime.NewScheme()
-	_ = kustomizev1.AddToScheme(scheme)
-
 	ks := &kustomizev1.Kustomization{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "pending-ks",
@@ -281,16 +232,8 @@ func TestKustomizationChecker_CheckPendingChanges(t *testing.T) {
 		},
 	}
 
-	client := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(ks).
-		Build()
-
 	c := NewKustomizationChecker()
-	checkCtx := &checker.CheckContext{
-		Client:     client,
-		Namespaces: []string{"flux-system"},
-	}
+	checkCtx := testutil.NewCheckContext(t, []string{"flux-system"}, ks)
 
 	result, err := c.Check(context.Background(), checkCtx)
 	if err != nil {
@@ -310,9 +253,6 @@ func TestKustomizationChecker_CheckPendingChanges(t *testing.T) {
 }
 
 func TestKustomizationChecker_ChecktestIssueTypeStaleReconciliation(t *testing.T) {
-	scheme := runtime.NewScheme()
-	_ = kustomizev1.AddToScheme(scheme)
-
 	staleTime := metav1.NewTime(time.Now().Add(-2 * time.Hour))
 
 	ks := &kustomizev1.Kustomization{
@@ -337,16 +277,8 @@ func TestKustomizationChecker_ChecktestIssueTypeStaleReconciliation(t *testing.T
 		},
 	}
 
-	client := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(ks).
-		Build()
-
 	c := NewKustomizationChecker()
-	checkCtx := &checker.CheckContext{
-		Client:     client,
-		Namespaces: []string{"flux-system"},
-	}
+	checkCtx := testutil.NewCheckContext(t, []string{"flux-system"}, ks)
 
 	result, err := c.Check(context.Background(), checkCtx)
 	if err != nil {

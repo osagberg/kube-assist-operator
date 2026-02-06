@@ -27,6 +27,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/osagberg/kube-assist-operator/internal/checker"
+	"github.com/osagberg/kube-assist-operator/internal/datasource"
 )
 
 const (
@@ -54,7 +55,7 @@ func (c *Checker) Name() string {
 }
 
 // Supports returns true - workload checking is always supported
-func (c *Checker) Supports(ctx context.Context, cl client.Client) bool {
+func (c *Checker) Supports(ctx context.Context, ds datasource.DataSource) bool {
 	return true
 }
 
@@ -70,12 +71,12 @@ func (c *Checker) Check(ctx context.Context, checkCtx *checker.CheckContext) (*c
 	for _, ns := range checkCtx.Namespaces {
 		// Check Deployments
 		deployments := &appsv1.DeploymentList{}
-		if err := checkCtx.Client.List(ctx, deployments, client.InNamespace(ns)); err != nil {
+		if err := checkCtx.DataSource.List(ctx, deployments, client.InNamespace(ns)); err != nil {
 			continue
 		}
 
 		for _, deploy := range deployments.Items {
-			pods, err := c.getPodsForWorkload(ctx, checkCtx.Client, ns, deploy.Spec.Selector)
+			pods, err := c.getPodsForWorkload(ctx, checkCtx.DataSource, ns, deploy.Spec.Selector)
 			if err != nil {
 				continue
 			}
@@ -92,12 +93,12 @@ func (c *Checker) Check(ctx context.Context, checkCtx *checker.CheckContext) (*c
 
 		// Check StatefulSets
 		statefulsets := &appsv1.StatefulSetList{}
-		if err := checkCtx.Client.List(ctx, statefulsets, client.InNamespace(ns)); err != nil {
+		if err := checkCtx.DataSource.List(ctx, statefulsets, client.InNamespace(ns)); err != nil {
 			continue
 		}
 
 		for _, sts := range statefulsets.Items {
-			pods, err := c.getPodsForWorkload(ctx, checkCtx.Client, ns, sts.Spec.Selector)
+			pods, err := c.getPodsForWorkload(ctx, checkCtx.DataSource, ns, sts.Spec.Selector)
 			if err != nil {
 				continue
 			}
@@ -114,12 +115,12 @@ func (c *Checker) Check(ctx context.Context, checkCtx *checker.CheckContext) (*c
 
 		// Check DaemonSets
 		daemonsets := &appsv1.DaemonSetList{}
-		if err := checkCtx.Client.List(ctx, daemonsets, client.InNamespace(ns)); err != nil {
+		if err := checkCtx.DataSource.List(ctx, daemonsets, client.InNamespace(ns)); err != nil {
 			continue
 		}
 
 		for _, ds := range daemonsets.Items {
-			pods, err := c.getPodsForWorkload(ctx, checkCtx.Client, ns, ds.Spec.Selector)
+			pods, err := c.getPodsForWorkload(ctx, checkCtx.DataSource, ns, ds.Spec.Selector)
 			if err != nil {
 				continue
 			}
@@ -139,14 +140,14 @@ func (c *Checker) Check(ctx context.Context, checkCtx *checker.CheckContext) (*c
 }
 
 // getPodsForWorkload returns pods matching a label selector
-func (c *Checker) getPodsForWorkload(ctx context.Context, cl client.Client, namespace string, selector *metav1.LabelSelector) ([]corev1.Pod, error) {
+func (c *Checker) getPodsForWorkload(ctx context.Context, ds datasource.DataSource, namespace string, selector *metav1.LabelSelector) ([]corev1.Pod, error) {
 	labelSelector, err := metav1.LabelSelectorAsSelector(selector)
 	if err != nil {
 		return nil, err
 	}
 
 	podList := &corev1.PodList{}
-	if err := cl.List(ctx, podList,
+	if err := ds.List(ctx, podList,
 		client.InNamespace(namespace),
 		client.MatchingLabelsSelector{Selector: labelSelector}); err != nil {
 		return nil, err

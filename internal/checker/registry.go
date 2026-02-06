@@ -84,7 +84,7 @@ func (r *Registry) Run(ctx context.Context, name string, checkCtx *CheckContext)
 		return nil, fmt.Errorf("checker %q not found", name)
 	}
 
-	if !checker.Supports(ctx, checkCtx.Client) {
+	if !checker.Supports(ctx, checkCtx.DataSource) {
 		return &CheckResult{
 			CheckerName: name,
 			Error:       fmt.Errorf("checker %q is not supported in this environment", name),

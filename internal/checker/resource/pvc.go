@@ -25,6 +25,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/osagberg/kube-assist-operator/internal/checker"
+	"github.com/osagberg/kube-assist-operator/internal/datasource"
 )
 
 const (
@@ -46,7 +47,7 @@ func (c *PVCChecker) Name() string {
 }
 
 // Supports always returns true since PVCs are core resources
-func (c *PVCChecker) Supports(ctx context.Context, cl client.Client) bool {
+func (c *PVCChecker) Supports(ctx context.Context, ds datasource.DataSource) bool {
 	return true
 }
 
@@ -59,7 +60,7 @@ func (c *PVCChecker) Check(ctx context.Context, checkCtx *checker.CheckContext) 
 
 	for _, ns := range checkCtx.Namespaces {
 		var pvcList corev1.PersistentVolumeClaimList
-		if err := checkCtx.Client.List(ctx, &pvcList, client.InNamespace(ns)); err != nil {
+		if err := checkCtx.DataSource.List(ctx, &pvcList, client.InNamespace(ns)); err != nil {
 			continue
 		}
 

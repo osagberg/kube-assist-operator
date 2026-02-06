@@ -65,7 +65,9 @@ One command to diagnose your entire cluster. KubeAssist provides instant visibil
 - **Minimal RBAC** -- least-privilege, read-only access to cluster resources
 - **Distroless container** with OCI labels -- secure, minimal attack surface
 - **Network policy** template for restricted egress
-- **68% controller test coverage** with full E2E tests
+- **69% controller test coverage** with full E2E tests
+- **Validating webhooks** reject invalid CRs at admission time
+- **TTL auto-cleanup** for completed/failed CRs (`ttlSecondsAfterFinished`)
 
 ---
 
@@ -301,6 +303,7 @@ spec:
     - events                  # Collect related events
     - all                     # All of the above
   tailLines: 100              # Log lines to collect (default: 100)
+  ttlSecondsAfterFinished: 300  # Auto-delete after 5 min (optional)
 ```
 
 **Status fields:**
@@ -311,6 +314,7 @@ spec:
 | `issues` | List of detected issues with severity and suggestions |
 | `logsConfigMap` | ConfigMap containing collected logs |
 | `eventsConfigMap` | ConfigMap containing related events |
+| `completedAt` | Timestamp when the request completed or failed |
 
 ### TeamHealthRequest
 
@@ -342,6 +346,8 @@ spec:
     - secrets
     - helmreleases
 
+  ttlSecondsAfterFinished: 600  # Auto-delete after 10 min (optional)
+
   config:                     # Per-checker configuration
     workloads:
       restartThreshold: 3
@@ -363,6 +369,7 @@ spec:
 | `results` | Per-checker results with healthy count and issues |
 | `namespacesChecked` | List of namespaces that were checked |
 | `lastCheckTime` | Timestamp of last check |
+| `completedAt` | Timestamp when the request completed or failed |
 
 ---
 
@@ -620,6 +627,9 @@ make install-cli
 - [x] Runtime AI configuration via dashboard (v1.4.0)
 - [x] Copy-able kubectl remediation commands (v1.4.0)
 - [x] Full E2E test coverage for controllers (v1.4.0)
+- [x] TTL auto-cleanup for completed CRs (v1.5.0)
+- [x] Validating admission webhooks (v1.5.0)
+- [x] Test helper utilities and reduced boilerplate (v1.5.0)
 - [ ] Slack/PagerDuty alerting integration
 - [ ] Historical trend analysis
 - [ ] Custom checker plugins

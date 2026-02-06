@@ -27,6 +27,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/osagberg/kube-assist-operator/internal/checker"
+	"github.com/osagberg/kube-assist-operator/internal/datasource"
 )
 
 const (
@@ -63,7 +64,7 @@ func (c *SecretChecker) Name() string {
 }
 
 // Supports always returns true since Secrets are core resources
-func (c *SecretChecker) Supports(ctx context.Context, cl client.Client) bool {
+func (c *SecretChecker) Supports(ctx context.Context, ds datasource.DataSource) bool {
 	return true
 }
 
@@ -88,7 +89,7 @@ func (c *SecretChecker) Check(ctx context.Context, checkCtx *checker.CheckContex
 
 	for _, ns := range checkCtx.Namespaces {
 		var secretList corev1.SecretList
-		if err := checkCtx.Client.List(ctx, &secretList, client.InNamespace(ns)); err != nil {
+		if err := checkCtx.DataSource.List(ctx, &secretList, client.InNamespace(ns)); err != nil {
 			continue
 		}
 

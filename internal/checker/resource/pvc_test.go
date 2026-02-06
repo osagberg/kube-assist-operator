@@ -23,10 +23,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	"github.com/osagberg/kube-assist-operator/internal/checker"
+	"github.com/osagberg/kube-assist-operator/internal/testutil"
 )
 
 func TestPVCChecker_Name(t *testing.T) {
@@ -37,20 +36,14 @@ func TestPVCChecker_Name(t *testing.T) {
 }
 
 func TestPVCChecker_Supports(t *testing.T) {
-	scheme := runtime.NewScheme()
-	_ = corev1.AddToScheme(scheme)
-	client := fake.NewClientBuilder().WithScheme(scheme).Build()
-
+	ds := testutil.NewDataSource(t)
 	c := NewPVCChecker()
-	if !c.Supports(context.Background(), client) {
+	if !c.Supports(context.Background(), ds) {
 		t.Error("Supports() = false, want true")
 	}
 }
 
 func TestPVCChecker_HealthyPVC(t *testing.T) {
-	scheme := runtime.NewScheme()
-	_ = corev1.AddToScheme(scheme)
-
 	storageClass := "standard"
 	pvc := &corev1.PersistentVolumeClaim{
 		ObjectMeta: metav1.ObjectMeta{
@@ -74,16 +67,8 @@ func TestPVCChecker_HealthyPVC(t *testing.T) {
 		},
 	}
 
-	client := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(pvc).
-		Build()
-
 	c := NewPVCChecker()
-	checkCtx := &checker.CheckContext{
-		Client:     client,
-		Namespaces: []string{"default"},
-	}
+	checkCtx := testutil.NewCheckContext(t, []string{"default"}, pvc)
 
 	result, err := c.Check(context.Background(), checkCtx)
 	if err != nil {
@@ -99,9 +84,6 @@ func TestPVCChecker_HealthyPVC(t *testing.T) {
 }
 
 func TestPVCChecker_PendingPVC(t *testing.T) {
-	scheme := runtime.NewScheme()
-	_ = corev1.AddToScheme(scheme)
-
 	storageClass := "nonexistent"
 	pvc := &corev1.PersistentVolumeClaim{
 		ObjectMeta: metav1.ObjectMeta{
@@ -117,16 +99,8 @@ func TestPVCChecker_PendingPVC(t *testing.T) {
 		},
 	}
 
-	client := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(pvc).
-		Build()
-
 	c := NewPVCChecker()
-	checkCtx := &checker.CheckContext{
-		Client:     client,
-		Namespaces: []string{"default"},
-	}
+	checkCtx := testutil.NewCheckContext(t, []string{"default"}, pvc)
 
 	result, err := c.Check(context.Background(), checkCtx)
 	if err != nil {
@@ -146,9 +120,6 @@ func TestPVCChecker_PendingPVC(t *testing.T) {
 }
 
 func TestPVCChecker_LostPVC(t *testing.T) {
-	scheme := runtime.NewScheme()
-	_ = corev1.AddToScheme(scheme)
-
 	pvc := &corev1.PersistentVolumeClaim{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "lost-pvc",
@@ -162,16 +133,8 @@ func TestPVCChecker_LostPVC(t *testing.T) {
 		},
 	}
 
-	client := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(pvc).
-		Build()
-
 	c := NewPVCChecker()
-	checkCtx := &checker.CheckContext{
-		Client:     client,
-		Namespaces: []string{"default"},
-	}
+	checkCtx := testutil.NewCheckContext(t, []string{"default"}, pvc)
 
 	result, err := c.Check(context.Background(), checkCtx)
 	if err != nil {
@@ -191,9 +154,6 @@ func TestPVCChecker_LostPVC(t *testing.T) {
 }
 
 func TestPVCChecker_ResizePending(t *testing.T) {
-	scheme := runtime.NewScheme()
-	_ = corev1.AddToScheme(scheme)
-
 	pvc := &corev1.PersistentVolumeClaim{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "resize-pvc",
@@ -213,16 +173,8 @@ func TestPVCChecker_ResizePending(t *testing.T) {
 		},
 	}
 
-	client := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(pvc).
-		Build()
-
 	c := NewPVCChecker()
-	checkCtx := &checker.CheckContext{
-		Client:     client,
-		Namespaces: []string{"default"},
-	}
+	checkCtx := testutil.NewCheckContext(t, []string{"default"}, pvc)
 
 	result, err := c.Check(context.Background(), checkCtx)
 	if err != nil {

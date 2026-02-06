@@ -195,10 +195,22 @@ spec:
                       type: string
                     type: array
                 type: object
+              ttlSecondsAfterFinished:
+                description: |-
+                  ttlSecondsAfterFinished limits the lifetime of a completed/failed request.
+                  After this duration, the request is automatically deleted.
+                  If unset, the request is never auto-deleted.
+                format: int32
+                minimum: 0
+                type: integer
             type: object
           status:
             description: TeamHealthRequestStatus defines the observed state of TeamHealthRequest
             properties:
+              completedAt:
+                description: completedAt is when the health check completed or failed
+                format: date-time
+                type: string
               conditions:
                 description: conditions represent the current state of the TeamHealthRequest
                 items:

@@ -1,0 +1,46 @@
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: validating-webhook-configuration
+webhooks:
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-assist-cluster-local-v1alpha1-teamhealthrequest
+  failurePolicy: Fail
+  name: vteamhealthrequest.kb.io
+  rules:
+  - apiGroups:
+    - assist.cluster.local
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - teamhealthrequests
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-assist-cluster-local-v1alpha1-troubleshootrequest
+  failurePolicy: Fail
+  name: vtroubleshootrequest.kb.io
+  rules:
+  - apiGroups:
+    - assist.cluster.local
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - troubleshootrequests
+  sideEffects: None

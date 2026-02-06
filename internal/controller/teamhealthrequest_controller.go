@@ -34,6 +34,7 @@ import (
 	"github.com/osagberg/kube-assist-operator/internal/ai"
 	"github.com/osagberg/kube-assist-operator/internal/checker"
 	"github.com/osagberg/kube-assist-operator/internal/checker/workload"
+	"github.com/osagberg/kube-assist-operator/internal/datasource"
 	"github.com/osagberg/kube-assist-operator/internal/scope"
 )
 
@@ -52,6 +53,7 @@ type TeamHealthRequestReconciler struct {
 	Registry   *checker.Registry
 	AIProvider ai.Provider
 	AIEnabled  bool
+	DataSource datasource.DataSource
 }
 
 // +kubebuilder:rbac:groups=assist.cluster.local,resources=teamhealthrequests,verbs=get;list;watch;create;update;patch;delete
@@ -87,9 +89,19 @@ func (r *TeamHealthRequestReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	// Save original for patch later
 	original := healthReq.DeepCopy()
 
-	// Skip if already completed or failed
+	// Handle TTL cleanup for completed/failed requests
 	if healthReq.Status.Phase == assistv1alpha1.TeamHealthPhaseCompleted ||
 		healthReq.Status.Phase == assistv1alpha1.TeamHealthPhaseFailed {
+		if healthReq.Spec.TTLSecondsAfterFinished != nil && healthReq.Status.CompletedAt != nil {
+			ttl := time.Duration(*healthReq.Spec.TTLSecondsAfterFinished) * time.Second
+			deadline := healthReq.Status.CompletedAt.Add(ttl)
+			remaining := time.Until(deadline)
+			if remaining <= 0 {
+				log.Info("TTL expired, deleting TeamHealthRequest", "name", healthReq.Name)
+				return ctrl.Result{}, r.Delete(ctx, healthReq)
+			}
+			return ctrl.Result{RequeueAfter: remaining}, nil
+		}
 		return ctrl.Result{}, nil
 	}
 
@@ -102,7 +114,7 @@ func (r *TeamHealthRequestReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	log.Info("Processing TeamHealthRequest", "name", healthReq.Name)
 
 	// Resolve namespaces
-	resolver := scope.NewResolver(r.Client, healthReq.Namespace)
+	resolver := scope.NewResolver(r.DataSource, healthReq.Namespace)
 	namespaces, err := resolver.ResolveNamespaces(ctx, healthReq.Spec.Scope)
 	if err != nil {
 		return r.setFailed(ctx, original, healthReq, fmt.Sprintf("Failed to resolve namespaces: %v", err))
@@ -127,7 +139,7 @@ func (r *TeamHealthRequestReconciler) Reconcile(ctx context.Context, req ctrl.Re
 
 	// Build check context
 	checkCtx := &checker.CheckContext{
-		Client:     r.Client,
+		DataSource: r.DataSource,
 		Namespaces: namespaces,
 		Config:     r.buildCheckerConfig(healthReq.Spec.Config),
 		AIProvider: r.AIProvider,
@@ -199,6 +211,7 @@ func (r *TeamHealthRequestReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	// Update completion status
 	now := metav1.Now()
 	healthReq.Status.LastCheckTime = &now
+	healthReq.Status.CompletedAt = &now
 	healthReq.Status.Phase = assistv1alpha1.TeamHealthPhaseCompleted
 
 	r.setCondition(healthReq, assistv1alpha1.TeamHealthConditionCheckersCompleted, metav1.ConditionTrue,
@@ -280,6 +293,7 @@ func (r *TeamHealthRequestReconciler) setFailed(
 	hr.Status.Summary = message
 	now := metav1.Now()
 	hr.Status.LastCheckTime = &now
+	hr.Status.CompletedAt = &now
 
 	r.setCondition(hr, assistv1alpha1.TeamHealthConditionComplete, metav1.ConditionFalse,
 		"Failed", message)

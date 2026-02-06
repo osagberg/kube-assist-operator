@@ -22,10 +22,9 @@ import (
 
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	"github.com/osagberg/kube-assist-operator/internal/checker"
+	"github.com/osagberg/kube-assist-operator/internal/testutil"
 )
 
 func TestNetworkPolicyChecker_Name(t *testing.T) {
@@ -36,29 +35,16 @@ func TestNetworkPolicyChecker_Name(t *testing.T) {
 }
 
 func TestNetworkPolicyChecker_Supports(t *testing.T) {
-	scheme := runtime.NewScheme()
-	_ = networkingv1.AddToScheme(scheme)
-	client := fake.NewClientBuilder().WithScheme(scheme).Build()
-
+	ds := testutil.NewDataSource(t)
 	c := NewNetworkPolicyChecker()
-	if !c.Supports(context.Background(), client) {
+	if !c.Supports(context.Background(), ds) {
 		t.Error("Supports() = false, want true")
 	}
 }
 
 func TestNetworkPolicyChecker_NoNetworkPolicies(t *testing.T) {
-	scheme := runtime.NewScheme()
-	_ = networkingv1.AddToScheme(scheme)
-
-	client := fake.NewClientBuilder().
-		WithScheme(scheme).
-		Build()
-
 	c := NewNetworkPolicyChecker()
-	checkCtx := &checker.CheckContext{
-		Client:     client,
-		Namespaces: []string{"default"},
-	}
+	checkCtx := testutil.NewCheckContext(t, []string{"default"})
 
 	result, err := c.Check(context.Background(), checkCtx)
 	if err != nil {
@@ -78,10 +64,6 @@ func TestNetworkPolicyChecker_NoNetworkPolicies(t *testing.T) {
 }
 
 func TestNetworkPolicyChecker_HealthyRestrictivePolicy(t *testing.T) {
-	scheme := runtime.NewScheme()
-	_ = networkingv1.AddToScheme(scheme)
-
-	// A restrictive policy that limits ingress
 	np := &networkingv1.NetworkPolicy{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "restrict-ingress",
@@ -110,16 +92,8 @@ func TestNetworkPolicyChecker_HealthyRestrictivePolicy(t *testing.T) {
 		},
 	}
 
-	client := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(np).
-		Build()
-
 	c := NewNetworkPolicyChecker()
-	checkCtx := &checker.CheckContext{
-		Client:     client,
-		Namespaces: []string{"default"},
-	}
+	checkCtx := testutil.NewCheckContext(t, []string{"default"}, np)
 
 	result, err := c.Check(context.Background(), checkCtx)
 	if err != nil {
@@ -132,10 +106,6 @@ func TestNetworkPolicyChecker_HealthyRestrictivePolicy(t *testing.T) {
 }
 
 func TestNetworkPolicyChecker_AllowAllIngress(t *testing.T) {
-	scheme := runtime.NewScheme()
-	_ = networkingv1.AddToScheme(scheme)
-
-	// An allow-all ingress policy
 	np := &networkingv1.NetworkPolicy{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "allow-all-ingress",
@@ -149,21 +119,13 @@ func TestNetworkPolicyChecker_AllowAllIngress(t *testing.T) {
 			},
 			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
 			Ingress: []networkingv1.NetworkPolicyIngressRule{
-				{}, // Empty rule = allow all
+				{},
 			},
 		},
 	}
 
-	client := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(np).
-		Build()
-
 	c := NewNetworkPolicyChecker()
-	checkCtx := &checker.CheckContext{
-		Client:     client,
-		Namespaces: []string{"default"},
-	}
+	checkCtx := testutil.NewCheckContext(t, []string{"default"}, np)
 
 	result, err := c.Check(context.Background(), checkCtx)
 	if err != nil {
@@ -183,32 +145,19 @@ func TestNetworkPolicyChecker_AllowAllIngress(t *testing.T) {
 }
 
 func TestNetworkPolicyChecker_NamespaceWidePolicy(t *testing.T) {
-	scheme := runtime.NewScheme()
-	_ = networkingv1.AddToScheme(scheme)
-
-	// A namespace-wide default deny policy
 	np := &networkingv1.NetworkPolicy{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "default-deny",
 			Namespace: "default",
 		},
 		Spec: networkingv1.NetworkPolicySpec{
-			PodSelector: metav1.LabelSelector{}, // Empty = all pods
+			PodSelector: metav1.LabelSelector{},
 			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
-			// No ingress rules = deny all
 		},
 	}
 
-	client := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(np).
-		Build()
-
 	c := NewNetworkPolicyChecker()
-	checkCtx := &checker.CheckContext{
-		Client:     client,
-		Namespaces: []string{"default"},
-	}
+	checkCtx := testutil.NewCheckContext(t, []string{"default"}, np)
 
 	result, err := c.Check(context.Background(), checkCtx)
 	if err != nil {
@@ -228,10 +177,6 @@ func TestNetworkPolicyChecker_NamespaceWidePolicy(t *testing.T) {
 }
 
 func TestNetworkPolicyChecker_MultipleNamespaces(t *testing.T) {
-	scheme := runtime.NewScheme()
-	_ = networkingv1.AddToScheme(scheme)
-
-	// One namespace with policy, one without
 	np := &networkingv1.NetworkPolicy{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "policy",
@@ -252,23 +197,14 @@ func TestNetworkPolicyChecker_MultipleNamespaces(t *testing.T) {
 		},
 	}
 
-	client := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(np).
-		Build()
-
 	c := NewNetworkPolicyChecker()
-	checkCtx := &checker.CheckContext{
-		Client:     client,
-		Namespaces: []string{"ns-with-policy", "ns-without-policy"},
-	}
+	checkCtx := testutil.NewCheckContext(t, []string{"ns-with-policy", "ns-without-policy"}, np)
 
 	result, err := c.Check(context.Background(), checkCtx)
 	if err != nil {
 		t.Fatalf("Check() error = %v", err)
 	}
 
-	// Should have 1 healthy (ns-with-policy) and 1 NoNetworkPolicy issue (ns-without-policy)
 	if result.Healthy != 1 {
 		t.Errorf("Check() healthy = %d, want 1", result.Healthy)
 	}

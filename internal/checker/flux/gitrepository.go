@@ -27,6 +27,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/osagberg/kube-assist-operator/internal/checker"
+	"github.com/osagberg/kube-assist-operator/internal/datasource"
 )
 
 const (
@@ -52,9 +53,9 @@ func (c *GitRepositoryChecker) Name() string {
 }
 
 // Supports returns true if Flux GitRepository CRD is installed
-func (c *GitRepositoryChecker) Supports(ctx context.Context, cl client.Client) bool {
+func (c *GitRepositoryChecker) Supports(ctx context.Context, ds datasource.DataSource) bool {
 	var grList sourcev1.GitRepositoryList
-	err := cl.List(ctx, &grList, client.Limit(1))
+	err := ds.List(ctx, &grList, client.Limit(1))
 	return !meta.IsNoMatchError(err)
 }
 
@@ -67,7 +68,7 @@ func (c *GitRepositoryChecker) Check(ctx context.Context, checkCtx *checker.Chec
 
 	for _, ns := range checkCtx.Namespaces {
 		var grList sourcev1.GitRepositoryList
-		if err := checkCtx.Client.List(ctx, &grList, client.InNamespace(ns)); err != nil {
+		if err := checkCtx.DataSource.List(ctx, &grList, client.InNamespace(ns)); err != nil {
 			continue
 		}
 

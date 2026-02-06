@@ -27,6 +27,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/osagberg/kube-assist-operator/internal/checker"
+	"github.com/osagberg/kube-assist-operator/internal/datasource"
 )
 
 const (
@@ -52,9 +53,9 @@ func (c *KustomizationChecker) Name() string {
 }
 
 // Supports returns true if Flux Kustomization CRD is installed
-func (c *KustomizationChecker) Supports(ctx context.Context, cl client.Client) bool {
+func (c *KustomizationChecker) Supports(ctx context.Context, ds datasource.DataSource) bool {
 	var ksList kustomizev1.KustomizationList
-	err := cl.List(ctx, &ksList, client.Limit(1))
+	err := ds.List(ctx, &ksList, client.Limit(1))
 	return !meta.IsNoMatchError(err)
 }
 
@@ -67,7 +68,7 @@ func (c *KustomizationChecker) Check(ctx context.Context, checkCtx *checker.Chec
 
 	for _, ns := range checkCtx.Namespaces {
 		var ksList kustomizev1.KustomizationList
-		if err := checkCtx.Client.List(ctx, &ksList, client.InNamespace(ns)); err != nil {
+		if err := checkCtx.DataSource.List(ctx, &ksList, client.InNamespace(ns)); err != nil {
 			continue
 		}
 

@@ -84,9 +84,19 @@ func (r *TroubleshootRequestReconciler) Reconcile(ctx context.Context, req ctrl.
 	// Save original for patch later
 	original := troubleshoot.DeepCopy()
 
-	// Skip if already completed or failed
+	// Handle TTL cleanup for completed/failed requests
 	if troubleshoot.Status.Phase == assistv1alpha1.PhaseCompleted ||
 		troubleshoot.Status.Phase == assistv1alpha1.PhaseFailed {
+		if troubleshoot.Spec.TTLSecondsAfterFinished != nil && troubleshoot.Status.CompletedAt != nil {
+			ttl := time.Duration(*troubleshoot.Spec.TTLSecondsAfterFinished) * time.Second
+			deadline := troubleshoot.Status.CompletedAt.Add(ttl)
+			remaining := time.Until(deadline)
+			if remaining <= 0 {
+				log.Info("TTL expired, deleting TroubleshootRequest", "name", troubleshoot.Name)
+				return ctrl.Result{}, r.Delete(ctx, troubleshoot)
+			}
+			return ctrl.Result{RequeueAfter: remaining}, nil
+		}
 		return ctrl.Result{}, nil
 	}
 

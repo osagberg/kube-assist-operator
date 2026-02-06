@@ -24,6 +24,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/osagberg/kube-assist-operator/internal/checker"
+	"github.com/osagberg/kube-assist-operator/internal/datasource"
 )
 
 const (
@@ -58,7 +59,7 @@ func (c *QuotaChecker) Name() string {
 }
 
 // Supports always returns true since ResourceQuotas are core resources
-func (c *QuotaChecker) Supports(ctx context.Context, cl client.Client) bool {
+func (c *QuotaChecker) Supports(ctx context.Context, ds datasource.DataSource) bool {
 	return true
 }
 
@@ -79,7 +80,7 @@ func (c *QuotaChecker) Check(ctx context.Context, checkCtx *checker.CheckContext
 
 	for _, ns := range checkCtx.Namespaces {
 		var quotaList corev1.ResourceQuotaList
-		if err := checkCtx.Client.List(ctx, &quotaList, client.InNamespace(ns)); err != nil {
+		if err := checkCtx.DataSource.List(ctx, &quotaList, client.InNamespace(ns)); err != nil {
 			continue
 		}
 

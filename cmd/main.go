@@ -48,6 +48,7 @@ import (
 	"github.com/osagberg/kube-assist-operator/internal/checker/workload"
 	"github.com/osagberg/kube-assist-operator/internal/controller"
 	"github.com/osagberg/kube-assist-operator/internal/dashboard"
+	"github.com/osagberg/kube-assist-operator/internal/datasource"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -212,6 +213,8 @@ func main() {
 		os.Exit(1)
 	}
 
+	ds := datasource.NewKubernetes(mgr.GetClient())
+
 	// Create Kubernetes clientset for pod logs access
 	clientset, err := kubernetes.NewForConfig(mgr.GetConfig())
 	if err != nil {
@@ -277,8 +280,17 @@ func main() {
 		Registry:   registry,
 		AIProvider: aiManager,
 		AIEnabled:  enableAI,
+		DataSource: ds,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "TeamHealthRequest")
+		os.Exit(1)
+	}
+	if err := assistv1alpha1.SetupTroubleshootRequestWebhookWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create webhook", "webhook", "TroubleshootRequest")
+		os.Exit(1)
+	}
+	if err := assistv1alpha1.SetupTeamHealthRequestWebhookWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create webhook", "webhook", "TeamHealthRequest")
 		os.Exit(1)
 	}
 	// +kubebuilder:scaffold:builder
@@ -297,7 +309,7 @@ func main() {
 
 	// Start dashboard server if enabled
 	if enableDashboard {
-		dashboardServer := dashboard.NewServer(mgr.GetClient(), registry, dashboardAddr).
+		dashboardServer := dashboard.NewServer(ds, registry, dashboardAddr).
 			WithAI(aiManager, enableAI)
 		go func() {
 			setupLog.Info("starting dashboard server", "addr", dashboardAddr)

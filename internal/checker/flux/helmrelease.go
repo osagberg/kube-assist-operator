@@ -27,6 +27,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/osagberg/kube-assist-operator/internal/checker"
+	"github.com/osagberg/kube-assist-operator/internal/datasource"
 )
 
 const (
@@ -55,10 +56,10 @@ func (c *HelmReleaseChecker) Name() string {
 }
 
 // Supports returns true if Flux HelmRelease CRD is installed
-func (c *HelmReleaseChecker) Supports(ctx context.Context, cl client.Client) bool {
+func (c *HelmReleaseChecker) Supports(ctx context.Context, ds datasource.DataSource) bool {
 	// Try to list HelmReleases - if it fails with no match error, CRD not installed
 	var hrList helmv2.HelmReleaseList
-	err := cl.List(ctx, &hrList, client.Limit(1))
+	err := ds.List(ctx, &hrList, client.Limit(1))
 	return !meta.IsNoMatchError(err)
 }
 
@@ -71,7 +72,7 @@ func (c *HelmReleaseChecker) Check(ctx context.Context, checkCtx *checker.CheckC
 
 	for _, ns := range checkCtx.Namespaces {
 		var hrList helmv2.HelmReleaseList
-		if err := checkCtx.Client.List(ctx, &hrList, client.InNamespace(ns)); err != nil {
+		if err := checkCtx.DataSource.List(ctx, &hrList, client.InNamespace(ns)); err != nil {
 			// Skip if can't list - might be permission issue
 			continue
 		}

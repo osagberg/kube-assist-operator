@@ -27,11 +27,11 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/osagberg/kube-assist-operator/internal/ai"
 	"github.com/osagberg/kube-assist-operator/internal/checker"
+	"github.com/osagberg/kube-assist-operator/internal/datasource"
 )
 
 var log = logf.Log.WithName("dashboard")
@@ -90,7 +90,7 @@ type AISettingsResponse struct {
 
 // Server is the dashboard web server
 type Server struct {
-	client     client.Client
+	client     datasource.DataSource
 	registry   *checker.Registry
 	addr       string
 	aiProvider ai.Provider
@@ -104,9 +104,9 @@ type Server struct {
 }
 
 // NewServer creates a new dashboard server
-func NewServer(cl client.Client, registry *checker.Registry, addr string) *Server {
+func NewServer(ds datasource.DataSource, registry *checker.Registry, addr string) *Server {
 	return &Server{
-		client:   cl,
+		client:   ds,
 		registry: registry,
 		addr:     addr,
 		aiConfig: ai.DefaultConfig(),
@@ -147,7 +147,11 @@ func (s *Server) Start(ctx context.Context) error {
 
 	s.running = true
 
-	// Start background health checker
+	// Run initial health check synchronously so the first HTTP request
+	// never sees {"status": "initializing"}.
+	s.runCheck(ctx)
+
+	// Start background health checker (skips initial check since we just ran it)
 	go s.runHealthChecker(ctx)
 
 	log.Info("Starting dashboard server", "addr", s.addr)
@@ -171,13 +175,11 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 }
 
-// runHealthChecker periodically runs health checks
+// runHealthChecker periodically runs health checks.
+// The first check is already performed synchronously in Start().
 func (s *Server) runHealthChecker(ctx context.Context) {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
-
-	// Run initial check
-	s.runCheck(ctx)
 
 	for {
 		select {
@@ -206,7 +208,7 @@ func (s *Server) runCheck(ctx context.Context) {
 	s.mu.RUnlock()
 
 	checkCtx := &checker.CheckContext{
-		Client:     s.client,
+		DataSource: s.client,
 		Namespaces: namespaces,
 		AIProvider: provider,
 		AIEnabled:  enabled,

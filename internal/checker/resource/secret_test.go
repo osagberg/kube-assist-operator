@@ -29,10 +29,9 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	"github.com/osagberg/kube-assist-operator/internal/checker"
+	"github.com/osagberg/kube-assist-operator/internal/testutil"
 )
 
 // generateTestCert creates a test certificate with specified validity period
@@ -69,20 +68,14 @@ func TestSecretChecker_Name(t *testing.T) {
 }
 
 func TestSecretChecker_Supports(t *testing.T) {
-	scheme := runtime.NewScheme()
-	_ = corev1.AddToScheme(scheme)
-	client := fake.NewClientBuilder().WithScheme(scheme).Build()
-
+	ds := testutil.NewDataSource(t)
 	c := NewSecretChecker()
-	if !c.Supports(context.Background(), client) {
+	if !c.Supports(context.Background(), ds) {
 		t.Error("Supports() = false, want true")
 	}
 }
 
 func TestSecretChecker_HealthySecret(t *testing.T) {
-	scheme := runtime.NewScheme()
-	_ = corev1.AddToScheme(scheme)
-
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "healthy-secret",
@@ -94,16 +87,8 @@ func TestSecretChecker_HealthySecret(t *testing.T) {
 		},
 	}
 
-	client := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(secret).
-		Build()
-
 	c := NewSecretChecker()
-	checkCtx := &checker.CheckContext{
-		Client:     client,
-		Namespaces: []string{"default"},
-	}
+	checkCtx := testutil.NewCheckContext(t, []string{"default"}, secret)
 
 	result, err := c.Check(context.Background(), checkCtx)
 	if err != nil {
@@ -119,9 +104,6 @@ func TestSecretChecker_HealthySecret(t *testing.T) {
 }
 
 func TestSecretChecker_EmptySecret(t *testing.T) {
-	scheme := runtime.NewScheme()
-	_ = corev1.AddToScheme(scheme)
-
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "empty-secret",
@@ -131,16 +113,8 @@ func TestSecretChecker_EmptySecret(t *testing.T) {
 		Data: map[string][]byte{},
 	}
 
-	client := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(secret).
-		Build()
-
 	c := NewSecretChecker()
-	checkCtx := &checker.CheckContext{
-		Client:     client,
-		Namespaces: []string{"default"},
-	}
+	checkCtx := testutil.NewCheckContext(t, []string{"default"}, secret)
 
 	result, err := c.Check(context.Background(), checkCtx)
 	if err != nil {
@@ -160,10 +134,6 @@ func TestSecretChecker_EmptySecret(t *testing.T) {
 }
 
 func TestSecretChecker_ValidTLSCert(t *testing.T) {
-	scheme := runtime.NewScheme()
-	_ = corev1.AddToScheme(scheme)
-
-	// Create a valid cert that expires in 90 days
 	notBefore := time.Now().Add(-24 * time.Hour)
 	notAfter := time.Now().AddDate(0, 0, 90)
 	certPEM, err := generateTestCert(notBefore, notAfter)
@@ -183,16 +153,8 @@ func TestSecretChecker_ValidTLSCert(t *testing.T) {
 		},
 	}
 
-	client := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(secret).
-		Build()
-
 	c := NewSecretChecker()
-	checkCtx := &checker.CheckContext{
-		Client:     client,
-		Namespaces: []string{"default"},
-	}
+	checkCtx := testutil.NewCheckContext(t, []string{"default"}, secret)
 
 	result, err := c.Check(context.Background(), checkCtx)
 	if err != nil {
@@ -208,12 +170,8 @@ func TestSecretChecker_ValidTLSCert(t *testing.T) {
 }
 
 func TestSecretChecker_ExpiredCert(t *testing.T) {
-	scheme := runtime.NewScheme()
-	_ = corev1.AddToScheme(scheme)
-
-	// Create an expired cert
 	notBefore := time.Now().AddDate(0, 0, -60)
-	notAfter := time.Now().AddDate(0, 0, -1) // Expired yesterday
+	notAfter := time.Now().AddDate(0, 0, -1)
 	certPEM, err := generateTestCert(notBefore, notAfter)
 	if err != nil {
 		t.Fatalf("Failed to generate test cert: %v", err)
@@ -231,16 +189,8 @@ func TestSecretChecker_ExpiredCert(t *testing.T) {
 		},
 	}
 
-	client := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(secret).
-		Build()
-
 	c := NewSecretChecker()
-	checkCtx := &checker.CheckContext{
-		Client:     client,
-		Namespaces: []string{"default"},
-	}
+	checkCtx := testutil.NewCheckContext(t, []string{"default"}, secret)
 
 	result, err := c.Check(context.Background(), checkCtx)
 	if err != nil {
@@ -260,10 +210,6 @@ func TestSecretChecker_ExpiredCert(t *testing.T) {
 }
 
 func TestSecretChecker_CertExpiringSoon(t *testing.T) {
-	scheme := runtime.NewScheme()
-	_ = corev1.AddToScheme(scheme)
-
-	// Create a cert expiring in 10 days (within 30 day warning threshold)
 	notBefore := time.Now().Add(-24 * time.Hour)
 	notAfter := time.Now().AddDate(0, 0, 10)
 	certPEM, err := generateTestCert(notBefore, notAfter)
@@ -283,16 +229,8 @@ func TestSecretChecker_CertExpiringSoon(t *testing.T) {
 		},
 	}
 
-	client := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(secret).
-		Build()
-
 	c := NewSecretChecker()
-	checkCtx := &checker.CheckContext{
-		Client:     client,
-		Namespaces: []string{"default"},
-	}
+	checkCtx := testutil.NewCheckContext(t, []string{"default"}, secret)
 
 	result, err := c.Check(context.Background(), checkCtx)
 	if err != nil {
@@ -312,11 +250,7 @@ func TestSecretChecker_CertExpiringSoon(t *testing.T) {
 }
 
 func TestSecretChecker_CertNotYetValid(t *testing.T) {
-	scheme := runtime.NewScheme()
-	_ = corev1.AddToScheme(scheme)
-
-	// Create a cert that's not yet valid
-	notBefore := time.Now().AddDate(0, 0, 7) // Valid starting in 7 days
+	notBefore := time.Now().AddDate(0, 0, 7)
 	notAfter := time.Now().AddDate(1, 0, 0)
 	certPEM, err := generateTestCert(notBefore, notAfter)
 	if err != nil {
@@ -335,16 +269,8 @@ func TestSecretChecker_CertNotYetValid(t *testing.T) {
 		},
 	}
 
-	client := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(secret).
-		Build()
-
 	c := NewSecretChecker()
-	checkCtx := &checker.CheckContext{
-		Client:     client,
-		Namespaces: []string{"default"},
-	}
+	checkCtx := testutil.NewCheckContext(t, []string{"default"}, secret)
 
 	result, err := c.Check(context.Background(), checkCtx)
 	if err != nil {
@@ -364,9 +290,6 @@ func TestSecretChecker_CertNotYetValid(t *testing.T) {
 }
 
 func TestSecretChecker_InvalidCertPEM(t *testing.T) {
-	scheme := runtime.NewScheme()
-	_ = corev1.AddToScheme(scheme)
-
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "invalid-tls",
@@ -379,16 +302,8 @@ func TestSecretChecker_InvalidCertPEM(t *testing.T) {
 		},
 	}
 
-	client := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(secret).
-		Build()
-
 	c := NewSecretChecker()
-	checkCtx := &checker.CheckContext{
-		Client:     client,
-		Namespaces: []string{"default"},
-	}
+	checkCtx := testutil.NewCheckContext(t, []string{"default"}, secret)
 
 	result, err := c.Check(context.Background(), checkCtx)
 	if err != nil {
@@ -415,10 +330,6 @@ func TestSecretChecker_WithCertExpiryWarningDays(t *testing.T) {
 }
 
 func TestSecretChecker_SkipsServiceAccountTokens(t *testing.T) {
-	scheme := runtime.NewScheme()
-	_ = corev1.AddToScheme(scheme)
-
-	// Empty service account token should not report as EmptySecret
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "sa-token",
@@ -428,16 +339,8 @@ func TestSecretChecker_SkipsServiceAccountTokens(t *testing.T) {
 		Data: map[string][]byte{},
 	}
 
-	client := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(secret).
-		Build()
-
 	c := NewSecretChecker()
-	checkCtx := &checker.CheckContext{
-		Client:     client,
-		Namespaces: []string{"default"},
-	}
+	checkCtx := testutil.NewCheckContext(t, []string{"default"}, secret)
 
 	result, err := c.Check(context.Background(), checkCtx)
 	if err != nil {

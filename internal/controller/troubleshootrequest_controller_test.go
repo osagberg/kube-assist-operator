@@ -19,15 +19,18 @@ package controller
 import (
 	"context"
 	"fmt"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	assistv1alpha1 "github.com/osagberg/kube-assist-operator/api/v1alpha1"
@@ -1093,6 +1096,128 @@ var _ = Describe("TroubleshootRequest Controller", func() {
 			summary := r.generateSummary([]corev1.Pod{{}}, issues)
 			Expect(summary).To(ContainSubstring("2 warning"))
 			Expect(summary).NotTo(ContainSubstring("critical"))
+		})
+	})
+
+	Context("TTL cleanup for completed requests", func() {
+		const resourceName = "ttl-completed-tr"
+		ctx := context.Background()
+		nn := types.NamespacedName{Name: resourceName, Namespace: "default"}
+
+		AfterEach(func() {
+			tr := &assistv1alpha1.TroubleshootRequest{}
+			if err := k8sClient.Get(ctx, nn, tr); err == nil {
+				Expect(k8sClient.Delete(ctx, tr)).To(Succeed())
+			}
+		})
+
+		It("should delete a completed request when TTL has expired", func() {
+			tr := &assistv1alpha1.TroubleshootRequest{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      resourceName,
+					Namespace: "default",
+				},
+				Spec: assistv1alpha1.TroubleshootRequestSpec{
+					Target: assistv1alpha1.TargetRef{
+						Kind: "Deployment",
+						Name: "some-deploy",
+					},
+					TTLSecondsAfterFinished: ptr.To(int32(0)),
+				},
+			}
+			Expect(k8sClient.Create(ctx, tr)).To(Succeed())
+
+			// Set status to Completed with a past CompletedAt
+			fetched := &assistv1alpha1.TroubleshootRequest{}
+			Expect(k8sClient.Get(ctx, nn, fetched)).To(Succeed())
+			fetched.Status.Phase = assistv1alpha1.PhaseCompleted
+			pastTime := metav1.NewTime(time.Now().Add(-1 * time.Minute))
+			fetched.Status.CompletedAt = &pastTime
+			Expect(k8sClient.Status().Update(ctx, fetched)).To(Succeed())
+
+			reconciler := &TroubleshootRequestReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Resource should be deleted
+			err = k8sClient.Get(ctx, nn, &assistv1alpha1.TroubleshootRequest{})
+			Expect(apierrors.IsNotFound(err)).To(BeTrue(), "expected resource to be deleted by TTL")
+		})
+
+		It("should requeue a completed request when TTL has not expired", func() {
+			tr := &assistv1alpha1.TroubleshootRequest{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      resourceName,
+					Namespace: "default",
+				},
+				Spec: assistv1alpha1.TroubleshootRequestSpec{
+					Target: assistv1alpha1.TargetRef{
+						Kind: "Deployment",
+						Name: "some-deploy",
+					},
+					TTLSecondsAfterFinished: ptr.To(int32(3600)),
+				},
+			}
+			Expect(k8sClient.Create(ctx, tr)).To(Succeed())
+
+			fetched := &assistv1alpha1.TroubleshootRequest{}
+			Expect(k8sClient.Get(ctx, nn, fetched)).To(Succeed())
+			fetched.Status.Phase = assistv1alpha1.PhaseCompleted
+			now := metav1.Now()
+			fetched.Status.CompletedAt = &now
+			Expect(k8sClient.Status().Update(ctx, fetched)).To(Succeed())
+
+			reconciler := &TroubleshootRequestReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+
+			result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(BeNumerically(">", 0), "should requeue for later TTL check")
+
+			// Resource should still exist
+			Expect(k8sClient.Get(ctx, nn, &assistv1alpha1.TroubleshootRequest{})).To(Succeed())
+		})
+
+		It("should not delete a completed request without TTL", func() {
+			tr := &assistv1alpha1.TroubleshootRequest{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      resourceName,
+					Namespace: "default",
+				},
+				Spec: assistv1alpha1.TroubleshootRequestSpec{
+					Target: assistv1alpha1.TargetRef{
+						Kind: "Deployment",
+						Name: "some-deploy",
+					},
+					// No TTLSecondsAfterFinished
+				},
+			}
+			Expect(k8sClient.Create(ctx, tr)).To(Succeed())
+
+			fetched := &assistv1alpha1.TroubleshootRequest{}
+			Expect(k8sClient.Get(ctx, nn, fetched)).To(Succeed())
+			fetched.Status.Phase = assistv1alpha1.PhaseCompleted
+			now := metav1.Now()
+			fetched.Status.CompletedAt = &now
+			Expect(k8sClient.Status().Update(ctx, fetched)).To(Succeed())
+
+			reconciler := &TroubleshootRequestReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+
+			result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal(reconcile.Result{}))
+
+			// Resource should still exist
+			Expect(k8sClient.Get(ctx, nn, &assistv1alpha1.TroubleshootRequest{})).To(Succeed())
 		})
 	})
 

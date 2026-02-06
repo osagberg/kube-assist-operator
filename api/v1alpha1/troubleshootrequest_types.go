@@ -66,6 +66,13 @@ type TroubleshootRequestSpec struct {
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=10000
 	TailLines int32 `json:"tailLines,omitempty"`
+
+	// ttlSecondsAfterFinished limits the lifetime of a completed/failed request.
+	// After this duration, the request is automatically deleted.
+	// If unset, the request is never auto-deleted.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	TTLSecondsAfterFinished *int32 `json:"ttlSecondsAfterFinished,omitempty"`
 }
 
 // TroubleshootPhase represents the current phase of the request

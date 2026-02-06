@@ -24,10 +24,9 @@ import (
 	fluxmeta "github.com/fluxcd/pkg/apis/meta"
 	sourcev1 "github.com/fluxcd/source-controller/api/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	"github.com/osagberg/kube-assist-operator/internal/checker"
+	"github.com/osagberg/kube-assist-operator/internal/testutil"
 )
 
 func TestGitRepositoryChecker_Name(t *testing.T) {
@@ -38,9 +37,6 @@ func TestGitRepositoryChecker_Name(t *testing.T) {
 }
 
 func TestGitRepositoryChecker_CheckHealthyRepository(t *testing.T) {
-	scheme := runtime.NewScheme()
-	_ = sourcev1.AddToScheme(scheme)
-
 	gr := &sourcev1.GitRepository{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "healthy-repo",
@@ -66,16 +62,8 @@ func TestGitRepositoryChecker_CheckHealthyRepository(t *testing.T) {
 		},
 	}
 
-	client := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(gr).
-		Build()
-
 	c := NewGitRepositoryChecker()
-	checkCtx := &checker.CheckContext{
-		Client:     client,
-		Namespaces: []string{"flux-system"},
-	}
+	checkCtx := testutil.NewCheckContext(t, []string{"flux-system"}, gr)
 
 	result, err := c.Check(context.Background(), checkCtx)
 	if err != nil {
@@ -91,9 +79,6 @@ func TestGitRepositoryChecker_CheckHealthyRepository(t *testing.T) {
 }
 
 func TestGitRepositoryChecker_CheckSuspendedRepository(t *testing.T) {
-	scheme := runtime.NewScheme()
-	_ = sourcev1.AddToScheme(scheme)
-
 	gr := &sourcev1.GitRepository{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "suspended-repo",
@@ -105,16 +90,8 @@ func TestGitRepositoryChecker_CheckSuspendedRepository(t *testing.T) {
 		},
 	}
 
-	client := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(gr).
-		Build()
-
 	c := NewGitRepositoryChecker()
-	checkCtx := &checker.CheckContext{
-		Client:     client,
-		Namespaces: []string{"flux-system"},
-	}
+	checkCtx := testutil.NewCheckContext(t, []string{"flux-system"}, gr)
 
 	result, err := c.Check(context.Background(), checkCtx)
 	if err != nil {
@@ -134,9 +111,6 @@ func TestGitRepositoryChecker_CheckSuspendedRepository(t *testing.T) {
 }
 
 func TestGitRepositoryChecker_CheckAuthenticationFailed(t *testing.T) {
-	scheme := runtime.NewScheme()
-	_ = sourcev1.AddToScheme(scheme)
-
 	gr := &sourcev1.GitRepository{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "auth-failed-repo",
@@ -159,16 +133,8 @@ func TestGitRepositoryChecker_CheckAuthenticationFailed(t *testing.T) {
 		},
 	}
 
-	client := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(gr).
-		Build()
-
 	c := NewGitRepositoryChecker()
-	checkCtx := &checker.CheckContext{
-		Client:     client,
-		Namespaces: []string{"flux-system"},
-	}
+	checkCtx := testutil.NewCheckContext(t, []string{"flux-system"}, gr)
 
 	result, err := c.Check(context.Background(), checkCtx)
 	if err != nil {
@@ -188,9 +154,6 @@ func TestGitRepositoryChecker_CheckAuthenticationFailed(t *testing.T) {
 }
 
 func TestGitRepositoryChecker_CheckCloneFailed(t *testing.T) {
-	scheme := runtime.NewScheme()
-	_ = sourcev1.AddToScheme(scheme)
-
 	gr := &sourcev1.GitRepository{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "clone-failed-repo",
@@ -213,16 +176,8 @@ func TestGitRepositoryChecker_CheckCloneFailed(t *testing.T) {
 		},
 	}
 
-	client := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(gr).
-		Build()
-
 	c := NewGitRepositoryChecker()
-	checkCtx := &checker.CheckContext{
-		Client:     client,
-		Namespaces: []string{"flux-system"},
-	}
+	checkCtx := testutil.NewCheckContext(t, []string{"flux-system"}, gr)
 
 	result, err := c.Check(context.Background(), checkCtx)
 	if err != nil {
@@ -242,9 +197,6 @@ func TestGitRepositoryChecker_CheckCloneFailed(t *testing.T) {
 }
 
 func TestGitRepositoryChecker_CheckStaleReconciliation(t *testing.T) {
-	scheme := runtime.NewScheme()
-	_ = sourcev1.AddToScheme(scheme)
-
 	staleTime := metav1.NewTime(time.Now().Add(-2 * time.Hour))
 
 	gr := &sourcev1.GitRepository{
@@ -271,16 +223,8 @@ func TestGitRepositoryChecker_CheckStaleReconciliation(t *testing.T) {
 		},
 	}
 
-	client := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(gr).
-		Build()
-
 	c := NewGitRepositoryChecker()
-	checkCtx := &checker.CheckContext{
-		Client:     client,
-		Namespaces: []string{"flux-system"},
-	}
+	checkCtx := testutil.NewCheckContext(t, []string{"flux-system"}, gr)
 
 	result, err := c.Check(context.Background(), checkCtx)
 	if err != nil {
@@ -300,9 +244,6 @@ func TestGitRepositoryChecker_CheckStaleReconciliation(t *testing.T) {
 }
 
 func TestGitRepositoryChecker_CheckNoAuthForPrivateRepo(t *testing.T) {
-	scheme := runtime.NewScheme()
-	_ = sourcev1.AddToScheme(scheme)
-
 	gr := &sourcev1.GitRepository{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "private-no-auth",
@@ -311,7 +252,7 @@ func TestGitRepositoryChecker_CheckNoAuthForPrivateRepo(t *testing.T) {
 		Spec: sourcev1.GitRepositorySpec{
 			URL:       "git@github.com:example/private-repo.git",
 			Suspend:   false,
-			SecretRef: nil, // No secret configured
+			SecretRef: nil,
 		},
 		Status: sourcev1.GitRepositoryStatus{
 			Conditions: []metav1.Condition{
@@ -328,16 +269,8 @@ func TestGitRepositoryChecker_CheckNoAuthForPrivateRepo(t *testing.T) {
 		},
 	}
 
-	client := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(gr).
-		Build()
-
 	c := NewGitRepositoryChecker()
-	checkCtx := &checker.CheckContext{
-		Client:     client,
-		Namespaces: []string{"flux-system"},
-	}
+	checkCtx := testutil.NewCheckContext(t, []string{"flux-system"}, gr)
 
 	result, err := c.Check(context.Background(), checkCtx)
 	if err != nil {

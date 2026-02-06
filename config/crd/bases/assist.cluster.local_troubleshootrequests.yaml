@@ -104,6 +104,14 @@ spec:
                 required:
                 - name
                 type: object
+              ttlSecondsAfterFinished:
+                description: |-
+                  ttlSecondsAfterFinished limits the lifetime of a completed/failed request.
+                  After this duration, the request is automatically deleted.
+                  If unset, the request is never auto-deleted.
+                format: int32
+                minimum: 0
+                type: integer
             required:
             - target
             type: object

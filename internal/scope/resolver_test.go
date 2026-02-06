@@ -26,6 +26,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	assistv1alpha1 "github.com/osagberg/kube-assist-operator/api/v1alpha1"
+	"github.com/osagberg/kube-assist-operator/internal/datasource"
 )
 
 func TestResolver_ResolveNamespaces_ExplicitList(t *testing.T) {
@@ -42,7 +43,7 @@ func TestResolver_ResolveNamespaces_ExplicitList(t *testing.T) {
 		WithObjects(ns1, ns2, ns3).
 		Build()
 
-	resolver := NewResolver(client, "default")
+	resolver := NewResolver(datasource.NewKubernetes(client), "default")
 
 	scope := assistv1alpha1.ScopeConfig{
 		Namespaces: []string{"ns1", "ns2", "nonexistent"},
@@ -93,7 +94,7 @@ func TestResolver_ResolveNamespaces_LabelSelector(t *testing.T) {
 		WithObjects(ns1, ns2, ns3).
 		Build()
 
-	resolver := NewResolver(client, "default")
+	resolver := NewResolver(datasource.NewKubernetes(client), "default")
 
 	scope := assistv1alpha1.ScopeConfig{
 		NamespaceSelector: &metav1.LabelSelector{
@@ -120,7 +121,7 @@ func TestResolver_ResolveNamespaces_CurrentNamespaceOnly(t *testing.T) {
 		WithScheme(scheme).
 		Build()
 
-	resolver := NewResolver(client, "my-namespace")
+	resolver := NewResolver(datasource.NewKubernetes(client), "my-namespace")
 
 	scope := assistv1alpha1.ScopeConfig{
 		CurrentNamespaceOnly: true,
@@ -144,7 +145,7 @@ func TestResolver_ResolveNamespaces_EmptyScope(t *testing.T) {
 		WithScheme(scheme).
 		Build()
 
-	resolver := NewResolver(client, "default-ns")
+	resolver := NewResolver(datasource.NewKubernetes(client), "default-ns")
 
 	scope := assistv1alpha1.ScopeConfig{}
 
@@ -183,7 +184,7 @@ func TestResolver_ResolveNamespaces_SkipsTerminating(t *testing.T) {
 		WithObjects(ns1, ns2).
 		Build()
 
-	resolver := NewResolver(client, "default")
+	resolver := NewResolver(datasource.NewKubernetes(client), "default")
 
 	scope := assistv1alpha1.ScopeConfig{
 		NamespaceSelector: &metav1.LabelSelector{
@@ -268,7 +269,7 @@ func TestResolver_Priority(t *testing.T) {
 		WithObjects(ns1, ns2).
 		Build()
 
-	resolver := NewResolver(client, "default")
+	resolver := NewResolver(datasource.NewKubernetes(client), "default")
 
 	// Test that explicit list takes priority over selector
 	scope := assistv1alpha1.ScopeConfig{

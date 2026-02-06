@@ -23,10 +23,9 @@ import (
 
 	helmv2 "github.com/fluxcd/helm-controller/api/v2"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	"github.com/osagberg/kube-assist-operator/internal/checker"
+	"github.com/osagberg/kube-assist-operator/internal/testutil"
 )
 
 func TestHelmReleaseChecker_Name(t *testing.T) {
@@ -37,9 +36,6 @@ func TestHelmReleaseChecker_Name(t *testing.T) {
 }
 
 func TestHelmReleaseChecker_CheckHealthyRelease(t *testing.T) {
-	scheme := runtime.NewScheme()
-	_ = helmv2.AddToScheme(scheme)
-
 	hr := &helmv2.HelmRelease{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "healthy-release",
@@ -61,16 +57,8 @@ func TestHelmReleaseChecker_CheckHealthyRelease(t *testing.T) {
 		},
 	}
 
-	client := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(hr).
-		Build()
-
 	c := NewHelmReleaseChecker()
-	checkCtx := &checker.CheckContext{
-		Client:     client,
-		Namespaces: []string{"default"},
-	}
+	checkCtx := testutil.NewCheckContext(t, []string{"default"}, hr)
 
 	result, err := c.Check(context.Background(), checkCtx)
 	if err != nil {
@@ -86,9 +74,6 @@ func TestHelmReleaseChecker_CheckHealthyRelease(t *testing.T) {
 }
 
 func TestHelmReleaseChecker_CheckSuspendedRelease(t *testing.T) {
-	scheme := runtime.NewScheme()
-	_ = helmv2.AddToScheme(scheme)
-
 	hr := &helmv2.HelmRelease{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "suspended-release",
@@ -99,16 +84,8 @@ func TestHelmReleaseChecker_CheckSuspendedRelease(t *testing.T) {
 		},
 	}
 
-	client := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(hr).
-		Build()
-
 	c := NewHelmReleaseChecker()
-	checkCtx := &checker.CheckContext{
-		Client:     client,
-		Namespaces: []string{"default"},
-	}
+	checkCtx := testutil.NewCheckContext(t, []string{"default"}, hr)
 
 	result, err := c.Check(context.Background(), checkCtx)
 	if err != nil {
@@ -133,9 +110,6 @@ func TestHelmReleaseChecker_CheckSuspendedRelease(t *testing.T) {
 }
 
 func TestHelmReleaseChecker_CheckFailedRelease(t *testing.T) {
-	scheme := runtime.NewScheme()
-	_ = helmv2.AddToScheme(scheme)
-
 	hr := &helmv2.HelmRelease{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "failed-release",
@@ -157,16 +131,8 @@ func TestHelmReleaseChecker_CheckFailedRelease(t *testing.T) {
 		},
 	}
 
-	client := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(hr).
-		Build()
-
 	c := NewHelmReleaseChecker()
-	checkCtx := &checker.CheckContext{
-		Client:     client,
-		Namespaces: []string{"default"},
-	}
+	checkCtx := testutil.NewCheckContext(t, []string{"default"}, hr)
 
 	result, err := c.Check(context.Background(), checkCtx)
 	if err != nil {
@@ -191,10 +157,6 @@ func TestHelmReleaseChecker_CheckFailedRelease(t *testing.T) {
 }
 
 func TestHelmReleaseChecker_CheckStaleReconciliation(t *testing.T) {
-	scheme := runtime.NewScheme()
-	_ = helmv2.AddToScheme(scheme)
-
-	// Create a release with stale reconciliation (over 1 hour old)
 	staleTime := metav1.NewTime(time.Now().Add(-2 * time.Hour))
 
 	hr := &helmv2.HelmRelease{
@@ -218,16 +180,8 @@ func TestHelmReleaseChecker_CheckStaleReconciliation(t *testing.T) {
 		},
 	}
 
-	client := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(hr).
-		Build()
-
 	c := NewHelmReleaseChecker()
-	checkCtx := &checker.CheckContext{
-		Client:     client,
-		Namespaces: []string{"default"},
-	}
+	checkCtx := testutil.NewCheckContext(t, []string{"default"}, hr)
 
 	result, err := c.Check(context.Background(), checkCtx)
 	if err != nil {
@@ -247,9 +201,6 @@ func TestHelmReleaseChecker_CheckStaleReconciliation(t *testing.T) {
 }
 
 func TestHelmReleaseChecker_MultipleNamespaces(t *testing.T) {
-	scheme := runtime.NewScheme()
-	_ = helmv2.AddToScheme(scheme)
-
 	hr1 := &helmv2.HelmRelease{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "release1",
@@ -275,20 +226,12 @@ func TestHelmReleaseChecker_MultipleNamespaces(t *testing.T) {
 			Namespace: "ns2",
 		},
 		Spec: helmv2.HelmReleaseSpec{
-			Suspend: true, // This one is suspended
+			Suspend: true,
 		},
 	}
 
-	client := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(hr1, hr2).
-		Build()
-
 	c := NewHelmReleaseChecker()
-	checkCtx := &checker.CheckContext{
-		Client:     client,
-		Namespaces: []string{"ns1", "ns2"},
-	}
+	checkCtx := testutil.NewCheckContext(t, []string{"ns1", "ns2"}, hr1, hr2)
 
 	result, err := c.Check(context.Background(), checkCtx)
 	if err != nil {
@@ -325,7 +268,6 @@ func TestGetSuggestionForHelmReason(t *testing.T) {
 			if got == "" {
 				t.Error("getSuggestionForHelmReason() returned empty string")
 			}
-			// Just verify we get a non-empty suggestion
 			if len(got) < 10 {
 				t.Errorf("getSuggestionForHelmReason() returned too short suggestion: %s", got)
 			}
@@ -339,7 +281,6 @@ func TestFindCondition(t *testing.T) {
 		{Type: "Reconciling", Status: metav1.ConditionFalse},
 	}
 
-	// Test found
 	cond := findCondition(conditions, "Ready")
 	if cond == nil {
 		t.Fatal("findCondition() returned nil for existing condition")
@@ -348,7 +289,6 @@ func TestFindCondition(t *testing.T) {
 		t.Errorf("findCondition() returned wrong condition type: %s", cond.Type)
 	}
 
-	// Test not found
 	cond = findCondition(conditions, "NonExistent")
 	if cond != nil {
 		t.Error("findCondition() should return nil for non-existent condition")

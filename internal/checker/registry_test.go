@@ -21,7 +21,7 @@ import (
 	"errors"
 	"testing"
 
-	"sigs.k8s.io/controller-runtime/pkg/client"
+	"github.com/osagberg/kube-assist-operator/internal/datasource"
 )
 
 // mockChecker is a simple checker for testing
@@ -36,7 +36,7 @@ func (m *mockChecker) Name() string {
 	return m.name
 }
 
-func (m *mockChecker) Supports(ctx context.Context, cl client.Client) bool {
+func (m *mockChecker) Supports(ctx context.Context, ds datasource.DataSource) bool {
 	return m.supported
 }
 

@@ -25,6 +25,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/osagberg/kube-assist-operator/internal/checker"
+	"github.com/osagberg/kube-assist-operator/internal/datasource"
 )
 
 const (
@@ -46,7 +47,7 @@ func (c *NetworkPolicyChecker) Name() string {
 }
 
 // Supports always returns true since NetworkPolicies are networking resources
-func (c *NetworkPolicyChecker) Supports(ctx context.Context, cl client.Client) bool {
+func (c *NetworkPolicyChecker) Supports(ctx context.Context, ds datasource.DataSource) bool {
 	return true
 }
 
@@ -59,7 +60,7 @@ func (c *NetworkPolicyChecker) Check(ctx context.Context, checkCtx *checker.Chec
 
 	for _, ns := range checkCtx.Namespaces {
 		var npList networkingv1.NetworkPolicyList
-		if err := checkCtx.Client.List(ctx, &npList, client.InNamespace(ns)); err != nil {
+		if err := checkCtx.DataSource.List(ctx, &npList, client.InNamespace(ns)); err != nil {
 			continue
 		}
 

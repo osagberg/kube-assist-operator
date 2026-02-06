@@ -23,10 +23,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	"github.com/osagberg/kube-assist-operator/internal/checker"
+	"github.com/osagberg/kube-assist-operator/internal/testutil"
 )
 
 func TestQuotaChecker_Name(t *testing.T) {
@@ -37,20 +36,14 @@ func TestQuotaChecker_Name(t *testing.T) {
 }
 
 func TestQuotaChecker_Supports(t *testing.T) {
-	scheme := runtime.NewScheme()
-	_ = corev1.AddToScheme(scheme)
-	client := fake.NewClientBuilder().WithScheme(scheme).Build()
-
+	ds := testutil.NewDataSource(t)
 	c := NewQuotaChecker()
-	if !c.Supports(context.Background(), client) {
+	if !c.Supports(context.Background(), ds) {
 		t.Error("Supports() = false, want true")
 	}
 }
 
 func TestQuotaChecker_HealthyQuota(t *testing.T) {
-	scheme := runtime.NewScheme()
-	_ = corev1.AddToScheme(scheme)
-
 	quota := &corev1.ResourceQuota{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "healthy-quota",
@@ -63,23 +56,15 @@ func TestQuotaChecker_HealthyQuota(t *testing.T) {
 				corev1.ResourceMemory: resource.MustParse("20Gi"),
 			},
 			Used: corev1.ResourceList{
-				corev1.ResourcePods:   resource.MustParse("10"),  // 10%
-				corev1.ResourceCPU:    resource.MustParse("1"),   // 10%
-				corev1.ResourceMemory: resource.MustParse("2Gi"), // 10%
+				corev1.ResourcePods:   resource.MustParse("10"),
+				corev1.ResourceCPU:    resource.MustParse("1"),
+				corev1.ResourceMemory: resource.MustParse("2Gi"),
 			},
 		},
 	}
 
-	client := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(quota).
-		Build()
-
 	c := NewQuotaChecker()
-	checkCtx := &checker.CheckContext{
-		Client:     client,
-		Namespaces: []string{"default"},
-	}
+	checkCtx := testutil.NewCheckContext(t, []string{"default"}, quota)
 
 	result, err := c.Check(context.Background(), checkCtx)
 	if err != nil {
@@ -95,9 +80,6 @@ func TestQuotaChecker_HealthyQuota(t *testing.T) {
 }
 
 func TestQuotaChecker_QuotaNearLimit(t *testing.T) {
-	scheme := runtime.NewScheme()
-	_ = corev1.AddToScheme(scheme)
-
 	quota := &corev1.ResourceQuota{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "near-limit-quota",
@@ -108,21 +90,13 @@ func TestQuotaChecker_QuotaNearLimit(t *testing.T) {
 				corev1.ResourcePods: resource.MustParse("100"),
 			},
 			Used: corev1.ResourceList{
-				corev1.ResourcePods: resource.MustParse("85"), // 85%
+				corev1.ResourcePods: resource.MustParse("85"),
 			},
 		},
 	}
 
-	client := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(quota).
-		Build()
-
 	c := NewQuotaChecker()
-	checkCtx := &checker.CheckContext{
-		Client:     client,
-		Namespaces: []string{"default"},
-	}
+	checkCtx := testutil.NewCheckContext(t, []string{"default"}, quota)
 
 	result, err := c.Check(context.Background(), checkCtx)
 	if err != nil {
@@ -142,9 +116,6 @@ func TestQuotaChecker_QuotaNearLimit(t *testing.T) {
 }
 
 func TestQuotaChecker_QuotaExceeded(t *testing.T) {
-	scheme := runtime.NewScheme()
-	_ = corev1.AddToScheme(scheme)
-
 	quota := &corev1.ResourceQuota{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "exceeded-quota",
@@ -155,21 +126,13 @@ func TestQuotaChecker_QuotaExceeded(t *testing.T) {
 				corev1.ResourcePods: resource.MustParse("100"),
 			},
 			Used: corev1.ResourceList{
-				corev1.ResourcePods: resource.MustParse("105"), // Over quota
+				corev1.ResourcePods: resource.MustParse("105"),
 			},
 		},
 	}
 
-	client := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(quota).
-		Build()
-
 	c := NewQuotaChecker()
-	checkCtx := &checker.CheckContext{
-		Client:     client,
-		Namespaces: []string{"default"},
-	}
+	checkCtx := testutil.NewCheckContext(t, []string{"default"}, quota)
 
 	result, err := c.Check(context.Background(), checkCtx)
 	if err != nil {
@@ -196,9 +159,6 @@ func TestQuotaChecker_WithWarningPercent(t *testing.T) {
 }
 
 func TestQuotaChecker_MultipleResources(t *testing.T) {
-	scheme := runtime.NewScheme()
-	_ = corev1.AddToScheme(scheme)
-
 	quota := &corev1.ResourceQuota{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "multi-resource-quota",
@@ -211,30 +171,21 @@ func TestQuotaChecker_MultipleResources(t *testing.T) {
 				corev1.ResourceMemory: resource.MustParse("20Gi"),
 			},
 			Used: corev1.ResourceList{
-				corev1.ResourcePods:   resource.MustParse("50"),   // 50% - OK
-				corev1.ResourceCPU:    resource.MustParse("9"),    // 90% - Warning
-				corev1.ResourceMemory: resource.MustParse("21Gi"), // >100% - Critical
+				corev1.ResourcePods:   resource.MustParse("50"),
+				corev1.ResourceCPU:    resource.MustParse("9"),
+				corev1.ResourceMemory: resource.MustParse("21Gi"),
 			},
 		},
 	}
 
-	client := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(quota).
-		Build()
-
 	c := NewQuotaChecker()
-	checkCtx := &checker.CheckContext{
-		Client:     client,
-		Namespaces: []string{"default"},
-	}
+	checkCtx := testutil.NewCheckContext(t, []string{"default"}, quota)
 
 	result, err := c.Check(context.Background(), checkCtx)
 	if err != nil {
 		t.Fatalf("Check() error = %v", err)
 	}
 
-	// Should find both CPU warning and Memory exceeded
 	foundCPUWarning := false
 	foundMemoryExceeded := false
 	for _, issue := range result.Issues {
@@ -254,18 +205,8 @@ func TestQuotaChecker_MultipleResources(t *testing.T) {
 }
 
 func TestQuotaChecker_NoQuotas(t *testing.T) {
-	scheme := runtime.NewScheme()
-	_ = corev1.AddToScheme(scheme)
-
-	client := fake.NewClientBuilder().
-		WithScheme(scheme).
-		Build()
-
 	c := NewQuotaChecker()
-	checkCtx := &checker.CheckContext{
-		Client:     client,
-		Namespaces: []string{"default"},
-	}
+	checkCtx := testutil.NewCheckContext(t, []string{"default"})
 
 	result, err := c.Check(context.Background(), checkCtx)
 	if err != nil {

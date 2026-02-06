@@ -136,6 +136,13 @@ type TeamHealthRequestSpec struct {
 	// config contains checker-specific configuration
 	// +optional
 	Config CheckerConfig `json:"config,omitempty"`
+
+	// ttlSecondsAfterFinished limits the lifetime of a completed/failed request.
+	// After this duration, the request is automatically deleted.
+	// If unset, the request is never auto-deleted.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	TTLSecondsAfterFinished *int32 `json:"ttlSecondsAfterFinished,omitempty"`
 }
 
 // CheckerResult contains results from a single checker
@@ -184,6 +191,10 @@ type TeamHealthRequestStatus struct {
 	// lastCheckTime is when the health check was last performed
 	// +optional
 	LastCheckTime *metav1.Time `json:"lastCheckTime,omitempty"`
+
+	// completedAt is when the health check completed or failed
+	// +optional
+	CompletedAt *metav1.Time `json:"completedAt,omitempty"`
 
 	// conditions represent the current state of the TeamHealthRequest
 	// +listType=map

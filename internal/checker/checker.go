@@ -20,9 +20,8 @@ package checker
 import (
 	"context"
 
-	"sigs.k8s.io/controller-runtime/pkg/client"
-
 	"github.com/osagberg/kube-assist-operator/internal/ai"
+	"github.com/osagberg/kube-assist-operator/internal/datasource"
 )
 
 // Severity levels for issues
@@ -73,8 +72,8 @@ type CheckResult struct {
 
 // CheckContext provides context for checker execution
 type CheckContext struct {
-	// Client is the Kubernetes API client
-	Client client.Client
+	// DataSource provides read access to Kubernetes resources (or another backend)
+	DataSource datasource.DataSource
 
 	// Namespaces to check (empty means all accessible namespaces)
 	Namespaces []string
@@ -102,7 +101,7 @@ type Checker interface {
 
 	// Supports returns true if this checker can run in the current environment
 	// (e.g., HelmReleaseChecker returns false if Flux CRDs are not installed)
-	Supports(ctx context.Context, cl client.Client) bool
+	Supports(ctx context.Context, ds datasource.DataSource) bool
 }
 
 // CountBySeverity returns a count of issues grouped by severity

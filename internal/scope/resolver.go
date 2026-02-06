@@ -26,18 +26,19 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	assistv1alpha1 "github.com/osagberg/kube-assist-operator/api/v1alpha1"
+	"github.com/osagberg/kube-assist-operator/internal/datasource"
 )
 
 // Resolver resolves namespace scopes to actual namespace names
 type Resolver struct {
-	client           client.Client
+	client           datasource.DataSource
 	defaultNamespace string
 }
 
 // NewResolver creates a new namespace resolver
-func NewResolver(cl client.Client, defaultNamespace string) *Resolver {
+func NewResolver(ds datasource.DataSource, defaultNamespace string) *Resolver {
 	return &Resolver{
-		client:           cl,
+		client:           ds,
 		defaultNamespace: defaultNamespace,
 	}
 }

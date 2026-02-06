@@ -29,6 +29,7 @@ import (
 
 	"github.com/osagberg/kube-assist-operator/internal/ai"
 	"github.com/osagberg/kube-assist-operator/internal/checker"
+	"github.com/osagberg/kube-assist-operator/internal/datasource"
 )
 
 const (
@@ -41,7 +42,7 @@ func TestServer_HandleDashboard(t *testing.T) {
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 	registry := checker.NewRegistry()
 
-	server := NewServer(client, registry, ":8080")
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	rr := httptest.NewRecorder()
@@ -69,7 +70,7 @@ func TestServer_HandleHealth_NoData(t *testing.T) {
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 	registry := checker.NewRegistry()
 
-	server := NewServer(client, registry, ":8080")
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
 
 	req := httptest.NewRequest(http.MethodGet, "/api/health", nil)
 	rr := httptest.NewRecorder()
@@ -95,7 +96,7 @@ func TestServer_HandleHealth_WithData(t *testing.T) {
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 	registry := checker.NewRegistry()
 
-	server := NewServer(client, registry, ":8080")
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
 
 	// Set some data
 	server.latest = &HealthUpdate{
@@ -137,7 +138,7 @@ func TestServer_HandleTriggerCheck_WrongMethod(t *testing.T) {
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 	registry := checker.NewRegistry()
 
-	server := NewServer(client, registry, ":8080")
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
 
 	req := httptest.NewRequest(http.MethodGet, "/api/check", nil)
 	rr := httptest.NewRecorder()
@@ -154,7 +155,7 @@ func TestServer_HandleTriggerCheck_POST(t *testing.T) {
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 	registry := checker.NewRegistry()
 
-	server := NewServer(client, registry, ":8080")
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
 
 	req := httptest.NewRequest(http.MethodPost, "/api/check", nil)
 	rr := httptest.NewRecorder()
@@ -180,12 +181,13 @@ func TestNewServer(t *testing.T) {
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 	registry := checker.NewRegistry()
 
-	server := NewServer(client, registry, ":9090")
+	ds := datasource.NewKubernetes(client)
+	server := NewServer(ds, registry, ":9090")
 
 	if server.addr != ":9090" {
 		t.Errorf("NewServer() addr = %s, want :9090", server.addr)
 	}
-	if server.client != client {
+	if server.client != ds {
 		t.Error("NewServer() client not set correctly")
 	}
 	if server.registry != registry {
@@ -246,7 +248,7 @@ func TestServer_HandleGetAISettings_Default(t *testing.T) {
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 	registry := checker.NewRegistry()
 
-	server := NewServer(client, registry, ":8080")
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
 
 	req := httptest.NewRequest(http.MethodGet, "/api/settings/ai", nil)
 	rr := httptest.NewRecorder()
@@ -278,7 +280,7 @@ func TestServer_HandleGetAISettings_WithProvider(t *testing.T) {
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 	registry := checker.NewRegistry()
 
-	server := NewServer(client, registry, ":8080")
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
 	server.WithAI(ai.NewNoOpProvider(), true)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/settings/ai", nil)
@@ -311,7 +313,7 @@ func TestServer_HandlePostAISettings(t *testing.T) {
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 	registry := checker.NewRegistry()
 
-	server := NewServer(client, registry, ":8080")
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
 
 	body := AISettingsRequest{
 		Enabled:  true,
@@ -352,7 +354,7 @@ func TestServer_HandlePostAISettings_InvalidProvider(t *testing.T) {
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 	registry := checker.NewRegistry()
 
-	server := NewServer(client, registry, ":8080")
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
 
 	body := AISettingsRequest{
 		Enabled:  true,
@@ -376,7 +378,7 @@ func TestServer_HandlePostAISettings_InvalidJSON(t *testing.T) {
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 	registry := checker.NewRegistry()
 
-	server := NewServer(client, registry, ":8080")
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
 
 	req := httptest.NewRequest(http.MethodPost, "/api/settings/ai", bytes.NewReader([]byte("not json")))
 	req.Header.Set("Content-Type", "application/json")
@@ -394,7 +396,7 @@ func TestServer_HandleAISettings_MethodNotAllowed(t *testing.T) {
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 	registry := checker.NewRegistry()
 
-	server := NewServer(client, registry, ":8080")
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
 
 	req := httptest.NewRequest(http.MethodDelete, "/api/settings/ai", nil)
 	rr := httptest.NewRecorder()
@@ -411,7 +413,7 @@ func TestServer_HandlePostAISettings_WithModel(t *testing.T) {
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 	registry := checker.NewRegistry()
 
-	server := NewServer(client, registry, ":8080")
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
 
 	body := AISettingsRequest{
 		Enabled:  true,
@@ -463,12 +465,31 @@ func TestServer_HandlePostAISettings_WithModel(t *testing.T) {
 	}
 }
 
+func TestServer_RunCheck_PopulatesLatest(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	if server.latest != nil {
+		t.Error("expected latest to be nil before runCheck")
+	}
+
+	// Simulate what Start() does: run initial check synchronously
+	server.runCheck(t.Context())
+
+	if server.latest == nil {
+		t.Error("expected latest to be non-nil after runCheck (no more 'initializing' flash)")
+	}
+}
+
 func TestServer_WithAI(t *testing.T) {
 	scheme := runtime.NewScheme()
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 	registry := checker.NewRegistry()
 
-	server := NewServer(client, registry, ":8080")
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
 	provider := ai.NewNoOpProvider()
 	result := server.WithAI(provider, true)
 
