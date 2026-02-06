@@ -173,7 +173,7 @@ type Config struct {
 func DefaultConfig() Config {
 	return Config{
 		Provider:  "noop",
-		MaxTokens: 2000,
+		MaxTokens: 4096,
 		Timeout:   30,
 	}
 }

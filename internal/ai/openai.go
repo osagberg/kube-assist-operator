@@ -60,7 +60,7 @@ func NewOpenAIProvider(config Config) *OpenAIProvider {
 
 	maxTokens := config.MaxTokens
 	if maxTokens == 0 {
-		maxTokens = 2000
+		maxTokens = 4096
 	}
 
 	timeout := time.Duration(config.Timeout) * time.Second
@@ -255,24 +255,27 @@ func (p *OpenAIProvider) parseResponse(content string, tokensUsed int) *Analysis
 
 // extractJSON strips markdown code fences from AI responses.
 // AI models often wrap JSON in ```json ... ``` blocks.
+// Handles truncated responses where the closing fence is missing.
 func extractJSON(content string) string {
-	// Try ```json ... ```
+	// Try ```json ... ``` (with or without closing fence)
 	if idx := strings.Index(content, "```json"); idx >= 0 {
 		start := idx + 7
 		if end := strings.Index(content[start:], "```"); end >= 0 {
 			return strings.TrimSpace(content[start : start+end])
 		}
+		// No closing fence (truncated response) — take everything after opening
+		return strings.TrimSpace(content[start:])
 	}
 	// Try bare ``` ... ```
 	if idx := strings.Index(content, "```"); idx >= 0 {
 		start := idx + 3
-		// Skip optional newline after opening fence
 		if start < len(content) && content[start] == '\n' {
 			start++
 		}
 		if end := strings.Index(content[start:], "```"); end >= 0 {
 			return strings.TrimSpace(content[start : start+end])
 		}
+		return strings.TrimSpace(content[start:])
 	}
 	return content
 }

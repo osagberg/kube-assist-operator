@@ -57,7 +57,7 @@ func NewAnthropicProvider(config Config) *AnthropicProvider {
 
 	maxTokens := config.MaxTokens
 	if maxTokens == 0 {
-		maxTokens = 2000
+		maxTokens = 4096
 	}
 
 	timeout := time.Duration(config.Timeout) * time.Second
