@@ -20,6 +20,7 @@ Most monitoring tools tell you *what* is broken. KubeAssist tells you *why* and 
 - **Actionable, not just informational** -- every issue includes copy-able `kubectl` commands, root causes, and links to upstream docs
 - **AI root cause analysis** -- optional Anthropic/OpenAI integration for context-aware diagnostics, configurable at runtime
 - **GitOps-native** -- first-class Flux CD integration with graceful degradation when Flux isn't installed
+- **Causal analysis** -- temporal correlation, resource graph ownership chains, cross-checker rules, enhanced AI root cause analysis
 - **Enterprise patterns** -- DataSource abstraction, pluggable notifiers, webhook validation, TTL cleanup, leader election
 - **Single binary** -- dashboard, API, operator, and CLI all compile into one Go binary with zero external dependencies
 
@@ -62,6 +63,7 @@ Most monitoring tools tell you *what* is broken. KubeAssist tells you *why* and 
 - **Export** reports as JSON or CSV
 - **Keyboard shortcuts** for power users
 - **Health score** visualization with animated SVG ring
+- **Causal timeline** -- expandable group cards showing correlated issues with severity colors, rule labels, confidence scores, and root cause display
 
 ### AI-Powered Suggestions
 - **Runtime configuration** -- switch providers and models from the dashboard at any time
@@ -428,6 +430,7 @@ open http://localhost:9090
 | `/api/settings/ai` | GET | Current AI configuration (API key masked) |
 | `/api/settings/ai` | POST | Update AI provider/model/key at runtime |
 | `/api/health/history` | GET | Health score history (`?last=N`, `?since=RFC3339`) |
+| `/api/causal/groups` | GET | Causal correlation analysis (correlated issue groups) |
 
 ### Features
 
@@ -681,7 +684,7 @@ make install-cli
 - [x] Webhook notification interface (`spec.notify` on TeamHealthRequest) (v1.5.1)
 - [x] Health score history with ring buffer (`/api/health/history`) (v1.5.1)
 - [x] React dashboard — React 19 + Vite + TypeScript + Tailwind SPA (v1.6.0)
-- [ ] Causal analysis engine (Phase 3)
+- [x] Causal analysis engine — temporal correlation, resource graph, cross-checker rules, enhanced AI context, timeline UI (v1.7.0)
 - [ ] Custom checker plugins
 
 ---
