@@ -454,8 +454,8 @@ KubeAssist enhances health check results with AI-generated root cause analysis a
 
 | Provider | Default Model | Description |
 |----------|---------------|-------------|
-| **Anthropic** | Claude Haiku 4.5 | Context-aware diagnostics with structured output |
-| **OpenAI** | GPT-4o | Alternative provider with broad model selection |
+| **Anthropic** | Claude Haiku 4.5 | Context-aware diagnostics with structured output and prompt caching |
+| **OpenAI** | GPT-4o-mini | Cost-optimized provider (~97% cheaper than GPT-4o) with broad model selection |
 | **NoOp** | -- | Returns empty suggestions; useful for testing and development |
 
 ### Quick Setup (Dashboard)
@@ -488,11 +488,16 @@ ai:
 
 ### How AI Analysis Works
 
-1. **Batched calls** -- Issues are grouped and sent to the AI provider in batches to minimize API calls and reduce latency
-2. **Caching** -- AI responses are cached so repeated checks for the same issue pattern do not incur additional API costs
-3. **Data sanitization** -- Sensitive data (secrets, environment variables, API keys) is redacted before being sent to any AI provider
-4. **Thread-safe AI Manager** -- `Reconfigure()` swaps providers at runtime without downtime; the same manager instance is shared across the dashboard and controllers
-5. **Pipeline indicator** -- The dashboard shows a `[Checkers] -> [Causal] -> [AI]` progress bar so you can see exactly when AI analysis is running
+1. **Batched calls** -- Issues are grouped and sent to the AI provider in a single batched call to minimize API overhead
+2. **LRU response cache** -- 100-entry cache with 5-minute TTL keyed by issue signature hash; repeated checks for the same issue pattern cost nothing
+3. **Severity gating** -- Info-level issues are skipped by AI (keep static suggestions), reducing token usage ~30%
+4. **Cross-issue deduplication** -- Identical issue patterns (after normalizing pod hashes) are grouped; only one representative is sent to AI, results fanned out to all duplicates
+5. **Token budget** -- Configurable daily and monthly token limits with automatic window reset; `ErrBudgetExceeded` returned gracefully when caps are hit
+6. **Tiered model routing** -- Separate models for analyze vs explain mode (e.g., fast model for issue analysis, powerful model for cluster explanations)
+7. **Anthropic prompt caching** -- System prompts sent with `cache_control: {type: "ephemeral"}` for ~90% cost reduction on repeated calls
+8. **Data sanitization** -- Sensitive data (secrets, environment variables, API keys) is redacted before being sent to any AI provider
+9. **Thread-safe AI Manager** -- `Reconfigure()` swaps providers at runtime without downtime; the same manager instance is shared across the dashboard and controllers
+10. **Pipeline indicator** -- The dashboard shows a `[Checkers] -> [Causal] -> [AI]` progress bar so you can see exactly when AI analysis is running
 
 For full details on providers, data sanitization, API key management, and cost considerations, see the [AI Integration Guide](docs/ai-integration.md).
 
@@ -562,7 +567,10 @@ helm install kube-assist charts/kube-assist \
 | `ai.enabled` | `false` | Enable AI-powered suggestions |
 | `ai.provider` | `noop` | AI provider: anthropic, openai, noop |
 | `ai.model` | (provider default) | AI model to use |
+| `ai.explainModel` | `""` | Separate model for "Explain This Cluster" mode (uses primary model if empty) |
 | `ai.apiKeySecretRef.name` | -- | Secret containing API key |
+| `ai.budget.dailyTokenLimit` | `0` | Daily token budget (0 = unlimited) |
+| `ai.budget.monthlyTokenLimit` | `0` | Monthly token budget (0 = unlimited) |
 | `networkPolicy.enabled` | `true` | Enable network policy |
 
 ### Full Configuration
@@ -658,6 +666,16 @@ Prometheus metrics available at `:8080/metrics`:
 | `kubeassist_reconcile_total` | Counter | name, namespace, result | Total reconciliations |
 | `kubeassist_reconcile_duration_seconds` | Histogram | name, namespace | Reconciliation duration |
 | `kubeassist_issues_total` | Gauge | namespace, severity | Issues by severity |
+| `kubeassist_ai_calls_total` | Counter | provider, mode, result | AI API calls |
+| `kubeassist_ai_tokens_used_total` | Counter | provider, mode | Tokens consumed |
+| `kubeassist_ai_call_duration_seconds` | Histogram | provider, mode | AI call latency |
+| `kubeassist_ai_cache_hits_total` | Counter | -- | Response cache hits |
+| `kubeassist_ai_cache_misses_total` | Counter | -- | Response cache misses |
+| `kubeassist_ai_cache_size` | Gauge | -- | Current cache entries |
+| `kubeassist_ai_budget_exceeded_total` | Counter | window | Budget limit rejections |
+| `kubeassist_ai_budget_tokens_used` | Gauge | window | Current token usage per window |
+| `kubeassist_ai_budget_tokens_limit` | Gauge | window | Token limit per window |
+| `kubeassist_ai_issues_filtered_total` | Counter | reason | Issues skipped (severity_info, duplicate) |
 
 ---
 
@@ -728,6 +746,7 @@ make install-cli
 - [x] Custom checker plugins — CRD-driven health checks with CEL expressions (`CheckPlugin` CR, hot-reload registry) (v1.8.0)
 - [x] "Explain this cluster" AI mode — narrative summary of cluster health with risk level, top issues, and trend direction (v1.8.0)
 - [x] Predictive health — trend analysis via linear regression on health history, score projection, risky checker detection (v1.8.0)
+- [x] AI cost optimization — 9 optimizations (severity gating, change-only AI, gpt-4o-mini, prompt caching, token budget, batching, dedup, tiered routing, LRU cache) + 11 Prometheus metrics (v1.8.1-dev)
 - [ ] Cross-cluster via ConsoleDataSource — multi-cluster aggregation through pluggable `DataSource` interface
 
 ---

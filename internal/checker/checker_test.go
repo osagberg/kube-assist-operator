@@ -179,3 +179,64 @@ func TestIssue_Fields(t *testing.T) {
 		t.Errorf("Metadata[container] = %s, want app", issue.Metadata["container"])
 	}
 }
+
+func TestNormalizeMessage(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "pod hash suffix",
+			input: "Pod api-server-7f8b4c5d9f-x2k4p is crashing",
+			want:  "Pod api-server-<pod> is crashing",
+		},
+		{
+			name:  "no hash",
+			input: "Deployment is not ready",
+			want:  "Deployment is not ready",
+		},
+		{
+			name:  "multiple spaces",
+			input: "Pod  is   crashing",
+			want:  "Pod is crashing",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := normalizeMessage(tt.input); got != tt.want {
+				t.Errorf("normalizeMessage() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestNormalizeIssueSignature(t *testing.T) {
+	// Same type+severity+normalized message = same signature
+	issue1 := Issue{
+		Type:     "ImagePullBackOff",
+		Severity: SeverityCritical,
+		Message:  "Failed to pull image for pod api-7f8b4c5d9f-x2k4p",
+	}
+	issue2 := Issue{
+		Type:     "ImagePullBackOff",
+		Severity: SeverityCritical,
+		Message:  "Failed to pull image for pod api-abc12def34-y3m5q",
+	}
+	sig1 := normalizeIssueSignature(issue1)
+	sig2 := normalizeIssueSignature(issue2)
+	if sig1 != sig2 {
+		t.Errorf("Expected same signature for similar issues, got %q vs %q", sig1, sig2)
+	}
+
+	// Different type = different signature
+	issue3 := Issue{
+		Type:     "CrashLoopBackOff",
+		Severity: SeverityCritical,
+		Message:  "Failed to pull image for pod api-7f8b4c5d9f-x2k4p",
+	}
+	sig3 := normalizeIssueSignature(issue3)
+	if sig1 == sig3 {
+		t.Errorf("Expected different signatures for different types")
+	}
+}

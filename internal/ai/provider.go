@@ -204,6 +204,15 @@ type Config struct {
 
 	// MinConfidence is the minimum confidence threshold for AI suggestions (0 = use default 0.3)
 	MinConfidence float64 `json:"minConfidence,omitempty"`
+
+	// ExplainModel is an optional cheaper model for explain/narrative mode.
+	ExplainModel string `json:"explainModel,omitempty"`
+
+	// DailyTokenLimit is the max tokens per day (0 = unlimited).
+	DailyTokenLimit int `json:"dailyTokenLimit,omitempty"`
+
+	// MonthlyTokenLimit is the max tokens per month (0 = unlimited).
+	MonthlyTokenLimit int `json:"monthlyTokenLimit,omitempty"`
 }
 
 // DefaultConfig returns a default configuration with NoOp provider

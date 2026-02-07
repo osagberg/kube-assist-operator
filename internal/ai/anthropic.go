@@ -87,11 +87,21 @@ func (p *AnthropicProvider) Available() bool {
 	return p.apiKey != ""
 }
 
+type systemBlock struct {
+	Type         string        `json:"type"`
+	Text         string        `json:"text"`
+	CacheControl *cacheControl `json:"cache_control,omitempty"`
+}
+
+type cacheControl struct {
+	Type string `json:"type"`
+}
+
 // anthropicRequest represents an Anthropic API request
 type anthropicRequest struct {
 	Model     string             `json:"model"`
 	MaxTokens int                `json:"max_tokens"`
-	System    string             `json:"system,omitempty"`
+	System    []systemBlock      `json:"system,omitempty"`
 	Messages  []anthropicMessage `json:"messages"`
 }
 
@@ -128,7 +138,13 @@ func (p *AnthropicProvider) Analyze(ctx context.Context, request AnalysisRequest
 	anthropicReq := anthropicRequest{
 		Model:     p.model,
 		MaxTokens: p.maxTokens,
-		System:    systemPrompt,
+		System: []systemBlock{
+			{
+				Type:         "text",
+				Text:         systemPrompt,
+				CacheControl: &cacheControl{Type: "ephemeral"},
+			},
+		},
 		Messages: []anthropicMessage{
 			{
 				Role:    "user",
@@ -150,6 +166,7 @@ func (p *AnthropicProvider) Analyze(ctx context.Context, request AnalysisRequest
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-api-key", p.apiKey)
 	req.Header.Set("anthropic-version", anthropicAPIVersion)
+	req.Header.Set("anthropic-beta", "prompt-caching-2024-07-31")
 
 	resp, err := p.client.Do(req)
 	if err != nil {

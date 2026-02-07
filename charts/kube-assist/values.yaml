@@ -86,6 +86,12 @@ ai:
     name: ""
     # Key within the secret that holds the API key value.
     key: "api-key"
+  # Optional cheaper model for AI explain/narrative mode.
+  explainModel: ""
+  # Token budget limits (0 = unlimited).
+  budget:
+    dailyTokenLimit: 0
+    monthlyTokenLimit: 0
 
 resources:
   limits:

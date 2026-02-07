@@ -20,7 +20,9 @@ package checker
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"sort"
+	"strings"
 
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -246,12 +248,18 @@ func EnhanceAllWithAI(ctx context.Context, results map[string]*CheckResult, chec
 
 	var issueContexts []ai.IssueContext
 	var refs []issueRef
+	infoFiltered := 0
 
 	for checkerName, result := range results {
 		if result.Error != nil {
 			continue
 		}
 		for i, issue := range result.Issues {
+			// Skip Info-severity issues from AI analysis
+			if issue.Severity == SeverityInfo {
+				infoFiltered++
+				continue
+			}
 			issueContexts = append(issueContexts, ai.IssueContext{
 				Type:             issue.Type,
 				Severity:         issue.Severity,
@@ -262,6 +270,11 @@ func EnhanceAllWithAI(ctx context.Context, results map[string]*CheckResult, chec
 			})
 			refs = append(refs, issueRef{checkerName: checkerName, issueIdx: i})
 		}
+	}
+
+	if infoFiltered > 0 {
+		log.Info("Filtered Info-severity issues from AI analysis", "filtered", infoFiltered)
+		ai.RecordIssuesFiltered("severity_info", infoFiltered)
 	}
 
 	if len(issueContexts) == 0 {
@@ -295,9 +308,46 @@ func EnhanceAllWithAI(ctx context.Context, results map[string]*CheckResult, chec
 		log.Info("Capped AI issues", "total", totalIssueCount, "sent", maxIssues)
 	}
 
+	// Deduplication: group identical issues, send only representatives
+	type dedupGroup struct {
+		representativeIdx int        // index in issueContexts
+		refs              []issueRef // all refs with same signature
+	}
+
+	dedupMap := make(map[string]*dedupGroup)
+	var dedupOrder []string // preserve order
+	for i, ic := range issueContexts {
+		sig := normalizeIssueSignature(Issue{
+			Type:     ic.Type,
+			Severity: ic.Severity,
+			Message:  ic.Message,
+		})
+		if g, ok := dedupMap[sig]; ok {
+			g.refs = append(g.refs, refs[i])
+		} else {
+			dedupMap[sig] = &dedupGroup{
+				representativeIdx: i,
+				refs:              []issueRef{refs[i]},
+			}
+			dedupOrder = append(dedupOrder, sig)
+		}
+	}
+
+	duplicateCount := len(issueContexts) - len(dedupOrder)
+	if duplicateCount > 0 {
+		log.Info("Deduplicated issues for AI analysis", "original", len(issueContexts), "unique", len(dedupOrder), "duplicates", duplicateCount)
+		ai.RecordIssuesFiltered("duplicate", duplicateCount)
+	}
+
+	// Build deduplicated issue list
+	dedupContexts := make([]ai.IssueContext, len(dedupOrder))
+	for i, sig := range dedupOrder {
+		dedupContexts[i] = issueContexts[dedupMap[sig].representativeIdx]
+	}
+
 	// Sanitize before sending to AI
 	request := ai.AnalysisRequest{
-		Issues:         issueContexts,
+		Issues:         dedupContexts,
 		ClusterContext: checkCtx.ClusterContext,
 		CausalContext:  checkCtx.CausalContext,
 	}
@@ -306,13 +356,13 @@ func EnhanceAllWithAI(ctx context.Context, results map[string]*CheckResult, chec
 	// Single batched AI call
 	response, err := checkCtx.AIProvider.Analyze(ctx, sanitizedRequest)
 	if err != nil {
-		log.Error(err, "AI batch analysis failed", "provider", checkCtx.AIProvider.Name(), "issues", len(issueContexts))
+		log.Error(err, "AI batch analysis failed", "provider", checkCtx.AIProvider.Name(), "issues", len(dedupContexts))
 		return 0, 0, totalIssueCount, nil, err
 	}
 
-	// Distribute suggestions back to their original issues
+	// Fan-out: apply AI response to all issues in each dedup group
 	issuesEnhanced := 0
-	for i, ref := range refs {
+	for i, sig := range dedupOrder {
 		key := fmt.Sprintf("issue_%d", i)
 		enhanced, ok := response.EnhancedSuggestions[key]
 		if !ok {
@@ -322,7 +372,10 @@ func EnhanceAllWithAI(ctx context.Context, results map[string]*CheckResult, chec
 		if minConf <= 0 {
 			minConf = defaultMinConfidence
 		}
-		if enhanced.Suggestion != "" && enhanced.Confidence > minConf {
+		if enhanced.Suggestion == "" || enhanced.Confidence <= minConf {
+			continue
+		}
+		for _, ref := range dedupMap[sig].refs {
 			issue := &results[ref.checkerName].Issues[ref.issueIdx]
 			if issue.Suggestion != "" {
 				issue.Suggestion += "\n\nAI Analysis: " + enhanced.Suggestion
@@ -341,7 +394,8 @@ func EnhanceAllWithAI(ctx context.Context, results map[string]*CheckResult, chec
 
 	log.Info("AI batch analysis completed",
 		"provider", checkCtx.AIProvider.Name(),
-		"totalIssues", len(issueContexts),
+		"totalIssues", totalIssueCount,
+		"unique", len(dedupContexts),
 		"enhanced", issuesEnhanced,
 		"tokens", response.TokensUsed,
 	)
@@ -367,4 +421,19 @@ func severityRank(s string) int {
 	default:
 		return 3
 	}
+}
+
+// normalizeMessage strips pod hash suffixes and collapses whitespace for dedup comparison.
+func normalizeMessage(msg string) string {
+	// Strip pod hash suffixes like -7f8b4c5d9f-x2k4p or -abc12
+	re := regexp.MustCompile(`-[a-f0-9]{5,}(-[a-z0-9]{5})?`)
+	msg = re.ReplaceAllString(msg, "-<pod>")
+	// Collapse multiple spaces
+	msg = regexp.MustCompile(`\s+`).ReplaceAllString(msg, " ")
+	return strings.TrimSpace(msg)
+}
+
+// normalizeIssueSignature creates a dedup key from an issue's core identity.
+func normalizeIssueSignature(issue Issue) string {
+	return issue.Type + "|" + issue.Severity + "|" + normalizeMessage(issue.Message)
 }

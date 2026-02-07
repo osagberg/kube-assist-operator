@@ -20,24 +20,34 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 )
 
 // Manager wraps an AI Provider with thread-safe runtime reconfiguration.
 // It implements the Provider interface so it can be used as a drop-in replacement.
 type Manager struct {
-	mu       sync.RWMutex
-	provider Provider
-	enabled  bool
+	mu              sync.RWMutex
+	provider        Provider
+	explainProvider Provider
+	enabled         bool
+	budget          *Budget
+	cache           *Cache
 }
 
-// NewManager creates a new AI Manager with the given provider and enabled state.
-func NewManager(provider Provider, enabled bool) *Manager {
+// NewManager creates a new AI Manager with the given providers, enabled state, budget, and cache.
+func NewManager(provider, explainProvider Provider, enabled bool, budget *Budget, cache *Cache) *Manager {
 	if provider == nil {
 		provider = NewNoOpProvider()
 	}
+	if explainProvider == nil {
+		explainProvider = provider
+	}
 	return &Manager{
-		provider: provider,
-		enabled:  enabled,
+		provider:        provider,
+		explainProvider: explainProvider,
+		enabled:         enabled,
+		budget:          budget,
+		cache:           cache,
 	}
 }
 
@@ -48,11 +58,65 @@ func (m *Manager) Name() string {
 	return m.provider.Name()
 }
 
-// Analyze delegates to the current provider.
+// Analyze delegates to the current provider with caching, budget, and tiered routing.
 func (m *Manager) Analyze(ctx context.Context, request AnalysisRequest) (*AnalysisResponse, error) {
 	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.provider.Analyze(ctx, request)
+	provider := m.provider
+	if request.ExplainMode && m.explainProvider != nil {
+		provider = m.explainProvider
+	}
+	budget := m.budget
+	cache := m.cache
+	m.mu.RUnlock()
+
+	// Check cache
+	if cache != nil {
+		if cached, ok := cache.Get(request); ok {
+			RecordCacheHit()
+			return cached, nil
+		}
+		RecordCacheMiss()
+	}
+
+	// Check budget (estimate ~2000 tokens per issue, minimum 500)
+	estimatedTokens := max(len(request.Issues)*2000, 500)
+	if err := budget.CheckAllowance(estimatedTokens); err != nil {
+		RecordBudgetExceeded(err.Error())
+		return nil, err
+	}
+
+	// Call provider
+	start := time.Now()
+	resp, err := provider.Analyze(ctx, request)
+	duration := time.Since(start)
+
+	if err != nil {
+		mode := "analyze"
+		if request.ExplainMode {
+			mode = "explain"
+		}
+		RecordAICall(provider.Name(), mode, "error", 0, duration)
+		return nil, err
+	}
+
+	// Record usage
+	if budget != nil && resp != nil {
+		budget.RecordUsage(resp.TokensUsed)
+	}
+
+	// Cache result
+	if cache != nil && resp != nil {
+		cache.Put(request, resp)
+	}
+
+	// Record metrics
+	mode := "analyze"
+	if request.ExplainMode {
+		mode = "explain"
+	}
+	RecordAICall(provider.Name(), mode, "success", resp.TokensUsed, duration)
+
+	return resp, nil
 }
 
 // Available returns true if the current provider is available.
@@ -86,7 +150,7 @@ func (m *Manager) Reconfigure(providerName, apiKey, model string) error {
 		Model:    model,
 	}
 
-	newProvider, err := NewProvider(cfg)
+	newProvider, _, _, err := NewProvider(cfg)
 	if err != nil {
 		return fmt.Errorf("creating provider: %w", err)
 	}
@@ -94,7 +158,12 @@ func (m *Manager) Reconfigure(providerName, apiKey, model string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.provider = newProvider
+	m.explainProvider = newProvider // reset explain to same on reconfigure
 	m.enabled = providerName != "" && providerName != ProviderNameNoop
+	// Clear cache on reconfigure
+	if m.cache != nil {
+		m.cache.Clear()
+	}
 	return nil
 }
 
@@ -104,4 +173,18 @@ func (m *Manager) Provider() Provider {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.provider
+}
+
+// Budget returns the current budget (may be nil).
+func (m *Manager) Budget() *Budget {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.budget
+}
+
+// Cache returns the current cache (may be nil).
+func (m *Manager) Cache() *Cache {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.cache
 }

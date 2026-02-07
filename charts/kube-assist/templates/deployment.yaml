@@ -61,6 +61,15 @@ spec:
             {{- if .Values.ai.model }}
             - --ai-model={{ .Values.ai.model }}
             {{- end }}
+            {{- if .Values.ai.explainModel }}
+            - --ai-explain-model={{ .Values.ai.explainModel }}
+            {{- end }}
+            {{- if .Values.ai.budget.dailyTokenLimit }}
+            - --ai-daily-token-limit={{ .Values.ai.budget.dailyTokenLimit }}
+            {{- end }}
+            {{- if .Values.ai.budget.monthlyTokenLimit }}
+            - --ai-monthly-token-limit={{ .Values.ai.budget.monthlyTokenLimit }}
+            {{- end }}
             {{- end }}
           env:
             {{- if and .Values.ai.enabled .Values.ai.apiKeySecretRef.name }}

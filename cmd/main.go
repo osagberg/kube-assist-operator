@@ -20,6 +20,7 @@ import (
 	"crypto/tls"
 	"flag"
 	"os"
+	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -86,7 +87,9 @@ func main() {
 	var aiProvider string
 	var aiAPIKey string
 	var aiModel string
-	var aiCheckInterval int
+	var aiExplainModel string
+	var aiDailyTokenLimit int
+	var aiMonthlyTokenLimit int
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
@@ -104,8 +107,12 @@ func main() {
 		"API key for AI provider (or use KUBE_ASSIST_AI_API_KEY env var).")
 	flag.StringVar(&aiModel, "ai-model", "",
 		"AI model to use (provider default if empty).")
-	flag.IntVar(&aiCheckInterval, "ai-check-interval", 10,
-		"Run AI analysis every N health checks (default: 10, ~5 min at 30s interval).")
+	flag.StringVar(&aiExplainModel, "ai-explain-model", "",
+		"Optional cheaper model for AI explain/narrative mode (uses primary model if empty).")
+	flag.IntVar(&aiDailyTokenLimit, "ai-daily-token-limit", 0,
+		"Max AI tokens per day (0 = unlimited).")
+	flag.IntVar(&aiMonthlyTokenLimit, "ai-monthly-token-limit", 0,
+		"Max AI tokens per month (0 = unlimited).")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
@@ -251,9 +258,12 @@ func main() {
 	var aiConfig ai.Config
 	if enableAI {
 		aiConfig = ai.Config{
-			Provider: aiProvider,
-			APIKey:   aiAPIKey,
-			Model:    aiModel,
+			Provider:          aiProvider,
+			APIKey:            aiAPIKey,
+			Model:             aiModel,
+			ExplainModel:      aiExplainModel,
+			DailyTokenLimit:   aiDailyTokenLimit,
+			MonthlyTokenLimit: aiMonthlyTokenLimit,
 		}
 		// Fall back to environment variables for individual fields not set via flags
 		envConfig := ai.ConfigFromEnv()
@@ -266,16 +276,20 @@ func main() {
 	} else {
 		aiConfig = ai.DefaultConfig()
 	}
-	aiProv, aiErr := ai.NewProvider(aiConfig)
+	fast, explain, budget, aiErr := ai.NewProvider(aiConfig)
 	if aiErr != nil {
 		setupLog.Error(aiErr, "failed to create AI provider")
 		os.Exit(1)
 	}
-	aiManager := ai.NewManager(aiProv, enableAI)
+	cache := ai.NewCache(100, 5*time.Minute, enableAI)
+	aiManager := ai.NewManager(fast, explain, enableAI, budget, cache)
 	setupLog.Info("AI provider initialized",
 		"provider", aiManager.Name(),
 		"enabled", enableAI,
-		"available", aiManager.Available())
+		"available", aiManager.Available(),
+		"explainModel", aiExplainModel,
+		"dailyTokenLimit", aiDailyTokenLimit,
+		"monthlyTokenLimit", aiMonthlyTokenLimit)
 
 	if err := (&controller.TroubleshootRequestReconciler{
 		Client:    mgr.GetClient(),
@@ -335,8 +349,7 @@ func main() {
 	// Start dashboard server if enabled
 	if enableDashboard {
 		dashboardServer := dashboard.NewServer(ds, registry, dashboardAddr).
-			WithAI(aiManager, enableAI).
-			WithAICheckInterval(aiCheckInterval)
+			WithAI(aiManager, enableAI)
 		go func() {
 			setupLog.Info("starting dashboard server", "addr", dashboardAddr)
 			if err := dashboardServer.Start(ctx); err != nil {

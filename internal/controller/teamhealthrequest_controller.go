@@ -172,13 +172,15 @@ func (r *TeamHealthRequestReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		}
 	}
 
-	// Now run AI enhancement with causal context included
+	// Now run AI enhancement with causal context included (single batched call)
 	if r.AIEnabled && r.AIProvider != nil {
 		checkCtx.AIEnabled = true
-		for _, result := range results {
-			if result != nil && result.Error == nil && len(result.Issues) > 0 {
-				_ = result.EnhanceWithAI(checkerCtx, checkCtx)
-			}
+		checkCtx.AIProvider = r.AIProvider
+		enhanced, tokens, totalCount, _, aiErr := checker.EnhanceAllWithAI(checkerCtx, results, checkCtx)
+		if aiErr != nil {
+			log.Error(aiErr, "AI batch enhancement failed")
+		} else if enhanced > 0 {
+			log.Info("AI batch enhancement completed", "enhanced", enhanced, "tokens", tokens, "totalIssues", totalCount)
 		}
 	}
 

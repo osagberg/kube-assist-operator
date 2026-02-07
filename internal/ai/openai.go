@@ -33,7 +33,7 @@ var log = logf.Log.WithName("ai")
 
 const (
 	defaultOpenAIEndpoint = "https://api.openai.com/v1/chat/completions"
-	defaultOpenAIModel    = "gpt-4o"
+	defaultOpenAIModel    = "gpt-4o-mini"
 )
 
 // OpenAIProvider implements the Provider interface for OpenAI

@@ -20,13 +20,14 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 )
 
 // ProviderNameNoop is the constant for the NoOp provider name
 const ProviderNameNoop = "noop"
 
-// NewProvider creates a provider based on the configuration
-func NewProvider(config Config) (Provider, error) {
+// createSingleProvider creates a single provider based on the configuration.
+func createSingleProvider(config Config) (Provider, error) {
 	// Resolve API key from environment if it looks like an env var reference
 	apiKey := config.APIKey
 	if envVar, found := strings.CutPrefix(apiKey, "$"); found {
@@ -49,9 +50,61 @@ func NewProvider(config Config) (Provider, error) {
 	}
 }
 
-// MustNewProvider creates a provider or panics
+// NewProvider creates providers based on the configuration.
+// Returns (primaryProvider, explainProvider, budget, error).
+// explainProvider is the same as primaryProvider when ExplainModel is empty or identical.
+func NewProvider(config Config) (Provider, Provider, *Budget, error) {
+	primary, err := createSingleProvider(config)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	// Determine the resolved primary model for comparison
+	resolvedModel := config.Model
+	if resolvedModel == "" {
+		switch strings.ToLower(config.Provider) {
+		case ProviderNameOpenAI:
+			resolvedModel = defaultOpenAIModel
+		case ProviderNameAnthropic:
+			resolvedModel = defaultAnthropicModel
+		}
+	}
+
+	// Create explain provider if a different model is configured
+	explain := primary
+	if config.ExplainModel != "" && config.ExplainModel != resolvedModel {
+		explainConfig := config
+		explainConfig.Model = config.ExplainModel
+		explain, err = createSingleProvider(explainConfig)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("creating explain provider: %w", err)
+		}
+	}
+
+	// Build budget from config
+	var windows []BudgetWindow
+	if config.DailyTokenLimit > 0 {
+		windows = append(windows, BudgetWindow{
+			Name:     "daily",
+			Duration: 24 * time.Hour,
+			Limit:    config.DailyTokenLimit,
+		})
+	}
+	if config.MonthlyTokenLimit > 0 {
+		windows = append(windows, BudgetWindow{
+			Name:     "monthly",
+			Duration: 30 * 24 * time.Hour,
+			Limit:    config.MonthlyTokenLimit,
+		})
+	}
+	budget := NewBudget(windows)
+
+	return primary, explain, budget, nil
+}
+
+// MustNewProvider creates a primary provider or panics.
 func MustNewProvider(config Config) Provider {
-	provider, err := NewProvider(config)
+	provider, _, _, err := NewProvider(config)
 	if err != nil {
 		panic(err)
 	}

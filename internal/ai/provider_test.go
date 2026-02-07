@@ -162,7 +162,7 @@ func TestNewProvider(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			p, err := NewProvider(Config{Provider: tt.provider})
+			p, _, _, err := NewProvider(Config{Provider: tt.provider})
 			if (err != nil) != tt.wantErr {
 				t.Errorf("NewProvider() error = %v, wantErr %v", err, tt.wantErr)
 				return

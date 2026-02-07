@@ -154,23 +154,21 @@ type Server struct {
 	lastCausalInsights []ai.CausalGroupInsight
 	lastExplain        *ExplainCacheEntry
 	checkCounter       uint64
-	aiCheckInterval    int
 	stopCh             chan struct{}
 }
 
 // NewServer creates a new dashboard server
 func NewServer(ds datasource.DataSource, registry *checker.Registry, addr string) *Server {
 	return &Server{
-		client:          ds,
-		registry:        registry,
-		addr:            addr,
-		aiConfig:        ai.DefaultConfig(),
-		checkTimeout:    2 * time.Minute,
-		history:         history.New(100),
-		correlator:      causal.NewCorrelator(),
-		clients:         make(map[chan HealthUpdate]bool),
-		stopCh:          make(chan struct{}),
-		aiCheckInterval: 10,
+		client:       ds,
+		registry:     registry,
+		addr:         addr,
+		aiConfig:     ai.DefaultConfig(),
+		checkTimeout: 2 * time.Minute,
+		history:      history.New(100),
+		correlator:   causal.NewCorrelator(),
+		clients:      make(map[chan HealthUpdate]bool),
+		stopCh:       make(chan struct{}),
 	}
 }
 
@@ -180,14 +178,6 @@ func (s *Server) WithAI(provider ai.Provider, enabled bool) *Server {
 	s.aiEnabled = enabled
 	if provider != nil {
 		s.aiConfig.Provider = provider.Name()
-	}
-	return s
-}
-
-// WithAICheckInterval sets how often AI runs (every N checks). Default is 10 (every ~5 min at 30s interval).
-func (s *Server) WithAICheckInterval(n int) *Server {
-	if n > 0 {
-		s.aiCheckInterval = n
 	}
 	return s
 }
@@ -327,8 +317,7 @@ func (s *Server) runAIAnalysis(
 	}
 
 	hashChanged := issueHash != s.lastIssueHash
-	intervalDue := s.checkCounter%uint64(s.aiCheckInterval) == 0
-	if !hashChanged && s.lastAIResult != nil && !intervalDue {
+	if !hashChanged && s.lastAIResult != nil {
 		reapplyAIEnhancements(results, s.lastAIEnhancements)
 		if len(s.lastCausalInsights) > 0 {
 			applyCausalInsights(causalCtx, s.lastCausalInsights)
@@ -734,7 +723,7 @@ func estimateCost(provider string, tokens int) float64 {
 	case "anthropic":
 		costPer1K = 0.00125 // Haiku 3.5 blended
 	case "openai":
-		costPer1K = 0.005 // GPT-4o-mini blended
+		costPer1K = 0.00075 // GPT-4o-mini blended
 	default:
 		return 0
 	}
@@ -967,7 +956,7 @@ func (s *Server) handlePostAISettings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Fallback: recreate provider directly (no Manager available)
-	provider, err := ai.NewProvider(s.aiConfig)
+	provider, _, _, err := ai.NewProvider(s.aiConfig)
 	if err != nil {
 		s.mu.Unlock()
 		log.Error(err, "Failed to create AI provider", "provider", s.aiConfig.Provider)

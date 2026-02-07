@@ -18,12 +18,14 @@ package ai
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestNewManager_NilProvider(t *testing.T) {
-	m := NewManager(nil, false)
+	m := NewManager(nil, nil, false, nil, nil)
 	if m.Name() != ProviderNameNoop {
 		t.Errorf("NewManager(nil) Name() = %s, want %s", m.Name(), ProviderNameNoop)
 	}
@@ -34,7 +36,7 @@ func TestNewManager_NilProvider(t *testing.T) {
 
 func TestNewManager_WithProvider(t *testing.T) {
 	provider := NewNoOpProvider()
-	m := NewManager(provider, true)
+	m := NewManager(provider, nil, true, nil, nil)
 
 	if m.Name() != ProviderNameNoop {
 		t.Errorf("Name() = %s, want %s", m.Name(), ProviderNameNoop)
@@ -48,7 +50,7 @@ func TestNewManager_WithProvider(t *testing.T) {
 }
 
 func TestManager_SetEnabled(t *testing.T) {
-	m := NewManager(NewNoOpProvider(), false)
+	m := NewManager(NewNoOpProvider(), nil, false, nil, nil)
 
 	if m.Enabled() {
 		t.Error("should start disabled")
@@ -66,7 +68,7 @@ func TestManager_SetEnabled(t *testing.T) {
 }
 
 func TestManager_Analyze(t *testing.T) {
-	m := NewManager(NewNoOpProvider(), true)
+	m := NewManager(NewNoOpProvider(), nil, true, nil, nil)
 
 	request := AnalysisRequest{
 		Issues: []IssueContext{
@@ -93,7 +95,7 @@ func TestManager_Analyze(t *testing.T) {
 
 func TestManager_Provider(t *testing.T) {
 	provider := NewNoOpProvider()
-	m := NewManager(provider, true)
+	m := NewManager(provider, nil, true, nil, nil)
 
 	got := m.Provider()
 	if got != provider {
@@ -102,7 +104,7 @@ func TestManager_Provider(t *testing.T) {
 }
 
 func TestManager_Reconfigure_Noop(t *testing.T) {
-	m := NewManager(NewNoOpProvider(), true)
+	m := NewManager(NewNoOpProvider(), nil, true, nil, nil)
 
 	err := m.Reconfigure(ProviderNameNoop, "", "")
 	if err != nil {
@@ -119,7 +121,7 @@ func TestManager_Reconfigure_Noop(t *testing.T) {
 }
 
 func TestManager_Reconfigure_OpenAI(t *testing.T) {
-	m := NewManager(NewNoOpProvider(), false)
+	m := NewManager(NewNoOpProvider(), nil, false, nil, nil)
 
 	err := m.Reconfigure(ProviderNameOpenAI, "test-key", "gpt-4")
 	if err != nil {
@@ -138,7 +140,7 @@ func TestManager_Reconfigure_OpenAI(t *testing.T) {
 }
 
 func TestManager_Reconfigure_Anthropic(t *testing.T) {
-	m := NewManager(NewNoOpProvider(), false)
+	m := NewManager(NewNoOpProvider(), nil, false, nil, nil)
 
 	err := m.Reconfigure(ProviderNameAnthropic, "test-key", "claude-sonnet-4-5-20250929")
 	if err != nil {
@@ -154,7 +156,7 @@ func TestManager_Reconfigure_Anthropic(t *testing.T) {
 }
 
 func TestManager_Reconfigure_InvalidProvider(t *testing.T) {
-	m := NewManager(NewNoOpProvider(), true)
+	m := NewManager(NewNoOpProvider(), nil, true, nil, nil)
 
 	err := m.Reconfigure("unknown-provider", "", "")
 	if err == nil {
@@ -168,7 +170,7 @@ func TestManager_Reconfigure_InvalidProvider(t *testing.T) {
 }
 
 func TestManager_Reconfigure_EmptyProvider(t *testing.T) {
-	m := NewManager(NewNoOpProvider(), true)
+	m := NewManager(NewNoOpProvider(), nil, true, nil, nil)
 
 	err := m.Reconfigure("", "", "")
 	if err != nil {
@@ -182,7 +184,7 @@ func TestManager_Reconfigure_EmptyProvider(t *testing.T) {
 }
 
 func TestManager_ConcurrentAccess(t *testing.T) {
-	m := NewManager(NewNoOpProvider(), true)
+	m := NewManager(NewNoOpProvider(), nil, true, nil, nil)
 
 	var wg sync.WaitGroup
 	const goroutines = 50
@@ -235,7 +237,7 @@ func TestManager_ConcurrentAccess(t *testing.T) {
 }
 
 func TestManager_ReconfigurePreservesThread(t *testing.T) {
-	m := NewManager(NewNoOpProvider(), false)
+	m := NewManager(NewNoOpProvider(), nil, false, nil, nil)
 
 	// Reconfigure to openai
 	err := m.Reconfigure(ProviderNameOpenAI, "key1", "gpt-4")
@@ -256,5 +258,112 @@ func TestManager_ReconfigurePreservesThread(t *testing.T) {
 	}
 	if m.Enabled() {
 		t.Error("should be disabled after switching to noop")
+	}
+}
+
+func TestManager_BudgetBlocking(t *testing.T) {
+	budget := NewBudget([]BudgetWindow{
+		{Name: "daily", Duration: 24 * time.Hour, Limit: 10000},
+	})
+
+	m := NewManager(NewNoOpProvider(), nil, true, budget, nil)
+
+	// First call should succeed
+	_, err := m.Analyze(context.Background(), AnalysisRequest{
+		Issues: []IssueContext{
+			{Type: "test", Resource: "deployment/test", Namespace: "default", Message: "msg"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("first Analyze() error = %v", err)
+	}
+
+	// Exhaust the budget
+	budget.RecordUsage(9000)
+
+	// Next call should be blocked (estimated ~2000 tokens > remaining ~1000)
+	_, err = m.Analyze(context.Background(), AnalysisRequest{
+		Issues: []IssueContext{
+			{Type: "test2", Resource: "deployment/test2", Namespace: "default", Message: "msg2"},
+		},
+	})
+	if err == nil {
+		t.Fatal("Analyze() should fail when budget is exceeded")
+	}
+	if !errors.Is(err, ErrBudgetExceeded) {
+		t.Errorf("error should wrap ErrBudgetExceeded, got: %v", err)
+	}
+}
+
+func TestManager_CacheHitMiss(t *testing.T) {
+	cache := NewCache(10, 5*time.Minute, true)
+	m := NewManager(NewNoOpProvider(), nil, true, nil, cache)
+
+	request := AnalysisRequest{
+		Issues: []IssueContext{
+			{
+				Type:             "CrashLoopBackOff",
+				Severity:         "critical",
+				Resource:         "deployment/cached-test",
+				Namespace:        "default",
+				Message:          "Container crashing",
+				StaticSuggestion: "Check logs",
+			},
+		},
+	}
+
+	// First call should be a cache miss
+	resp1, err := m.Analyze(context.Background(), request)
+	if err != nil {
+		t.Fatalf("first Analyze() error = %v", err)
+	}
+
+	// Second call with same request should hit cache
+	resp2, err := m.Analyze(context.Background(), request)
+	if err != nil {
+		t.Fatalf("second Analyze() error = %v", err)
+	}
+
+	// Both should return valid responses
+	if resp1 == nil || resp2 == nil {
+		t.Fatal("responses should not be nil")
+	}
+
+	// Cache should have exactly 1 entry
+	if cache.Size() != 1 {
+		t.Errorf("cache Size() = %d, want 1", cache.Size())
+	}
+}
+
+func TestManager_TieredRouting(t *testing.T) {
+	primary := NewNoOpProvider()
+	explain := NewNoOpProvider()
+
+	m := NewManager(primary, explain, true, nil, nil)
+
+	// Normal analyze should use primary
+	normalReq := AnalysisRequest{
+		Issues: []IssueContext{
+			{Type: "test", Resource: "deployment/test", Namespace: "default", Message: "msg", StaticSuggestion: "fix it"},
+		},
+	}
+	_, err := m.Analyze(context.Background(), normalReq)
+	if err != nil {
+		t.Fatalf("normal Analyze() error = %v", err)
+	}
+
+	// Explain mode should use explain provider
+	explainReq := AnalysisRequest{
+		ExplainMode:    true,
+		ExplainContext: "explain the cluster health",
+	}
+	_, err = m.Analyze(context.Background(), explainReq)
+	if err != nil {
+		t.Fatalf("explain Analyze() error = %v", err)
+	}
+
+	// Verify the manager has different providers stored
+	if m.Provider() != primary {
+		t.Error("Provider() should return primary provider")
 	}
 }
