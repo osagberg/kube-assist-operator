@@ -124,26 +124,27 @@ spec:
 | Setting | Value |
 |---------|-------|
 | Provider name | `anthropic` |
-| Default model | `claude-3-sonnet-20240229` |
+| Default model | `claude-haiku-4-5-20251001` |
 | Default endpoint | `https://api.anthropic.com/v1/messages` |
 | API version | `2023-06-01` |
 
 Recommended models:
-- `claude-3-sonnet-20240229` - Balanced performance and cost
-- `claude-3-opus-20240229` - Highest quality analysis
+- `claude-haiku-4-5-20251001` - Cost-efficient (default)
+- `claude-sonnet-4-5-20250929` - Balanced performance and cost
+- `claude-opus-4-6` - Highest quality analysis
 
 ### OpenAI
 
 | Setting | Value |
 |---------|-------|
 | Provider name | `openai` |
-| Default model | `gpt-4` |
+| Default model | `gpt-4o-mini` |
 | Default endpoint | `https://api.openai.com/v1/chat/completions` |
 
 Recommended models:
-- `gpt-4` - Best analysis quality
+- `gpt-4o-mini` - Cost-optimized (default)
+- `gpt-4o` - Best analysis quality
 - `gpt-4-turbo` - Faster with larger context
-- `gpt-3.5-turbo` - Lower cost option
 
 ### NoOp (Testing)
 

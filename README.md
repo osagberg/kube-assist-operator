@@ -2,7 +2,7 @@
 
 [![Go Version](https://img.shields.io/badge/Go-1.25+-00ADD8?style=flat&logo=go)](https://go.dev/)
 [![Kubernetes](https://img.shields.io/badge/Kubernetes-1.25+-326CE5?style=flat&logo=kubernetes)](https://kubernetes.io/)
-[![Chart Version](https://img.shields.io/badge/Helm_Chart-v1.8.0-0F1689?style=flat&logo=helm)](charts/kube-assist)
+[![Chart Version](https://img.shields.io/badge/Helm_Chart-v1.8.1-0F1689?style=flat&logo=helm)](charts/kube-assist)
 [![Tests](https://img.shields.io/badge/Tests-400+_passing-success?style=flat)](https://github.com/osagberg/kube-assist-operator/actions/workflows/test.yml)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![CI](https://github.com/osagberg/kube-assist-operator/actions/workflows/test.yml/badge.svg)](https://github.com/osagberg/kube-assist-operator/actions/workflows/test.yml)
@@ -437,7 +437,6 @@ The dashboard uses Server-Sent Events (SSE) for real-time updates with automatic
 | Key | Action |
 |-----|--------|
 | `/` | Focus search |
-| `j` / `k` | Navigate issues |
 | `f` | Focus namespace filter |
 | `t` | Toggle theme |
 | `p` | Pause/resume updates |
@@ -571,7 +570,13 @@ helm install kube-assist charts/kube-assist \
 | `ai.apiKeySecretRef.name` | -- | Secret containing API key |
 | `ai.budget.dailyTokenLimit` | `0` | Daily token budget (0 = unlimited) |
 | `ai.budget.monthlyTokenLimit` | `0` | Monthly token budget (0 = unlimited) |
+| `dashboard.authToken` | `""` | Bearer token for authenticating mutating API requests |
+| `dashboard.authTokenSecretRef.name` | `""` | Secret containing auth token |
+| `dashboard.tls.enabled` | `false` | Enable TLS for dashboard HTTPS |
+| `dashboard.tls.secretName` | `""` | Secret with tls.crt and tls.key |
 | `networkPolicy.enabled` | `true` | Enable network policy |
+| `networkPolicy.ingressMode` | `permissive` | Ingress mode: permissive or strict |
+| `networkPolicy.dnsMode` | `all` | DNS egress: all or kube-system |
 
 ### Full Configuration
 
