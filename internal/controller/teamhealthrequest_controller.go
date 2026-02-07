@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -384,18 +385,22 @@ func (r *TeamHealthRequestReconciler) dispatchNotifications(
 			continue
 		}
 
-		url := target.URL
-		if url == "" && target.SecretRef != nil {
+		webhookURL := target.URL
+		if webhookURL == "" && target.SecretRef != nil {
 			// Read URL from secret
 			var secret corev1.Secret
 			if err := r.Get(ctx, client.ObjectKey{Name: target.SecretRef.Name, Namespace: hr.Namespace}, &secret); err != nil {
 				log.Error(err, "Failed to read notification secret", "secret", target.SecretRef.Name)
 				continue
 			}
-			url = string(secret.Data[target.SecretRef.Key])
+			webhookURL = string(secret.Data[target.SecretRef.Key])
 		}
 
-		if url == "" {
+		if webhookURL == "" {
+			continue
+		}
+		if err := r.validateNotificationURL(hr, webhookURL); err != nil {
+			log.Error(err, "Skipping invalid notification target", "target", "webhook")
 			continue
 		}
 
@@ -418,11 +423,29 @@ func (r *TeamHealthRequestReconciler) dispatchNotifications(
 			Namespace:     hr.Namespace,
 		}
 
-		wh := notifier.NewWebhookNotifier(url)
+		wh := notifier.NewWebhookNotifier(webhookURL)
 		if err := wh.Send(ctx, n); err != nil {
 			log.Error(err, "Failed to send notification", "target", "webhook")
 		}
 	}
+}
+
+// validateNotificationURL enforces URL shape and scheme for notification targets.
+func (r *TeamHealthRequestReconciler) validateNotificationURL(hr *assistv1alpha1.TeamHealthRequest, rawURL string) error {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("invalid webhook URL: %w", err)
+	}
+	if u.Hostname() == "" {
+		return fmt.Errorf("webhook URL must include a host")
+	}
+	if u.Scheme != "https" {
+		allowHTTP := hr.Annotations != nil && hr.Annotations[assistv1alpha1.AllowHTTPWebhooksAnnotation] == "true"
+		if u.Scheme != "http" || !allowHTTP {
+			return fmt.Errorf("webhook URL must use HTTPS (annotate with %s=true to override)", assistv1alpha1.AllowHTTPWebhooksAnnotation)
+		}
+	}
+	return nil
 }
 
 // severityMet checks if the configured severity threshold is met

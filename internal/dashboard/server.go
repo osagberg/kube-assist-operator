@@ -138,6 +138,7 @@ type Server struct {
 	registry           *checker.Registry
 	addr               string
 	authToken          string
+	allowInsecureHTTP  bool
 	tlsCertFile        string
 	tlsKeyFile         string
 	aiProvider         ai.Provider
@@ -164,17 +165,39 @@ type Server struct {
 // NewServer creates a new dashboard server
 func NewServer(ds datasource.DataSource, registry *checker.Registry, addr string) *Server {
 	return &Server{
-		client:       ds,
-		registry:     registry,
-		addr:         addr,
-		authToken:    os.Getenv("DASHBOARD_AUTH_TOKEN"),
-		aiConfig:     ai.DefaultConfig(),
-		checkTimeout: 2 * time.Minute,
-		history:      history.New(100),
-		correlator:   causal.NewCorrelator(),
-		clients:      make(map[chan HealthUpdate]bool),
-		stopCh:       make(chan struct{}),
+		client:    ds,
+		registry:  registry,
+		addr:      addr,
+		authToken: os.Getenv("DASHBOARD_AUTH_TOKEN"),
+		// Opt-out guard for local/dev use only. By default, auth requires TLS.
+		allowInsecureHTTP: parseBoolEnv("DASHBOARD_ALLOW_INSECURE_HTTP"),
+		aiConfig:          ai.DefaultConfig(),
+		checkTimeout:      2 * time.Minute,
+		history:           history.New(100),
+		correlator:        causal.NewCorrelator(),
+		clients:           make(map[chan HealthUpdate]bool),
+		stopCh:            make(chan struct{}),
 	}
+}
+
+func parseBoolEnv(name string) bool {
+	v := strings.TrimSpace(os.Getenv(name))
+	if v == "" {
+		return false
+	}
+	parsed, err := strconv.ParseBool(v)
+	return err == nil && parsed
+}
+
+func (s *Server) tlsConfigured() bool {
+	return s.tlsCertFile != "" && s.tlsKeyFile != ""
+}
+
+func (s *Server) validateSecurityConfig() error {
+	if s.authToken == "" || s.tlsConfigured() || s.allowInsecureHTTP {
+		return nil
+	}
+	return fmt.Errorf("dashboard auth is configured but TLS is not enabled; configure dashboard TLS cert/key or set DASHBOARD_ALLOW_INSECURE_HTTP=true for local development only")
 }
 
 // WithTLS configures TLS for the dashboard server
@@ -225,7 +248,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/api/check", s.authMiddleware(s.handleTriggerCheck))
 	mux.HandleFunc("/api/settings/ai", s.authMiddleware(s.handleAISettings))
 	mux.HandleFunc("/api/causal/groups", s.handleCausalGroups)
-	mux.HandleFunc("/api/explain", s.handleExplain)
+	mux.HandleFunc("/api/explain", s.authMiddleware(s.handleExplain))
 	mux.HandleFunc("/api/prediction/trend", s.handlePrediction)
 
 	// React SPA dashboard
@@ -265,6 +288,13 @@ func (s *Server) Start(ctx context.Context) error {
 	} else {
 		log.Info("Dashboard authentication enabled for mutating endpoints")
 	}
+	if err := s.validateSecurityConfig(); err != nil {
+		return err
+	}
+	if s.authToken != "" && !s.tlsConfigured() && s.allowInsecureHTTP {
+		log.Info("WARNING: Dashboard auth enabled without TLS due to explicit override. Tokens will be sent in plaintext.",
+			"env", "DASHBOARD_ALLOW_INSECURE_HTTP")
+	}
 
 	s.running = true
 
@@ -280,15 +310,12 @@ func (s *Server) Start(ctx context.Context) error {
 	// Run server in goroutine
 	errCh := make(chan error, 1)
 	go func() {
-		if s.tlsCertFile != "" && s.tlsKeyFile != "" {
+		if s.tlsConfigured() {
 			log.Info("Dashboard TLS enabled", "cert", s.tlsCertFile)
 			if err := server.ListenAndServeTLS(s.tlsCertFile, s.tlsKeyFile); err != nil && err != http.ErrServerClosed {
 				errCh <- err
 			}
 		} else {
-			if s.authToken != "" {
-				log.Info("WARNING: Dashboard auth enabled without TLS. Tokens will be sent in plaintext.")
-			}
 			if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 				errCh <- err
 			}

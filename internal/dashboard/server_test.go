@@ -39,6 +39,7 @@ import (
 const (
 	providerNoop      = "noop"
 	providerAnthropic = "anthropic"
+	testAuthToken     = "secret-token"
 )
 
 func TestServer_SPAEmbed(t *testing.T) {
@@ -170,6 +171,140 @@ func TestServer_HandleTriggerCheck_POST(t *testing.T) {
 
 	if response["status"] != "check triggered" {
 		t.Errorf("handleTriggerCheck() status = %s, want 'check triggered'", response["status"])
+	}
+}
+
+func TestServer_AuthMiddleware_NoTokenConfigured_AllowsRequest(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	called := false
+	handler := server.authMiddleware(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/explain", nil)
+	rr := httptest.NewRecorder()
+	handler(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Errorf("authMiddleware without token status = %d, want %d", rr.Code, http.StatusNoContent)
+	}
+	if !called {
+		t.Error("authMiddleware should call next handler when no token configured")
+	}
+}
+
+func TestServer_AuthMiddleware_RequiresBearerToken(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+	server.authToken = testAuthToken
+
+	handler := server.authMiddleware(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/explain", nil)
+	rr := httptest.NewRecorder()
+	handler(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("authMiddleware missing bearer status = %d, want %d", rr.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestServer_AuthMiddleware_RejectsWrongToken(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+	server.authToken = testAuthToken
+
+	handler := server.authMiddleware(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/explain", nil)
+	req.Header.Set("Authorization", "Bearer wrong-token")
+	rr := httptest.NewRecorder()
+	handler(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Errorf("authMiddleware wrong token status = %d, want %d", rr.Code, http.StatusForbidden)
+	}
+}
+
+func TestServer_AuthMiddleware_AcceptsValidToken(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+	server.authToken = testAuthToken
+
+	called := false
+	handler := server.authMiddleware(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/explain", nil)
+	req.Header.Set("Authorization", "Bearer "+testAuthToken)
+	rr := httptest.NewRecorder()
+	handler(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Errorf("authMiddleware valid token status = %d, want %d", rr.Code, http.StatusNoContent)
+	}
+	if !called {
+		t.Error("authMiddleware should call next handler for valid token")
+	}
+}
+
+func TestServer_ValidateSecurityConfig_RequiresTLSWhenAuthEnabled(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+	server.authToken = testAuthToken
+	server.allowInsecureHTTP = false
+
+	err := server.validateSecurityConfig()
+	if err == nil {
+		t.Fatal("validateSecurityConfig() expected error when auth is enabled without TLS")
+	}
+	if !strings.Contains(err.Error(), "TLS") {
+		t.Errorf("validateSecurityConfig() error = %q, want TLS guidance", err.Error())
+	}
+}
+
+func TestServer_ValidateSecurityConfig_AllowsInsecureOverride(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+	server.authToken = testAuthToken
+	server.allowInsecureHTTP = true
+
+	if err := server.validateSecurityConfig(); err != nil {
+		t.Fatalf("validateSecurityConfig() unexpected error: %v", err)
+	}
+}
+
+func TestServer_ValidateSecurityConfig_AllowsTLS(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+	server.authToken = testAuthToken
+	server.WithTLS("/tmp/cert.pem", "/tmp/key.pem")
+
+	if err := server.validateSecurityConfig(); err != nil {
+		t.Fatalf("validateSecurityConfig() unexpected error with TLS configured: %v", err)
 	}
 }
 

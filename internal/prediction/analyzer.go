@@ -106,6 +106,8 @@ func Analyze(snapshots []history.HealthSnapshot) *PredictionResult {
 	rSquared := 0.0
 	if ssTot > 0 {
 		rSquared = 1 - ssRes/ssTot
+	} else {
+		rSquared = 1.0 // No variance — model perfectly explains the data
 	}
 	if rSquared < 0 {
 		rSquared = 0
@@ -117,22 +119,29 @@ func Analyze(snapshots []history.HealthSnapshot) *PredictionResult {
 	// Projected score: 1 hour from the latest snapshot
 	latestX := xs[len(xs)-1]
 	projectionX := latestX + 3600 // 1 hour ahead
-	projectedScore := intercept + slope*projectionX
+	rawProjected := intercept + slope*projectionX
 
-	// Clamp to [0, 100]
-	projectedScore = math.Max(0, math.Min(100, projectedScore))
-
-	// 95% confidence interval (using standard error of estimate)
+	// 95% prediction interval (proper OLS formula)
+	meanX := sumX / n
+	sxx := sumX2 - sumX*sumX/n
 	var mse float64
 	if n > 2 {
 		mse = ssRes / (n - 2)
 	}
 	se := math.Sqrt(mse)
-	// Simplified 95% CI: +/-1.96 * se (approximate, assumes normal residuals)
-	ci := [2]float64{
-		math.Max(0, projectedScore-1.96*se),
-		math.Min(100, projectedScore+1.96*se),
+	// Prediction SE accounts for uncertainty in both the regression line and new observation
+	leverage := 1 + 1/n + (projectionX-meanX)*(projectionX-meanX)/sxx
+	if leverage < 1 {
+		leverage = 1 // safety floor
 	}
+	sePred := se * math.Sqrt(leverage)
+
+	// Compute CI on unclamped value, then clamp all three independently
+	ci := [2]float64{
+		math.Max(0, math.Min(100, rawProjected-1.96*sePred)),
+		math.Max(0, math.Min(100, rawProjected+1.96*sePred)),
+	}
+	projectedScore := math.Max(0, math.Min(100, rawProjected))
 
 	// Determine trend direction
 	var trendDirection string

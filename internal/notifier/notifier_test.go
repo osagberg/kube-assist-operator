@@ -248,6 +248,28 @@ func TestWebhookNotifier_SSRFProtection(t *testing.T) {
 	}
 }
 
+func TestValidateWebhookTarget_SchemeAndHostValidation(t *testing.T) {
+	t.Run("rejects non-http scheme", func(t *testing.T) {
+		err := validateWebhookTarget("file:///tmp/test.sock")
+		if err == nil {
+			t.Fatal("expected error for invalid scheme, got nil")
+		}
+		if got := err.Error(); !strings.Contains(got, "http or https") {
+			t.Errorf("error = %q, want to contain scheme validation message", got)
+		}
+	})
+
+	t.Run("rejects missing host", func(t *testing.T) {
+		err := validateWebhookTarget("https:///path-only")
+		if err == nil {
+			t.Fatal("expected error for missing host, got nil")
+		}
+		if got := err.Error(); !strings.Contains(got, "include host") {
+			t.Errorf("error = %q, want to contain host validation message", got)
+		}
+	})
+}
+
 func TestRegistry_Len(t *testing.T) {
 	reg := NewRegistry()
 	if reg.Len() != 0 {

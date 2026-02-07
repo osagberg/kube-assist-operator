@@ -155,6 +155,62 @@ func TestEvaluator_Evaluate(t *testing.T) {
 	}
 }
 
+func TestEvaluator_EvaluateString(t *testing.T) {
+	eval, err := NewEvaluator()
+	if err != nil {
+		t.Fatalf("NewEvaluator() error = %v", err)
+	}
+
+	t.Run("valid string expression", func(t *testing.T) {
+		compiled, err := eval.Compile(`"hello " + object.metadata.name`)
+		if err != nil {
+			t.Fatalf("Compile() error = %v", err)
+		}
+
+		obj := map[string]any{
+			"metadata": map[string]any{"name": "world"},
+		}
+
+		got, err := eval.EvaluateString(compiled, obj)
+		if err != nil {
+			t.Fatalf("EvaluateString() error = %v", err)
+		}
+		if got != "hello world" {
+			t.Errorf("EvaluateString() = %q, want %q", got, "hello world")
+		}
+	})
+
+	t.Run("non-string expression returns error", func(t *testing.T) {
+		compiled, err := eval.Compile("object.spec.replicas > 1")
+		if err != nil {
+			t.Fatalf("Compile() error = %v", err)
+		}
+
+		obj := map[string]any{
+			"spec": map[string]any{"replicas": int64(3)},
+		}
+
+		_, err = eval.EvaluateString(compiled, obj)
+		if err == nil {
+			t.Fatal("EvaluateString() should return error for non-string result")
+		}
+	})
+
+	t.Run("eval error for missing field", func(t *testing.T) {
+		compiled, err := eval.Compile("object.nonexistent.field")
+		if err != nil {
+			t.Fatalf("Compile() error = %v", err)
+		}
+
+		obj := map[string]any{}
+
+		_, err = eval.EvaluateString(compiled, obj)
+		if err == nil {
+			t.Fatal("EvaluateString() should return error for missing field")
+		}
+	})
+}
+
 func TestEvaluator_EvaluateMessage(t *testing.T) {
 	eval, err := NewEvaluator()
 	if err != nil {

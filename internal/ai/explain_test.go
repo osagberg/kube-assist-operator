@@ -261,6 +261,131 @@ func TestBuildPrompt_ExplainMode(t *testing.T) {
 	}
 }
 
+func TestParseExplainResponse_NormalizesRiskLevel(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"uppercase HIGH", "HIGH", "high"},
+		{"mixed Low", "Low", "low"},
+		{"invalid foo", "foo", "unknown"},
+		{"empty string", "", "unknown"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data, _ := json.Marshal(map[string]any{
+				"narrative":      "test narrative",
+				"riskLevel":      tt.input,
+				"trendDirection": "stable",
+				"confidence":     0.5,
+			})
+			resp := ParseExplainResponse(string(data), 0)
+			if resp.RiskLevel != tt.want {
+				t.Errorf("RiskLevel = %q, want %q", resp.RiskLevel, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseExplainResponse_NormalizesTrendDirection(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"uppercase STABLE", "STABLE", "stable"},
+		{"mixed Improving", "Improving", "improving"},
+		{"invalid bar", "bar", "unknown"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data, _ := json.Marshal(map[string]any{
+				"narrative":      "test narrative",
+				"riskLevel":      "low",
+				"trendDirection": tt.input,
+				"confidence":     0.5,
+			})
+			resp := ParseExplainResponse(string(data), 0)
+			if resp.TrendDirection != tt.want {
+				t.Errorf("TrendDirection = %q, want %q", resp.TrendDirection, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseExplainResponse_EmptyNarrative(t *testing.T) {
+	data, _ := json.Marshal(map[string]any{
+		"narrative":      "",
+		"riskLevel":      "low",
+		"trendDirection": "stable",
+		"confidence":     0.5,
+	})
+	raw := string(data)
+	resp := ParseExplainResponse(raw, 0)
+	if resp.Narrative != raw {
+		t.Errorf("Narrative = %q, want raw content %q", resp.Narrative, raw)
+	}
+}
+
+func TestBuildExplainPrompt_Truncation(t *testing.T) {
+	// Create health results with a large field that exceeds 8192 bytes when serialized
+	largeValue := strings.Repeat("x", 10000)
+	healthResults := map[string]any{
+		"bigField": largeValue,
+		"summary": map[string]any{
+			"totalHealthy": 5,
+			"totalIssues":  2,
+		},
+	}
+
+	prompt := BuildExplainPrompt(healthResults, nil, nil)
+
+	// The full healthJSON would be >10000 bytes, but it should be truncated to the summary
+	if strings.Contains(prompt, largeValue) {
+		t.Error("prompt should not contain the large value after truncation")
+	}
+	if !strings.Contains(prompt, "totalHealthy") {
+		t.Error("prompt should contain summary data after truncation")
+	}
+	// Verify the prompt is reasonably sized
+	if len(prompt) > 8192+2000 {
+		t.Errorf("prompt length = %d, expected to be bounded after truncation", len(prompt))
+	}
+}
+
+func TestParseExplainResponse_NormalizesAllValidValues(t *testing.T) {
+	riskLevels := []string{"low", "medium", "high", "critical"}
+	for _, rl := range riskLevels {
+		data, _ := json.Marshal(map[string]any{
+			"narrative":      "test",
+			"riskLevel":      rl,
+			"trendDirection": "stable",
+			"confidence":     0.5,
+		})
+		resp := ParseExplainResponse(string(data), 0)
+		if resp.RiskLevel != rl {
+			t.Errorf("RiskLevel = %q, want %q", resp.RiskLevel, rl)
+		}
+	}
+
+	trendDirs := []string{"improving", "stable", "degrading"}
+	for _, td := range trendDirs {
+		data, _ := json.Marshal(map[string]any{
+			"narrative":      "test",
+			"riskLevel":      "low",
+			"trendDirection": td,
+			"confidence":     0.5,
+		})
+		resp := ParseExplainResponse(string(data), 0)
+		if resp.TrendDirection != td {
+			t.Errorf("TrendDirection = %q, want %q", resp.TrendDirection, td)
+		}
+	}
+}
+
 func TestBuildPrompt_ExplainModeEmpty(t *testing.T) {
 	// ExplainMode true but empty context should fall through to normal prompt
 	request := AnalysisRequest{

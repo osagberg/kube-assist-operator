@@ -129,6 +129,9 @@ type NotificationType string
 
 const (
 	NotificationTypeWebhook NotificationType = "webhook"
+
+	// AllowHTTPWebhooksAnnotation permits HTTP webhook URLs for explicit test/dev use.
+	AllowHTTPWebhooksAnnotation = "assist.cluster.local/allow-http-webhooks"
 )
 
 // SecretKeyRef is a reference to a key in a Secret

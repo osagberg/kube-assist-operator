@@ -78,6 +78,19 @@ func (e *Evaluator) Evaluate(compiled *CompiledRule, object map[string]any) (boo
 	return val, nil
 }
 
+// EvaluateString runs a compiled CEL expression and returns the string result.
+func (e *Evaluator) EvaluateString(compiled *CompiledRule, object map[string]any) (string, error) {
+	out, _, err := compiled.program.Eval(map[string]any{"object": object})
+	if err != nil {
+		return "", fmt.Errorf("CEL evaluation error: %w", err)
+	}
+	val, ok := out.Value().(string)
+	if !ok {
+		return "", fmt.Errorf("CEL expression did not return string, got %T", out.Value())
+	}
+	return val, nil
+}
+
 // EvaluateMessage evaluates a message expression. If the message starts with "=",
 // it is treated as a CEL expression that should return a string.
 // Otherwise it is returned as a static string.

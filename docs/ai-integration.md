@@ -34,7 +34,7 @@ Changes take effect immediately. The dashboard uses the `POST /api/settings/ai` 
 ./manager \
   --enable-ai \
   --ai-provider=anthropic \
-  --ai-model=claude-3-sonnet-20240229 \
+  --ai-model=claude-haiku-4-5-20251001 \
   --ai-api-key=sk-ant-...
 ```
 
@@ -50,7 +50,7 @@ Changes take effect immediately. The dashboard uses the `POST /api/settings/ai` 
 ```bash
 export KUBE_ASSIST_AI_PROVIDER=anthropic
 export KUBE_ASSIST_AI_API_KEY=sk-ant-api03-...
-export KUBE_ASSIST_AI_MODEL=claude-3-sonnet-20240229
+export KUBE_ASSIST_AI_MODEL=claude-haiku-4-5-20251001
 export KUBE_ASSIST_AI_ENDPOINT=https://api.anthropic.com/v1/messages  # optional
 ```
 
@@ -221,7 +221,7 @@ Returns the current AI configuration. The API key is never exposed -- only a boo
 {
   "enabled": true,
   "provider": "anthropic",
-  "model": "claude-3-sonnet-20240229",
+  "model": "claude-haiku-4-5-20251001",
   "hasApiKey": true,
   "providerReady": true
 }
@@ -230,13 +230,14 @@ Returns the current AI configuration. The API key is never exposed -- only a boo
 ### POST /api/settings/ai
 
 Updates AI configuration at runtime. Only provided fields are changed.
+When `DASHBOARD_AUTH_TOKEN` is configured, include `Authorization: Bearer <token>`.
 
 ```json
 {
   "enabled": true,
   "provider": "anthropic",
   "apiKey": "sk-ant-...",
-  "model": "claude-3-sonnet-20240229"
+  "model": "claude-haiku-4-5-20251001"
 }
 ```
 
@@ -310,7 +311,7 @@ AI responses include:
 AI API calls incur costs based on token usage. To manage costs:
 
 1. Use `noop` provider in development and CI pipelines
-2. Choose smaller models for routine checks (`gpt-3.5-turbo`, `claude-3-sonnet`)
+2. Choose smaller models for routine checks (`gpt-4o-mini`, `claude-haiku-4-5-20251001`)
 3. Limit max tokens via provider configuration (default: 2000)
 4. Run AI-enhanced checks on-demand rather than continuously
 5. Use the dashboard toggle to enable AI only when you need deeper analysis -- the static suggestions already include kubectl commands and common root causes

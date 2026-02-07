@@ -29,6 +29,8 @@ import (
 // ErrNotConfigured is returned when AI provider is not configured
 var ErrNotConfigured = errors.New("AI provider not configured")
 
+const explainUnknown = "unknown"
+
 // Provider defines the interface for AI analysis providers
 type Provider interface {
 	// Name returns the provider identifier (e.g., "openai", "anthropic", "noop")
@@ -387,6 +389,15 @@ func BuildExplainPrompt(healthResults map[string]any, causalCtx *CausalAnalysisC
 
 	b.WriteString("Current Health Results:\n")
 	healthJSON, _ := json.MarshalIndent(healthResults, "", "  ")
+	const maxHealthJSONBytes = 8192 // ~2k tokens
+	if len(healthJSON) > maxHealthJSONBytes {
+		if summary, ok := healthResults["summary"]; ok {
+			summaryJSON, _ := json.MarshalIndent(map[string]any{"summary": summary}, "", "  ")
+			healthJSON = summaryJSON
+		} else {
+			healthJSON = []byte(`{"note":"health data truncated due to size"}`)
+		}
+	}
 	b.Write(healthJSON)
 	b.WriteString("\n")
 
@@ -425,8 +436,8 @@ func ParseExplainResponse(content string, tokensUsed int) *ExplainResponse {
 		// On parse failure, return a response with just the narrative set to the raw content
 		return &ExplainResponse{
 			Narrative:      content,
-			RiskLevel:      "unknown",
-			TrendDirection: "unknown",
+			RiskLevel:      explainUnknown,
+			TrendDirection: explainUnknown,
 			TokensUsed:     tokensUsed,
 		}
 	}
@@ -437,6 +448,26 @@ func ParseExplainResponse(content string, tokensUsed int) *ExplainResponse {
 	}
 	if result.Confidence > 1 {
 		result.Confidence = 1
+	}
+
+	// Normalize risk level
+	switch strings.ToLower(result.RiskLevel) {
+	case "low", "medium", "high", "critical":
+		result.RiskLevel = strings.ToLower(result.RiskLevel)
+	default:
+		result.RiskLevel = explainUnknown
+	}
+
+	// Normalize trend direction
+	switch strings.ToLower(result.TrendDirection) {
+	case "improving", "stable", "degrading":
+		result.TrendDirection = strings.ToLower(result.TrendDirection)
+	default:
+		result.TrendDirection = explainUnknown
+	}
+
+	if strings.TrimSpace(result.Narrative) == "" {
+		result.Narrative = content
 	}
 
 	result.TokensUsed = tokensUsed

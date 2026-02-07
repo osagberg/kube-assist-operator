@@ -668,5 +668,31 @@ var _ = Describe("TeamHealthRequest Controller", func() {
 			cfg := r.buildCheckerConfig(assistv1alpha1.CheckerConfig{})
 			Expect(cfg).To(BeEmpty())
 		})
+
+		It("validateNotificationURL should reject HTTP by default", func() {
+			r := &TeamHealthRequestReconciler{}
+			err := r.validateNotificationURL(&assistv1alpha1.TeamHealthRequest{}, "http://example.com/webhook")
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("must use HTTPS"))
+		})
+
+		It("validateNotificationURL should allow HTTP with explicit annotation", func() {
+			r := &TeamHealthRequestReconciler{}
+			hr := &assistv1alpha1.TeamHealthRequest{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						assistv1alpha1.AllowHTTPWebhooksAnnotation: "true",
+					},
+				},
+			}
+			Expect(r.validateNotificationURL(hr, "http://example.com/webhook")).To(Succeed())
+		})
+
+		It("validateNotificationURL should reject missing host", func() {
+			r := &TeamHealthRequestReconciler{}
+			err := r.validateNotificationURL(&assistv1alpha1.TeamHealthRequest{}, "https:///path-only")
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("include a host"))
+		})
 	})
 })

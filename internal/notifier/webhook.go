@@ -47,7 +47,13 @@ func validateWebhookTarget(rawURL string) error {
 	if err != nil {
 		return fmt.Errorf("invalid webhook URL: %w", err)
 	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("webhook URL must use http or https scheme")
+	}
 	host := u.Hostname()
+	if host == "" {
+		return fmt.Errorf("webhook URL must include host")
+	}
 	ips, err := net.LookupIP(host)
 	if err != nil {
 		return fmt.Errorf("DNS lookup failed for %s: %w", host, err)

@@ -18,6 +18,7 @@ package plugin
 
 import (
 	"context"
+	"fmt"
 	"maps"
 	"testing"
 
@@ -441,6 +442,254 @@ func TestPluginChecker_Check_IssueSeverity(t *testing.T) {
 
 	if result.Issues[0].Namespace != "default" {
 		t.Errorf("issue namespace = %q, want %q", result.Issues[0].Namespace, "default")
+	}
+}
+
+func TestPluginChecker_Check_NilCheckCtx(t *testing.T) {
+	spec := assistv1alpha1.CheckPluginSpec{
+		DisplayName: "nil-ctx-test",
+		TargetResource: assistv1alpha1.TargetGVR{
+			Version:  "v1",
+			Resource: "pods",
+			Kind:     "Pod",
+		},
+		Rules: []assistv1alpha1.CheckRule{
+			{Name: "r", Condition: "true", Message: "m"},
+		},
+	}
+
+	pc, err := NewPluginChecker("nil-ctx-test", spec)
+	if err != nil {
+		t.Fatalf("NewPluginChecker() error = %v", err)
+	}
+
+	result, err := pc.Check(context.Background(), nil)
+	if err == nil {
+		t.Fatal("Check(nil) should return error")
+	}
+	if result != nil {
+		t.Errorf("Check(nil) should return nil result, got %v", result)
+	}
+}
+
+func TestPluginChecker_Check_ListError(t *testing.T) {
+	spec := assistv1alpha1.CheckPluginSpec{
+		DisplayName: "list-error-test",
+		TargetResource: assistv1alpha1.TargetGVR{
+			Version:  "v1",
+			Resource: "pods",
+			Kind:     "Pod",
+		},
+		Rules: []assistv1alpha1.CheckRule{
+			{Name: "r", Condition: "true", Severity: "Warning", Message: "m"},
+		},
+	}
+
+	pc, err := NewPluginChecker("list-error-test", spec)
+	if err != nil {
+		t.Fatalf("NewPluginChecker() error = %v", err)
+	}
+
+	ds := &fakeDataSource{err: fmt.Errorf("forbidden")}
+	checkCtx := &checker.CheckContext{
+		DataSource: ds,
+		Namespaces: []string{"default"},
+	}
+
+	result, err := pc.Check(context.Background(), checkCtx)
+	if err != nil {
+		t.Fatalf("Check() should not return error for list failures, got %v", err)
+	}
+
+	if len(result.Issues) != 1 {
+		t.Fatalf("expected 1 list-error issue, got %d", len(result.Issues))
+	}
+
+	wantType := "plugin:list-error-test:list-error"
+	if result.Issues[0].Type != wantType {
+		t.Errorf("issue type = %q, want %q", result.Issues[0].Type, wantType)
+	}
+}
+
+func TestPluginChecker_Check_DefaultSeverity(t *testing.T) {
+	spec := assistv1alpha1.CheckPluginSpec{
+		DisplayName: "default-sev",
+		TargetResource: assistv1alpha1.TargetGVR{
+			Version:  "v1",
+			Resource: "pods",
+			Kind:     "Pod",
+		},
+		Rules: []assistv1alpha1.CheckRule{
+			{
+				Name:      "no-severity",
+				Condition: "true",
+				Severity:  "",
+				Message:   "test",
+			},
+		},
+	}
+
+	pc, err := NewPluginChecker("default-sev", spec)
+	if err != nil {
+		t.Fatalf("NewPluginChecker() error = %v", err)
+	}
+
+	ds := &fakeDataSource{
+		items: []unstructured.Unstructured{
+			makeUnstructured("", "Pod", "test-pod", map[string]any{}),
+		},
+	}
+
+	result, err := pc.Check(context.Background(), &checker.CheckContext{
+		DataSource: ds,
+		Namespaces: []string{"default"},
+	})
+	if err != nil {
+		t.Fatalf("Check() error = %v", err)
+	}
+
+	if len(result.Issues) != 1 {
+		t.Fatalf("expected 1 issue, got %d", len(result.Issues))
+	}
+
+	if result.Issues[0].Severity != checker.SeverityWarning {
+		t.Errorf("severity = %q, want %q", result.Issues[0].Severity, checker.SeverityWarning)
+	}
+}
+
+func TestPluginChecker_Check_InvalidSeverity(t *testing.T) {
+	spec := assistv1alpha1.CheckPluginSpec{
+		DisplayName: "invalid-sev",
+		TargetResource: assistv1alpha1.TargetGVR{
+			Version:  "v1",
+			Resource: "pods",
+			Kind:     "Pod",
+		},
+		Rules: []assistv1alpha1.CheckRule{
+			{
+				Name:      "wrong-case",
+				Condition: "true",
+				Severity:  "CRITICAL",
+				Message:   "test",
+			},
+		},
+	}
+
+	pc, err := NewPluginChecker("invalid-sev", spec)
+	if err != nil {
+		t.Fatalf("NewPluginChecker() error = %v", err)
+	}
+
+	ds := &fakeDataSource{
+		items: []unstructured.Unstructured{
+			makeUnstructured("", "Pod", "test-pod", map[string]any{}),
+		},
+	}
+
+	result, err := pc.Check(context.Background(), &checker.CheckContext{
+		DataSource: ds,
+		Namespaces: []string{"default"},
+	})
+	if err != nil {
+		t.Fatalf("Check() error = %v", err)
+	}
+
+	if len(result.Issues) != 1 {
+		t.Fatalf("expected 1 issue, got %d", len(result.Issues))
+	}
+
+	if result.Issues[0].Severity != checker.SeverityWarning {
+		t.Errorf("severity = %q, want %q (should default for invalid value)", result.Issues[0].Severity, checker.SeverityWarning)
+	}
+}
+
+func TestPluginChecker_Check_PrecompiledMessage(t *testing.T) {
+	spec := assistv1alpha1.CheckPluginSpec{
+		DisplayName: "precompiled-msg",
+		TargetResource: assistv1alpha1.TargetGVR{
+			Version:  "v1",
+			Resource: "pods",
+			Kind:     "Pod",
+		},
+		Rules: []assistv1alpha1.CheckRule{
+			{
+				Name:      "cel-msg-rule",
+				Condition: "true",
+				Severity:  "Warning",
+				Message:   `="Pod " + object.metadata.name + " has issues"`,
+			},
+		},
+	}
+
+	pc, err := NewPluginChecker("precompiled-msg", spec)
+	if err != nil {
+		t.Fatalf("NewPluginChecker() error = %v", err)
+	}
+
+	// Verify msgProg was pre-compiled
+	if pc.compiled[0].msgProg == nil {
+		t.Fatal("expected msgProg to be pre-compiled for CEL message")
+	}
+
+	ds := &fakeDataSource{
+		items: []unstructured.Unstructured{
+			makeUnstructured("", "Pod", "my-pod", map[string]any{}),
+		},
+	}
+
+	result, err := pc.Check(context.Background(), &checker.CheckContext{
+		DataSource: ds,
+		Namespaces: []string{"default"},
+	})
+	if err != nil {
+		t.Fatalf("Check() error = %v", err)
+	}
+
+	if len(result.Issues) != 1 {
+		t.Fatalf("expected 1 issue, got %d", len(result.Issues))
+	}
+
+	wantMsg := "Pod my-pod has issues"
+	if result.Issues[0].Message != wantMsg {
+		t.Errorf("message = %q, want %q", result.Issues[0].Message, wantMsg)
+	}
+}
+
+func TestPluginChecker_Check_AllNamespacesFail(t *testing.T) {
+	spec := assistv1alpha1.CheckPluginSpec{
+		DisplayName: "all-ns-fail",
+		TargetResource: assistv1alpha1.TargetGVR{
+			Version:  "v1",
+			Resource: "pods",
+			Kind:     "Pod",
+		},
+		Rules: []assistv1alpha1.CheckRule{
+			{Name: "r", Condition: "true", Severity: "Warning", Message: "m"},
+		},
+	}
+
+	pc, err := NewPluginChecker("all-ns-fail", spec)
+	if err != nil {
+		t.Fatalf("NewPluginChecker() error = %v", err)
+	}
+
+	ds := &fakeDataSource{err: fmt.Errorf("forbidden")}
+	checkCtx := &checker.CheckContext{
+		DataSource: ds,
+		Namespaces: []string{"ns1", "ns2", "ns3"},
+	}
+
+	result, err := pc.Check(context.Background(), checkCtx)
+	if err != nil {
+		t.Fatalf("Check() should not return error, got %v", err)
+	}
+
+	if result.Error == nil {
+		t.Fatal("expected result.Error to be set when all namespaces fail")
+	}
+
+	if len(result.Issues) != 3 {
+		t.Errorf("expected 3 list-error issues, got %d", len(result.Issues))
 	}
 }
 

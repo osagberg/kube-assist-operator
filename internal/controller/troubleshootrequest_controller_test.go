@@ -1097,6 +1097,70 @@ var _ = Describe("TroubleshootRequest Controller", func() {
 			Expect(summary).To(ContainSubstring("2 warning"))
 			Expect(summary).NotTo(ContainSubstring("critical"))
 		})
+
+		It("filterRecentRelevantEvents should include only recent target events", func() {
+			now := time.Now()
+			since := now.Add(-1 * time.Hour)
+			targets := map[string]struct{}{
+				"target-deploy": {},
+				"pod-a":         {},
+			}
+
+			events := []corev1.Event{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:              "old",
+						CreationTimestamp: metav1.NewTime(now.Add(-2 * time.Hour)),
+					},
+					InvolvedObject: corev1.ObjectReference{Name: "pod-a"},
+					LastTimestamp:  metav1.NewTime(now.Add(-2 * time.Hour)),
+					FirstTimestamp: metav1.NewTime(now.Add(-2 * time.Hour)),
+					Type:           "Warning",
+					Reason:         "BackOff",
+					Message:        "old event",
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:              "new-target",
+						CreationTimestamp: metav1.NewTime(now.Add(-5 * time.Minute)),
+					},
+					InvolvedObject: corev1.ObjectReference{Name: "target-deploy"},
+					LastTimestamp:  metav1.NewTime(now.Add(-5 * time.Minute)),
+					Type:           "Normal",
+					Reason:         "Pulled",
+					Message:        "recent target event",
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:              "new-other",
+						CreationTimestamp: metav1.NewTime(now.Add(-2 * time.Minute)),
+					},
+					InvolvedObject: corev1.ObjectReference{Name: "unrelated"},
+					LastTimestamp:  metav1.NewTime(now.Add(-2 * time.Minute)),
+					Type:           "Normal",
+					Reason:         "Pulled",
+					Message:        "should not be included",
+				},
+			}
+
+			lines := filterRecentRelevantEvents(events, targets, since)
+			Expect(lines).To(HaveLen(1))
+			Expect(lines[0]).To(ContainSubstring("recent target event"))
+		})
+
+		It("eventTimestamp should fall back across timestamp fields", func() {
+			now := time.Now()
+
+			event := corev1.Event{
+				EventTime: metav1.MicroTime{Time: now.Add(-10 * time.Minute)},
+			}
+			Expect(eventTimestamp(event)).To(Equal(event.EventTime.Time))
+
+			event = corev1.Event{
+				FirstTimestamp: metav1.NewTime(now.Add(-15 * time.Minute)),
+			}
+			Expect(eventTimestamp(event)).To(Equal(event.FirstTimestamp.Time))
+		})
 	})
 
 	Context("TTL cleanup for completed requests", func() {

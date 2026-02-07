@@ -93,6 +93,10 @@ spec:
             - name: DASHBOARD_AUTH_TOKEN
               value: {{ .Values.dashboard.authToken | quote }}
             {{- end }}
+            {{- if and .Values.dashboard.enabled .Values.dashboard.allowInsecureHttp }}
+            - name: DASHBOARD_ALLOW_INSECURE_HTTP
+              value: "true"
+            {{- end }}
             {{- with .Values.env }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

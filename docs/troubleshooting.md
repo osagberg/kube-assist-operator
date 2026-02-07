@@ -51,6 +51,30 @@ Look for:
 kubectl get svc -n kube-assist-system | grep dashboard
 ```
 
+**5. If auth token is set, configure TLS (or explicit local override)**
+
+When `DASHBOARD_AUTH_TOKEN` is configured, the dashboard now requires TLS cert/key by default.
+
+Helm example:
+
+```yaml
+dashboard:
+  enabled: true
+  authTokenSecretRef:
+    name: kube-assist-dashboard-auth
+    key: auth-token
+  tls:
+    enabled: true
+    secretName: kube-assist-dashboard-tls
+```
+
+For local development only, you can explicitly allow insecure HTTP:
+
+```yaml
+dashboard:
+  allowInsecureHttp: true
+```
+
 ---
 
 ## Checkers Returning Empty Results
@@ -79,7 +103,7 @@ metadata:
   name: check-myapp
   namespace: my-namespace  # Resources checked here
 spec:
-  targetRef:
+  target:
     kind: Deployment
     name: my-app
 ```
@@ -92,9 +116,10 @@ kind: TeamHealthRequest
 metadata:
   name: health-check
 spec:
-  namespaces:
-    - production
-    - staging
+  scope:
+    namespaces:
+      - production
+      - staging
 ```
 
 **2. Check RBAC permissions**

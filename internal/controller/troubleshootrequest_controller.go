@@ -21,6 +21,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"time"
 
@@ -505,36 +506,32 @@ func (r *TroubleshootRequestReconciler) collectLogs(ctx context.Context, tr *ass
 // collectEvents gathers events for the target workload
 func (r *TroubleshootRequestReconciler) collectEvents(ctx context.Context, tr *assistv1alpha1.TroubleshootRequest, pods []corev1.Pod) (string, error) {
 	cmName := fmt.Sprintf("%s-events", tr.Name)
-
-	eventList := &corev1.EventList{}
-	if err := r.List(ctx, eventList, client.InNamespace(tr.Namespace)); err != nil {
-		return "", err
-	}
-
-	var relevantEvents []string
-	podNames := make(map[string]bool)
-	for _, pod := range pods {
-		podNames[pod.Name] = true
-	}
-
 	oneHourAgo := time.Now().Add(-1 * time.Hour)
-
-	for _, event := range eventList.Items {
-		// Filter events within the last hour
-		if !event.LastTimestamp.IsZero() && event.LastTimestamp.Time.Before(oneHourAgo) {
-			continue
-		}
-
-		// Filter events for our pods or the target workload
-		if podNames[event.InvolvedObject.Name] || event.InvolvedObject.Name == tr.Spec.Target.Name {
-			eventStr := fmt.Sprintf("[%s] %s %s: %s",
-				event.LastTimestamp.Format(time.RFC3339),
-				event.Type,
-				event.Reason,
-				event.Message)
-			relevantEvents = append(relevantEvents, eventStr)
-		}
+	targetNames := make(map[string]struct{}, len(pods)+1)
+	targetNames[tr.Spec.Target.Name] = struct{}{}
+	for _, pod := range pods {
+		targetNames[pod.Name] = struct{}{}
 	}
+
+	var (
+		allEvents []corev1.Event
+		err       error
+	)
+	if r.Clientset != nil {
+		allEvents, err = r.listEventsByTargets(ctx, tr.Namespace, targetNames)
+		if err != nil {
+			return "", err
+		}
+	} else {
+		// Fallback for test/local paths where client-go clientset isn't available.
+		eventList := &corev1.EventList{}
+		if err := r.List(ctx, eventList, client.InNamespace(tr.Namespace)); err != nil {
+			return "", err
+		}
+		allEvents = eventList.Items
+	}
+
+	relevantEvents := filterRecentRelevantEvents(allEvents, targetNames, oneHourAgo)
 
 	cm := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
@@ -569,6 +566,96 @@ func (r *TroubleshootRequestReconciler) collectEvents(ctx context.Context, tr *a
 	}
 
 	return cmName, nil
+}
+
+func (r *TroubleshootRequestReconciler) listEventsByTargets(
+	ctx context.Context,
+	namespace string,
+	targetNames map[string]struct{},
+) ([]corev1.Event, error) {
+	events := make([]corev1.Event, 0)
+	seen := make(map[string]struct{})
+
+	for name := range targetNames {
+		fieldSelector := fmt.Sprintf("involvedObject.name=%s", name)
+		eventList, err := r.Clientset.CoreV1().Events(namespace).List(ctx, metav1.ListOptions{
+			FieldSelector: fieldSelector,
+		})
+		if err != nil {
+			return nil, err
+		}
+		for _, event := range eventList.Items {
+			key := string(event.UID)
+			if key == "" {
+				key = fmt.Sprintf("%s|%s|%s|%s", event.Name, event.InvolvedObject.Name, event.Reason, event.Message)
+			}
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			seen[key] = struct{}{}
+			events = append(events, event)
+		}
+	}
+
+	return events, nil
+}
+
+func filterRecentRelevantEvents(events []corev1.Event, targetNames map[string]struct{}, since time.Time) []string {
+	type eventRecord struct {
+		ts  time.Time
+		log string
+	}
+	records := make([]eventRecord, 0, len(events))
+
+	for _, event := range events {
+		if _, ok := targetNames[event.InvolvedObject.Name]; !ok {
+			continue
+		}
+		ts := eventTimestamp(event)
+		if !ts.IsZero() && ts.Before(since) {
+			continue
+		}
+		tsString := "unknown-time"
+		if !ts.IsZero() {
+			tsString = ts.Format(time.RFC3339)
+		}
+		records = append(records, eventRecord{
+			ts: ts,
+			log: fmt.Sprintf("[%s] %s %s: %s",
+				tsString,
+				event.Type,
+				event.Reason,
+				event.Message),
+		})
+	}
+
+	sort.Slice(records, func(i, j int) bool {
+		if records[i].ts.Equal(records[j].ts) {
+			return records[i].log < records[j].log
+		}
+		return records[i].ts.Before(records[j].ts)
+	})
+
+	relevant := make([]string, 0, len(records))
+	for _, record := range records {
+		relevant = append(relevant, record.log)
+	}
+	return relevant
+}
+
+func eventTimestamp(event corev1.Event) time.Time {
+	switch {
+	case !event.LastTimestamp.IsZero():
+		return event.LastTimestamp.Time
+	case !event.EventTime.IsZero():
+		return event.EventTime.Time
+	case !event.FirstTimestamp.IsZero():
+		return event.FirstTimestamp.Time
+	case !event.CreationTimestamp.IsZero():
+		return event.CreationTimestamp.Time
+	default:
+		return time.Time{}
+	}
 }
 
 // generateSummary creates a human-readable summary

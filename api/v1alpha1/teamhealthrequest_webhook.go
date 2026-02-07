@@ -85,9 +85,9 @@ func (v *TeamHealthRequestCustomValidator) ValidateCreate(_ context.Context, hr 
 				allErrs = append(allErrs, field.Invalid(notifyPath.Child("url"), target.URL, "invalid URL"))
 			} else if u.Scheme != "https" {
 				// Allow HTTP only if annotation is set
-				if hr.Annotations == nil || hr.Annotations["assist.cluster.local/allow-http-webhooks"] != "true" {
+				if hr.Annotations == nil || hr.Annotations[AllowHTTPWebhooksAnnotation] != "true" {
 					allErrs = append(allErrs, field.Invalid(notifyPath.Child("url"), target.URL,
-						"webhook URL must use HTTPS (annotate with assist.cluster.local/allow-http-webhooks=true to override)"))
+						"webhook URL must use HTTPS (annotate with "+AllowHTTPWebhooksAnnotation+"=true to override)"))
 				}
 			}
 		}

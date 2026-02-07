@@ -66,7 +66,10 @@ dashboard:
   bindAddress: ":9090"
   # Bearer token for authenticating mutating API requests.
   # If empty, mutating endpoints are unprotected (a warning is logged).
+  # If set, TLS cert/key is required unless allowInsecureHttp=true.
   authToken: ""
+  # Allow auth over plain HTTP (local/dev only). Ignored when authToken is empty.
+  allowInsecureHttp: false
   # Reference to a Secret containing the auth token.
   # If set, takes precedence over authToken.
   authTokenSecretRef:
@@ -179,4 +182,4 @@ networkPolicy:
   #     matchLabels:
   #       name: monitoring
   # DNS egress mode: "all" (any namespace) or "kube-system" (restricted to kube-system pods).
-  dnsMode: all
+  dnsMode: kube-system

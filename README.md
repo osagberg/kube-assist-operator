@@ -111,7 +111,7 @@ helm install kube-assist charts/kube-assist \
   --set dashboard.enabled=true
 
 # Using Kustomize
-make deploy IMG=ghcr.io/osagberg/kube-assist-operator:v1.8.0
+make deploy IMG=ghcr.io/osagberg/kube-assist-operator:v1.8.1
 ```
 
 ---
@@ -413,6 +413,8 @@ kubectl port-forward -n kube-assist-system svc/kube-assist-dashboard 9090:9090
 open http://localhost:9090
 ```
 
+If `dashboard.authToken` is configured, TLS must also be configured (`dashboard.tls.enabled=true` + `dashboard.tls.secretName`) unless you explicitly set `dashboard.allowInsecureHttp=true` for local development.
+
 ### Endpoints
 
 | Endpoint | Method | Description |
@@ -420,12 +422,12 @@ open http://localhost:9090
 | `/` | GET | Dashboard UI |
 | `/api/health` | GET | Current health data (JSON) |
 | `/api/events` | GET | Real-time SSE stream |
-| `/api/check` | POST | Trigger immediate health check |
+| `/api/check` | POST | Trigger immediate health check (Bearer token required when configured) |
 | `/api/settings/ai` | GET | Current AI configuration (API key masked) |
-| `/api/settings/ai` | POST | Update AI provider/model/key at runtime |
+| `/api/settings/ai` | POST | Update AI provider/model/key at runtime (Bearer token required when configured) |
 | `/api/health/history` | GET | Health score history (`?last=N`, `?since=RFC3339`) |
 | `/api/causal/groups` | GET | Causal correlation analysis (correlated issue groups) |
-| `/api/explain` | GET | AI-generated cluster health narrative with risk level and top issues |
+| `/api/explain` | GET | AI-generated cluster health narrative with risk level and top issues (Bearer token required when configured) |
 | `/api/prediction/trend` | GET | Predictive health trend analysis (direction, velocity, projection) |
 
 ### Live Updates
@@ -572,11 +574,12 @@ helm install kube-assist charts/kube-assist \
 | `ai.budget.monthlyTokenLimit` | `0` | Monthly token budget (0 = unlimited) |
 | `dashboard.authToken` | `""` | Bearer token for authenticating mutating API requests |
 | `dashboard.authTokenSecretRef.name` | `""` | Secret containing auth token |
+| `dashboard.allowInsecureHttp` | `false` | Allow auth over HTTP without TLS (local/dev only) |
 | `dashboard.tls.enabled` | `false` | Enable TLS for dashboard HTTPS |
 | `dashboard.tls.secretName` | `""` | Secret with tls.crt and tls.key |
 | `networkPolicy.enabled` | `true` | Enable network policy |
 | `networkPolicy.ingressMode` | `permissive` | Ingress mode: permissive or strict |
-| `networkPolicy.dnsMode` | `all` | DNS egress: all or kube-system |
+| `networkPolicy.dnsMode` | `kube-system` | DNS egress: all or kube-system |
 
 ### Full Configuration
 

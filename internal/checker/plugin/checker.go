@@ -101,6 +101,10 @@ func (p *PluginChecker) Supports(_ context.Context, _ datasource.DataSource) boo
 // Check performs the health check by listing target resources and evaluating
 // each compiled CEL rule against each resource.
 func (p *PluginChecker) Check(ctx context.Context, checkCtx *checker.CheckContext) (*checker.CheckResult, error) {
+	if checkCtx == nil {
+		return nil, fmt.Errorf("checkCtx must not be nil")
+	}
+
 	result := &checker.CheckResult{
 		CheckerName: p.Name(),
 		Issues:      []checker.Issue{},
@@ -151,14 +155,24 @@ func (p *PluginChecker) Check(ctx context.Context, checkCtx *checker.CheckContex
 
 				hasIssue = true
 
-				msg, err := p.evaluator.EvaluateMessage(cc.rule.Message, obj)
-				if err != nil {
-					msg = fmt.Sprintf("Rule %q triggered (message evaluation failed: %v)", cc.rule.Name, err)
+				var msg string
+				var msgErr error
+				if cc.msgProg != nil {
+					msg, msgErr = p.evaluator.EvaluateString(cc.msgProg, obj)
+				} else {
+					msg = cc.rule.Message
+				}
+				if msgErr != nil {
+					msg = fmt.Sprintf("Rule %q triggered (message evaluation failed: %v)", cc.rule.Name, msgErr)
 				}
 
 				severity := cc.rule.Severity
 				if severity == "" {
 					severity = checker.SeverityWarning
+				} else if !isValidSeverity(severity) {
+					severity = checker.SeverityWarning
+					log.Info("Invalid severity in rule, defaulting to Warning",
+						"plugin", p.name, "rule", cc.rule.Name, "severity", cc.rule.Severity)
 				}
 
 				result.Issues = append(result.Issues, checker.Issue{
@@ -181,4 +195,12 @@ func (p *PluginChecker) Check(ctx context.Context, checkCtx *checker.CheckContex
 	}
 
 	return result, nil
+}
+
+func isValidSeverity(s string) bool {
+	switch s {
+	case checker.SeverityCritical, checker.SeverityWarning, checker.SeverityInfo:
+		return true
+	}
+	return false
 }
