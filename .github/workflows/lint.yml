@@ -33,7 +33,7 @@ jobs:
           npm ci
           npm run build
 
-      - uses: golangci/golangci-lint-action@v8
+      - uses: golangci/golangci-lint-action@v9
         with:
           version: v2.7.2
 
