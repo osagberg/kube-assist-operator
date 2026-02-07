@@ -130,14 +130,20 @@ func (r *TeamHealthRequestReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	}
 
 	// Limit namespace count to prevent resource exhaustion
+	originalCount := len(namespaces)
 	if len(namespaces) > MaxNamespaces {
 		log.Info("Limiting namespaces", "requested", len(namespaces), "max", MaxNamespaces)
 		namespaces = namespaces[:MaxNamespaces]
 	}
 
 	healthReq.Status.NamespacesChecked = namespaces
-	r.setCondition(healthReq, assistv1alpha1.TeamHealthConditionNamespacesResolved, metav1.ConditionTrue,
-		"Resolved", fmt.Sprintf("Found %d namespace(s)", len(namespaces)))
+	if originalCount > MaxNamespaces {
+		r.setCondition(healthReq, assistv1alpha1.TeamHealthConditionNamespacesResolved, metav1.ConditionTrue,
+			"Truncated", fmt.Sprintf("Evaluated %d of %d namespace(s) (max: %d)", MaxNamespaces, originalCount, MaxNamespaces))
+	} else {
+		r.setCondition(healthReq, assistv1alpha1.TeamHealthConditionNamespacesResolved, metav1.ConditionTrue,
+			"Resolved", fmt.Sprintf("Found %d namespace(s)", len(namespaces)))
+	}
 
 	// Determine which checkers to run
 	checkerNames := r.getCheckerNames(healthReq.Spec.Checks)
@@ -237,6 +243,9 @@ func (r *TeamHealthRequestReconciler) Reconcile(ctx context.Context, req ctrl.Re
 
 	// Generate summary
 	healthReq.Status.Summary = r.generateSummary(totalHealthy, totalIssues, criticalCount, warningCount)
+	if originalCount > MaxNamespaces {
+		healthReq.Status.Summary += fmt.Sprintf(" (evaluated %d of %d namespaces)", MaxNamespaces, originalCount)
+	}
 
 	// Update completion status
 	now := metav1.Now()
@@ -365,6 +374,11 @@ func (r *TeamHealthRequestReconciler) dispatchNotifications(
 			continue
 		}
 
+		// Skip if OnCompletion is false and this is a completion notification
+		if !target.OnCompletion {
+			continue
+		}
+
 		// Skip if severity filter doesn't match
 		if target.OnSeverity != "" && !r.severityMet(target.OnSeverity, criticalCount, warningCount) {
 			continue
@@ -406,7 +420,7 @@ func (r *TeamHealthRequestReconciler) dispatchNotifications(
 
 		wh := notifier.NewWebhookNotifier(url)
 		if err := wh.Send(ctx, n); err != nil {
-			log.Error(err, "Failed to send notification", "url", url)
+			log.Error(err, "Failed to send notification", "target", "webhook")
 		}
 	}
 }

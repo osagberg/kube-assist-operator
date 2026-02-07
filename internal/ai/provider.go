@@ -230,7 +230,7 @@ func DefaultConfig() Config {
 // When ExplainMode is true, it returns the ExplainContext directly.
 func BuildPrompt(request AnalysisRequest) string {
 	if request.ExplainMode && request.ExplainContext != "" {
-		return request.ExplainContext
+		return NewSanitizer().SanitizeString(request.ExplainContext)
 	}
 
 	contextJSON, _ := json.MarshalIndent(request.ClusterContext, "", "  ")

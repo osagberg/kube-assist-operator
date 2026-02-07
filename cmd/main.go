@@ -51,6 +51,7 @@ import (
 	"github.com/osagberg/kube-assist-operator/internal/controller"
 	"github.com/osagberg/kube-assist-operator/internal/dashboard"
 	"github.com/osagberg/kube-assist-operator/internal/datasource"
+	"github.com/osagberg/kube-assist-operator/internal/notifier"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -83,6 +84,8 @@ func main() {
 	var enableWebhooks bool
 	var enableDashboard bool
 	var dashboardAddr string
+	var dashboardTLSCertFile string
+	var dashboardTLSKeyFile string
 	var enableAI bool
 	var aiProvider string
 	var aiAPIKey string
@@ -99,6 +102,10 @@ func main() {
 		"Enable the Team Health Dashboard web server.")
 	flag.StringVar(&dashboardAddr, "dashboard-bind-address", ":9090",
 		"The address the dashboard server binds to.")
+	flag.StringVar(&dashboardTLSCertFile, "dashboard-tls-cert-file", "",
+		"Path to TLS certificate file for dashboard HTTPS.")
+	flag.StringVar(&dashboardTLSKeyFile, "dashboard-tls-key-file", "",
+		"Path to TLS key file for dashboard HTTPS.")
 	flag.BoolVar(&enableAI, "enable-ai", false,
 		"Enable AI-powered suggestions for health check issues.")
 	flag.StringVar(&aiProvider, "ai-provider", "noop",
@@ -254,6 +261,9 @@ func main() {
 	registry.MustRegister(resource.NewNetworkPolicyChecker())
 	setupLog.Info("Registered checkers", "checkers", registry.List())
 
+	// Initialize notifier registry
+	notifierRegistry := notifier.NewRegistry()
+
 	// Initialize AI provider with runtime-reconfigurable Manager
 	var aiConfig ai.Config
 	if enableAI {
@@ -302,13 +312,14 @@ func main() {
 	}
 
 	if err := (&controller.TeamHealthRequestReconciler{
-		Client:     mgr.GetClient(),
-		Scheme:     mgr.GetScheme(),
-		Registry:   registry,
-		AIProvider: aiManager,
-		AIEnabled:  enableAI,
-		DataSource: ds,
-		Correlator: causal.NewCorrelator(),
+		Client:           mgr.GetClient(),
+		Scheme:           mgr.GetScheme(),
+		Registry:         registry,
+		AIProvider:       aiManager,
+		AIEnabled:        enableAI,
+		DataSource:       ds,
+		Correlator:       causal.NewCorrelator(),
+		NotifierRegistry: notifierRegistry,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "TeamHealthRequest")
 		os.Exit(1)
@@ -350,6 +361,9 @@ func main() {
 	if enableDashboard {
 		dashboardServer := dashboard.NewServer(ds, registry, dashboardAddr).
 			WithAI(aiManager, enableAI)
+		if dashboardTLSCertFile != "" && dashboardTLSKeyFile != "" {
+			dashboardServer.WithTLS(dashboardTLSCertFile, dashboardTLSKeyFile)
+		}
 		go func() {
 			setupLog.Info("starting dashboard server", "addr", dashboardAddr)
 			if err := dashboardServer.Start(ctx); err != nil {

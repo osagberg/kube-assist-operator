@@ -108,6 +108,9 @@ func (p *PluginChecker) Check(ctx context.Context, checkCtx *checker.CheckContex
 
 	gvr := p.spec.TargetResource
 
+	// Track namespace errors
+	var nsErrors []string
+
 	for _, ns := range checkCtx.Namespaces {
 		list := &unstructured.UnstructuredList{}
 		list.SetGroupVersionKind(schema.GroupVersionKind{
@@ -119,6 +122,14 @@ func (p *PluginChecker) Check(ctx context.Context, checkCtx *checker.CheckContex
 		if err := checkCtx.DataSource.List(ctx, list, client.InNamespace(ns)); err != nil {
 			log.Error(err, "Failed to list resources for plugin",
 				"plugin", p.name, "gvk", fmt.Sprintf("%s/%s/%s", gvr.Group, gvr.Version, gvr.Kind), "namespace", ns)
+			nsErrors = append(nsErrors, ns)
+			result.Issues = append(result.Issues, checker.Issue{
+				Type:      fmt.Sprintf("plugin:%s:list-error", p.name),
+				Severity:  checker.SeverityWarning,
+				Resource:  fmt.Sprintf("%s/%s/%s", gvr.Group, gvr.Version, gvr.Kind),
+				Namespace: ns,
+				Message:   fmt.Sprintf("Failed to list %s resources: %v", gvr.Kind, err),
+			})
 			continue
 		}
 
@@ -163,6 +174,10 @@ func (p *PluginChecker) Check(ctx context.Context, checkCtx *checker.CheckContex
 				result.Healthy++
 			}
 		}
+	}
+
+	if len(nsErrors) == len(checkCtx.Namespaces) {
+		result.Error = fmt.Errorf("all %d namespace(s) failed: %v", len(nsErrors), nsErrors)
 	}
 
 	return result, nil

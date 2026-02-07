@@ -421,11 +421,15 @@ func (r *TroubleshootRequestReconciler) collectLogs(ctx context.Context, tr *ass
 	cmName := fmt.Sprintf("%s-logs", tr.Name)
 	data := make(map[string]string)
 
+	const maxPerContainer = 64 * 1024 // 64KB per container
+	const maxTotalSize = 900 * 1024   // 900KB total (ConfigMap ~1MB limit)
+
 	tailLines := int64(tr.Spec.TailLines)
 	if tailLines == 0 {
 		tailLines = 100
 	}
 
+	totalSize := 0
 	for _, pod := range pods {
 		for _, container := range pod.Spec.Containers {
 			logOpts := &corev1.PodLogOptions{
@@ -441,14 +445,26 @@ func (r *TroubleshootRequestReconciler) collectLogs(ctx context.Context, tr *ass
 			}
 
 			buf := new(bytes.Buffer)
-			_, err = io.Copy(buf, stream)
-			_ = stream.Close() // Close immediately, not defer
+			limited := io.LimitReader(stream, maxPerContainer)
+			n, err := io.Copy(buf, limited)
+			_ = stream.Close()
 			if err != nil {
 				data[fmt.Sprintf("%s-%s", pod.Name, container.Name)] = fmt.Sprintf("Error reading logs: %v", err)
 				continue
 			}
-
-			data[fmt.Sprintf("%s-%s", pod.Name, container.Name)] = buf.String()
+			totalSize += int(n)
+			logContent := buf.String()
+			if n >= maxPerContainer {
+				logContent += "\n[truncated: exceeded 64KB per-container limit]"
+			}
+			if totalSize > maxTotalSize {
+				data[fmt.Sprintf("%s-%s", pod.Name, container.Name)] = logContent + "\n[truncated: total log size exceeded 900KB]"
+				break
+			}
+			data[fmt.Sprintf("%s-%s", pod.Name, container.Name)] = logContent
+		}
+		if totalSize > maxTotalSize {
+			break
 		}
 	}
 
@@ -501,7 +517,14 @@ func (r *TroubleshootRequestReconciler) collectEvents(ctx context.Context, tr *a
 		podNames[pod.Name] = true
 	}
 
+	oneHourAgo := time.Now().Add(-1 * time.Hour)
+
 	for _, event := range eventList.Items {
+		// Filter events within the last hour
+		if !event.LastTimestamp.IsZero() && event.LastTimestamp.Time.Before(oneHourAgo) {
+			continue
+		}
+
 		// Filter events for our pods or the target workload
 		if podNames[event.InvolvedObject.Name] || event.InvolvedObject.Name == tr.Spec.Target.Name {
 			eventStr := fmt.Sprintf("[%s] %s %s: %s",

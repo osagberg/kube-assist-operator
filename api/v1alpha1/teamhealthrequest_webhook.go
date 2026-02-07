@@ -18,6 +18,7 @@ package v1alpha1
 
 import (
 	"context"
+	"net/url"
 
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -77,6 +78,18 @@ func (v *TeamHealthRequestCustomValidator) ValidateCreate(_ context.Context, hr 
 		}
 		if target.URL != "" && target.SecretRef != nil {
 			allErrs = append(allErrs, field.Forbidden(notifyPath, "cannot specify both url and secretRef"))
+		}
+		if target.URL != "" {
+			u, err := url.Parse(target.URL)
+			if err != nil {
+				allErrs = append(allErrs, field.Invalid(notifyPath.Child("url"), target.URL, "invalid URL"))
+			} else if u.Scheme != "https" {
+				// Allow HTTP only if annotation is set
+				if hr.Annotations == nil || hr.Annotations["assist.cluster.local/allow-http-webhooks"] != "true" {
+					allErrs = append(allErrs, field.Invalid(notifyPath.Child("url"), target.URL,
+						"webhook URL must use HTTPS (annotate with assist.cluster.local/allow-http-webhooks=true to override)"))
+				}
+			}
 		}
 	}
 

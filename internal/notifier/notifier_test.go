@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -47,6 +48,7 @@ func TestWebhookNotifier_Send(t *testing.T) {
 			defer srv.Close()
 
 			wh := NewWebhookNotifier(srv.URL)
+			wh.allowPrivate = true // httptest binds to 127.0.0.1
 			err := wh.Send(context.Background(), Notification{
 				Summary:      "test",
 				TotalHealthy: 5,
@@ -91,6 +93,7 @@ func TestWebhookNotifier_SendValidatesJSONBody(t *testing.T) {
 	}
 
 	wh := NewWebhookNotifier(srv.URL)
+	wh.allowPrivate = true // httptest binds to 127.0.0.1
 	if err := wh.Send(context.Background(), notification); err != nil {
 		t.Fatalf("Send() unexpected error: %v", err)
 	}
@@ -225,6 +228,23 @@ func TestRegistry_NotifyAll(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestWebhookNotifier_SSRFProtection(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	wh := NewWebhookNotifier(srv.URL)
+	// allowPrivate defaults to false — SSRF check blocks loopback
+	err := wh.Send(context.Background(), Notification{Summary: "test"})
+	if err == nil {
+		t.Fatal("expected SSRF error for loopback address, got nil")
+	}
+	if got := err.Error(); !strings.Contains(got, "SSRF protection") {
+		t.Errorf("error = %q, want to contain 'SSRF protection'", got)
 	}
 }
 
