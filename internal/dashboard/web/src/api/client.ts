@@ -11,6 +11,12 @@ import type {
 
 const BASE = '/api'
 
+function getAuthHeaders(): Record<string, string> {
+  const token = (window as any).__DASHBOARD_AUTH_TOKEN__ || ''
+  if (!token) return {}
+  return { Authorization: `Bearer ${token}` }
+}
+
 /** Normalize Go nil slices (JSON null) to empty arrays */
 export function normalizeHealth(data: HealthUpdate): HealthUpdate {
   for (const key of Object.keys(data.results)) {
@@ -44,7 +50,10 @@ export async function fetchHealth(): Promise<HealthUpdate> {
 
 /** POST /api/check — trigger immediate health check */
 export async function triggerCheck(): Promise<void> {
-  const resp = await fetch(`${BASE}/check`, { method: 'POST' })
+  const resp = await fetch(`${BASE}/check`, {
+    method: 'POST',
+    headers: { ...getAuthHeaders() },
+  })
   if (!resp.ok) {
     throw new Error(`${resp.status} ${resp.statusText}`)
   }
@@ -59,7 +68,7 @@ export function fetchAISettings(): Promise<AISettingsResponse> {
 export function updateAISettings(settings: AISettingsRequest): Promise<AISettingsResponse> {
   return json<AISettingsResponse>(`${BASE}/settings/ai`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
     body: JSON.stringify(settings),
   })
 }

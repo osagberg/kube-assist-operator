@@ -11,6 +11,7 @@ export function NamespaceFilter({ namespaces, selected, onChange, selectRef }: P
       ref={selectRef}
       value={selected}
       onChange={(e) => onChange(e.target.value)}
+      aria-label="Filter by namespace"
       className="px-3 py-2 glass-inset rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-accent/60 transition-all duration-200"
       style={{ color: 'var(--text-primary)' }}
     >

@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"io/fs"
 	"net/http"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -136,6 +137,9 @@ type Server struct {
 	client             datasource.DataSource
 	registry           *checker.Registry
 	addr               string
+	authToken          string
+	tlsCertFile        string
+	tlsKeyFile         string
 	aiProvider         ai.Provider
 	aiEnabled          bool
 	aiConfig           ai.Config
@@ -163,12 +167,40 @@ func NewServer(ds datasource.DataSource, registry *checker.Registry, addr string
 		client:       ds,
 		registry:     registry,
 		addr:         addr,
+		authToken:    os.Getenv("DASHBOARD_AUTH_TOKEN"),
 		aiConfig:     ai.DefaultConfig(),
 		checkTimeout: 2 * time.Minute,
 		history:      history.New(100),
 		correlator:   causal.NewCorrelator(),
 		clients:      make(map[chan HealthUpdate]bool),
 		stopCh:       make(chan struct{}),
+	}
+}
+
+// WithTLS configures TLS for the dashboard server
+func (s *Server) WithTLS(certFile, keyFile string) *Server {
+	s.tlsCertFile = certFile
+	s.tlsKeyFile = keyFile
+	return s
+}
+
+func (s *Server) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if s.authToken == "" {
+			// No token configured — allow but warn (logged on startup)
+			next(w, r)
+			return
+		}
+		auth := r.Header.Get("Authorization")
+		if auth == "" || !strings.HasPrefix(auth, "Bearer ") {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if strings.TrimPrefix(auth, "Bearer ") != s.authToken {
+			http.Error(w, "Forbidden", http.StatusForbidden)
+			return
+		}
+		next(w, r)
 	}
 }
 
@@ -190,8 +222,8 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/api/health", s.handleHealth)
 	mux.HandleFunc("/api/health/history", s.handleHealthHistory)
 	mux.HandleFunc("/api/events", s.handleSSE)
-	mux.HandleFunc("/api/check", s.handleTriggerCheck)
-	mux.HandleFunc("/api/settings/ai", s.handleAISettings)
+	mux.HandleFunc("/api/check", s.authMiddleware(s.handleTriggerCheck))
+	mux.HandleFunc("/api/settings/ai", s.authMiddleware(s.handleAISettings))
 	mux.HandleFunc("/api/causal/groups", s.handleCausalGroups)
 	mux.HandleFunc("/api/explain", s.handleExplain)
 	mux.HandleFunc("/api/prediction/trend", s.handlePrediction)
@@ -228,6 +260,12 @@ func (s *Server) Start(ctx context.Context) error {
 		WriteTimeout: 30 * time.Second,
 	}
 
+	if s.authToken == "" {
+		log.Info("WARNING: Dashboard authentication not configured. Set DASHBOARD_AUTH_TOKEN to secure mutating endpoints.")
+	} else {
+		log.Info("Dashboard authentication enabled for mutating endpoints")
+	}
+
 	s.running = true
 
 	// Run initial health check synchronously so the first HTTP request
@@ -242,8 +280,18 @@ func (s *Server) Start(ctx context.Context) error {
 	// Run server in goroutine
 	errCh := make(chan error, 1)
 	go func() {
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			errCh <- err
+		if s.tlsCertFile != "" && s.tlsKeyFile != "" {
+			log.Info("Dashboard TLS enabled", "cert", s.tlsCertFile)
+			if err := server.ListenAndServeTLS(s.tlsCertFile, s.tlsKeyFile); err != nil && err != http.ErrServerClosed {
+				errCh <- err
+			}
+		} else {
+			if s.authToken != "" {
+				log.Info("WARNING: Dashboard auth enabled without TLS. Tokens will be sent in plaintext.")
+			}
+			if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				errCh <- err
+			}
 		}
 	}()
 
@@ -1150,7 +1198,9 @@ func (s *Server) handleExplain(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	prompt := ai.BuildExplainPrompt(healthMap, causalAnalysis, historyForPrompt)
+	sanitizer := ai.NewSanitizer()
+	// Sanitize the prompt output
+	prompt := sanitizer.SanitizeString(ai.BuildExplainPrompt(healthMap, causalAnalysis, historyForPrompt))
 
 	// Call AI with explain mode
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)

@@ -41,13 +41,19 @@ export function SettingsModal({ open, onClose, settings, onSave }: Props) {
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center glass-backdrop animate-fade-in" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center glass-backdrop animate-fade-in"
+      onClick={onClose}
+      onKeyDown={(e) => { if (e.key === 'Escape') onClose() }}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="settings-title"
+    >
       <div
         className="glass-elevated rounded-2xl animate-slide-up w-full max-w-md p-6 space-y-4"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between">
-          <h2 className="text-lg font-semibold" style={{ color: 'var(--text-primary)' }}>AI Settings</h2>
+          <h2 id="settings-title" className="text-lg font-semibold" style={{ color: 'var(--text-primary)' }}>AI Settings</h2>
           <button
             onClick={onClose}
             className="transition-all duration-200 hover:opacity-80"

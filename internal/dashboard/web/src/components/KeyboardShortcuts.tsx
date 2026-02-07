@@ -94,12 +94,18 @@ export function KeyboardShortcutsHelp({ open, onClose }: HelpProps) {
   if (!open) return null
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center glass-backdrop animate-fade-in" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center glass-backdrop animate-fade-in"
+      onClick={onClose}
+      onKeyDown={(e) => { if (e.key === 'Escape') onClose() }}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="shortcuts-title"
+    >
       <div
         className="glass-elevated rounded-2xl animate-slide-up w-full max-w-sm p-6"
         onClick={(e) => e.stopPropagation()}
       >
-        <h2 className="text-lg font-semibold mb-4" style={{ color: 'var(--text-primary)' }}>Keyboard Shortcuts</h2>
+        <h2 id="shortcuts-title" className="text-lg font-semibold mb-4" style={{ color: 'var(--text-primary)' }}>Keyboard Shortcuts</h2>
         <div className="space-y-2">
           {shortcuts.map(([key, desc]) => (
             <div key={key} className="flex items-center justify-between text-sm">
