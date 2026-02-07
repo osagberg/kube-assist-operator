@@ -138,3 +138,30 @@ rules:
       - get
       - patch
       - update
+  # CheckPlugin CRD
+  - apiGroups:
+      - assist.cluster.local
+    resources:
+      - checkplugins
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  - apiGroups:
+      - assist.cluster.local
+    resources:
+      - checkplugins/finalizers
+    verbs:
+      - update
+  - apiGroups:
+      - assist.cluster.local
+    resources:
+      - checkplugins/status
+    verbs:
+      - get
+      - patch
+      - update

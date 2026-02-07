@@ -26,10 +26,27 @@ spec:
         - port: 9090
           protocol: TCP
         {{- end }}
+      {{- if eq (default "permissive" .Values.networkPolicy.ingressMode) "strict" }}
+      from:
+        {{- if .Values.networkPolicy.ingressSelectors }}
+        {{- toYaml .Values.networkPolicy.ingressSelectors | nindent 8 }}
+        {{- else }}
+        # Strict mode with no selectors — deny all ingress
+        - podSelector:
+            matchLabels:
+              kube-assist-access: "true"
+        {{- end }}
+      {{- end }}
   egress:
     # Allow DNS resolution
     - to:
+        {{- if eq (default "all" .Values.networkPolicy.dnsMode) "kube-system" }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+        {{- else }}
         - namespaceSelector: {}
+        {{- end }}
       ports:
         - port: 53
           protocol: UDP

@@ -54,6 +54,10 @@ spec:
             {{- if .Values.dashboard.enabled }}
             - --enable-dashboard
             - --dashboard-bind-address={{ .Values.dashboard.bindAddress }}
+            {{- if and .Values.dashboard.tls.enabled .Values.dashboard.tls.secretName }}
+            - --dashboard-tls-cert-file=/etc/dashboard-tls/tls.crt
+            - --dashboard-tls-key-file=/etc/dashboard-tls/tls.key
+            {{- end }}
             {{- end }}
             {{- if .Values.ai.enabled }}
             - --enable-ai
@@ -78,6 +82,16 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.ai.apiKeySecretRef.name }}
                   key: {{ .Values.ai.apiKeySecretRef.key | default "api-key" }}
+            {{- end }}
+            {{- if and .Values.dashboard.enabled .Values.dashboard.authTokenSecretRef.name }}
+            - name: DASHBOARD_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.dashboard.authTokenSecretRef.name }}
+                  key: {{ .Values.dashboard.authTokenSecretRef.key | default "auth-token" }}
+            {{- else if and .Values.dashboard.enabled .Values.dashboard.authToken }}
+            - name: DASHBOARD_AUTH_TOKEN
+              value: {{ .Values.dashboard.authToken | quote }}
             {{- end }}
             {{- with .Values.env }}
             {{- toYaml . | nindent 12 }}
@@ -112,10 +126,21 @@ spec:
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-          {{- with .Values.volumeMounts }}
           volumeMounts:
+          {{- if and .Values.dashboard.enabled .Values.dashboard.tls.enabled .Values.dashboard.tls.secretName }}
+            - name: dashboard-tls
+              mountPath: /etc/dashboard-tls
+              readOnly: true
+          {{- end }}
+          {{- with .Values.volumeMounts }}
             {{- toYaml . | nindent 12 }}
           {{- end }}
+      {{- if and .Values.dashboard.enabled .Values.dashboard.tls.enabled .Values.dashboard.tls.secretName }}
+      volumes:
+        - name: dashboard-tls
+          secret:
+            secretName: {{ .Values.dashboard.tls.secretName }}
+      {{- end }}
       {{- with .Values.volumes }}
       volumes:
         {{- toYaml . | nindent 8 }}

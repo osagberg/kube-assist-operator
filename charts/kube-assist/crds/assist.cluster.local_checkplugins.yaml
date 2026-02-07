@@ -1,0 +1,141 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.20.0
+  name: checkplugins.assist.cluster.local
+spec:
+  group: assist.cluster.local
+  names:
+    kind: CheckPlugin
+    listKind: CheckPluginList
+    plural: checkplugins
+    singular: checkplugin
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - description: Display name
+      jsonPath: .spec.displayName
+      name: Name
+      type: string
+    - description: Plugin ready
+      jsonPath: .status.ready
+      name: Ready
+      type: boolean
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: CheckPlugin is the Schema for the checkplugins API
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: CheckPluginSpec defines a custom health check using CEL expressions
+            properties:
+              description:
+                description: description explains what this plugin checks
+                type: string
+              displayName:
+                description: displayName is the human-readable name for this plugin
+                maxLength: 63
+                minLength: 1
+                type: string
+              rules:
+                description: rules defines the CEL-based health check rules
+                items:
+                  description: CheckRule defines a single CEL-based health check rule
+                  properties:
+                    condition:
+                      description: |-
+                        condition is a CEL expression that evaluates to true when an issue is detected.
+                        The expression has access to the object via `object` variable (unstructured).
+                        Example: `object.status.readyReplicas < object.spec.replicas`
+                      type: string
+                    message:
+                      description: |-
+                        message is a CEL expression or static string for the issue message.
+                        Can use `object` variable. If it starts with `=`, it's treated as CEL.
+                        Example: `="Deployment " + object.metadata.name + " has unavailable replicas"`
+                      type: string
+                    name:
+                      description: name identifies this rule within the plugin
+                      type: string
+                    severity:
+                      default: Warning
+                      description: severity is the issue severity when this rule fires
+                      enum:
+                      - Critical
+                      - Warning
+                      - Info
+                      type: string
+                  required:
+                  - condition
+                  - message
+                  - name
+                  type: object
+                minItems: 1
+                type: array
+              targetResource:
+                description: targetResource identifies the GVR of resources to check
+                properties:
+                  group:
+                    description: group is the API group (empty string for core resources)
+                    type: string
+                  kind:
+                    description: kind is the resource kind (e.g., "Deployment", "Pod")
+                    type: string
+                  resource:
+                    description: resource is the plural resource name (e.g., "deployments",
+                      "pods")
+                    type: string
+                  version:
+                    description: version is the API version
+                    type: string
+                required:
+                - kind
+                - resource
+                - version
+                type: object
+            required:
+            - displayName
+            - rules
+            - targetResource
+            type: object
+          status:
+            description: CheckPluginStatus defines the observed state of CheckPlugin
+            properties:
+              error:
+                description: error contains the last compilation error if any
+                type: string
+              lastUpdated:
+                description: lastUpdated is when the plugin was last processed
+                format: date-time
+                type: string
+              ready:
+                description: ready indicates if the plugin is compiled and ready
+                type: boolean
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

@@ -21,8 +21,17 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Ensure web assets for go:embed
-        run: make ensure-web-assets
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: internal/dashboard/web/package-lock.json
+
+      - name: Build frontend for go:embed
+        working-directory: internal/dashboard/web
+        run: |
+          npm ci
+          npm run build
 
       - uses: golangci/golangci-lint-action@v8
         with:
