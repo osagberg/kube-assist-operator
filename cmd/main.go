@@ -95,6 +95,10 @@ func main() {
 	var aiMonthlyTokenLimit int
 	var maxSSEClients int
 	var notifySemCapacity int
+	var datasourceType string
+	var consoleURL string
+	var clusterID string
+	var consoleBearerToken string
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
@@ -126,6 +130,14 @@ func main() {
 		"Maximum concurrent SSE dashboard connections (0 = unlimited).")
 	flag.IntVar(&notifySemCapacity, "notify-sem-capacity", 5,
 		"Maximum concurrent notification dispatches.")
+	flag.StringVar(&datasourceType, "datasource", "kubernetes",
+		"DataSource backend: kubernetes or console.")
+	flag.StringVar(&consoleURL, "console-url", "",
+		"Console backend URL (required when --datasource=console).")
+	flag.StringVar(&clusterID, "cluster-id", "",
+		"Cluster identifier for console backend.")
+	flag.StringVar(&consoleBearerToken, "console-bearer-token", "",
+		"Bearer token for authenticating with console backend.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
@@ -246,7 +258,41 @@ func main() {
 		os.Exit(1)
 	}
 
-	ds := datasource.NewKubernetes(mgr.GetClient())
+	var ds datasource.DataSource
+	switch datasourceType {
+	case "kubernetes":
+		ds = datasource.NewKubernetes(mgr.GetClient())
+	case "console":
+		if consoleURL == "" {
+			setupLog.Error(nil, "--console-url is required when --datasource=console")
+			os.Exit(1)
+		}
+		if err := datasource.ValidateConsoleURL(consoleURL); err != nil {
+			setupLog.Error(err, "invalid --console-url")
+			os.Exit(1)
+		}
+		if clusterID == "" {
+			setupLog.Error(nil, "--cluster-id is required when --datasource=console")
+			os.Exit(1)
+		}
+		if err := datasource.ValidateClusterID(clusterID); err != nil {
+			setupLog.Error(err, "invalid --cluster-id")
+			os.Exit(1)
+		}
+		var consoleOpts []datasource.ConsoleOption
+		// Flag takes precedence; fall back to env var (set by Helm secret ref).
+		if consoleBearerToken == "" {
+			consoleBearerToken = os.Getenv("CONSOLE_BEARER_TOKEN")
+		}
+		if consoleBearerToken != "" {
+			consoleOpts = append(consoleOpts, datasource.WithBearerToken(consoleBearerToken))
+		}
+		ds = datasource.NewConsole(consoleURL, clusterID, consoleOpts...)
+		setupLog.Info("Using console datasource", "url", consoleURL, "cluster", clusterID)
+	default:
+		setupLog.Error(nil, "unknown --datasource value", "datasource", datasourceType)
+		os.Exit(1)
+	}
 
 	// Create Kubernetes clientset for pod logs access
 	clientset, err := kubernetes.NewForConfig(mgr.GetConfig())

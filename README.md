@@ -582,6 +582,10 @@ helm install kube-assist charts/kube-assist \
 | `networkPolicy.enabled` | `true` | Enable network policy |
 | `networkPolicy.ingressMode` | `permissive` | Ingress mode: permissive or strict |
 | `networkPolicy.dnsMode` | `kube-system` | DNS egress: all or kube-system |
+| `datasource.type` | `kubernetes` | DataSource backend: kubernetes or console |
+| `datasource.consoleURL` | `""` | Console backend URL (required when type=console) |
+| `datasource.clusterID` | `""` | Cluster identifier for console backend |
+| `datasource.consoleBearerToken` | `""` | Bearer token for console backend auth |
 
 ### Full Configuration
 
@@ -656,6 +660,7 @@ See [charts/kube-assist/values.yaml](charts/kube-assist/values.yaml) for all opt
 +---------------------------------------------------------------------------+
 |                      DataSource Abstraction                               |
 |  - KubernetesDataSource (default) -- direct K8s API calls                 |
+|  - ConsoleDataSource -- cross-cluster via console-backend HTTP API        |
 |  - Pluggable interface -- swap in enterprise cache or multi-cluster       |
 |  - Scope resolver -- namespace filtering, label selectors, 50-ns cap     |
 +---------------------------------------------------------------------------+
@@ -757,7 +762,7 @@ make install-cli
 - [x] "Explain this cluster" AI mode — narrative summary of cluster health with risk level, top issues, and trend direction (v1.8.0)
 - [x] Predictive health — trend analysis via linear regression on health history, score projection, risky checker detection (v1.8.0)
 - [x] AI cost optimization — 9 optimizations (severity gating, change-only AI, gpt-4o-mini, prompt caching, token budget, batching, dedup, tiered routing, LRU cache) + 11 Prometheus metrics (v1.8.1-dev)
-- [ ] Cross-cluster via ConsoleDataSource — multi-cluster aggregation through pluggable `DataSource` interface
+- [ ] Cross-cluster via ConsoleDataSource — Phases 1-3 complete (client, server, bridge validation); remaining: e2e multi-cluster tests, dashboard UI
 
 ---
 

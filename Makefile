@@ -287,3 +287,26 @@ demo-down: ## Remove demo workloads
 .PHONY: demo-test
 demo-test: ## Run kubeassist on demo namespace
 	./bin/kubeassist kube-assist-demo
+
+##@ Multi-Cluster (Console Backend)
+
+CLUSTER_A ?= kube-assist-a
+CLUSTER_B ?= kube-assist-b
+KUBECONFIG_A ?= /tmp/kind-$(CLUSTER_A).yaml
+KUBECONFIG_B ?= /tmp/kind-$(CLUSTER_B).yaml
+
+.PHONY: setup-multi-cluster
+setup-multi-cluster: ## Create two Kind clusters for console backend integration testing
+	CLUSTER_A=$(CLUSTER_A) CLUSTER_B=$(CLUSTER_B) KUBECONFIG_A=$(KUBECONFIG_A) KUBECONFIG_B=$(KUBECONFIG_B) KIND=$(KIND) hack/multi-cluster-setup.sh
+
+.PHONY: run-console-backend
+run-console-backend: ## Run console backend against Kind clusters
+	go run ./cmd/console-backend/ --kubeconfigs=$(CLUSTER_A)=$(KUBECONFIG_A),$(CLUSTER_B)=$(KUBECONFIG_B)
+
+.PHONY: test-multi-cluster
+test-multi-cluster: ## Run multi-cluster integration tests (requires Kind clusters)
+	KUBECONFIG_A=$(KUBECONFIG_A) KUBECONFIG_B=$(KUBECONFIG_B) CLUSTER_A=$(CLUSTER_A) CLUSTER_B=$(CLUSTER_B) go test -tags=multicluster ./test/multicluster/ -v
+
+.PHONY: cleanup-multi-cluster
+cleanup-multi-cluster: ## Tear down Kind clusters used for multi-cluster testing
+	CLUSTER_A=$(CLUSTER_A) CLUSTER_B=$(CLUSTER_B) KUBECONFIG_A=$(KUBECONFIG_A) KUBECONFIG_B=$(KUBECONFIG_B) KIND=$(KIND) hack/multi-cluster-teardown.sh
