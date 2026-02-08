@@ -1,13 +1,13 @@
-# Build the React dashboard SPA
-FROM node:22-alpine AS web-builder
+# Build the React dashboard SPA (always on build host — output is platform-independent)
+FROM --platform=$BUILDPLATFORM node:22-alpine AS web-builder
 WORKDIR /web
 COPY internal/dashboard/web/package.json internal/dashboard/web/package-lock.json* ./
 RUN npm install --prefer-offline
 COPY internal/dashboard/web/ .
 RUN npm run build
 
-# Build the manager binary
-FROM golang:1.25 AS builder
+# Build the manager binary (on build host — Go cross-compiles via GOOS/GOARCH)
+FROM --platform=$BUILDPLATFORM golang:1.25 AS builder
 ARG TARGETOS
 ARG TARGETARCH
 
