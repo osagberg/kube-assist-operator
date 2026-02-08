@@ -398,3 +398,41 @@ func TestManager_Reconfigure_SameExplainModel(t *testing.T) {
 		t.Errorf("Name() = %s, want %s", m.Name(), ProviderNameAnthropic)
 	}
 }
+
+func TestManager_Available_IncorporatesEnabled(t *testing.T) {
+	m := NewManager(NewNoOpProvider(), nil, false, nil, nil)
+
+	// Disabled + available provider = not available
+	if m.Available() {
+		t.Error("Available() should be false when disabled")
+	}
+
+	m.SetEnabled(true)
+	if !m.Available() {
+		t.Error("Available() should be true when enabled with available provider")
+	}
+
+	m.SetEnabled(false)
+	if m.Available() {
+		t.Error("Available() should be false after disabling")
+	}
+}
+
+func TestManager_ProviderAvailable_IgnoresEnabled(t *testing.T) {
+	m := NewManager(NewNoOpProvider(), nil, false, nil, nil)
+
+	// Disabled but provider is available
+	if !m.ProviderAvailable() {
+		t.Error("ProviderAvailable() should be true regardless of enabled flag")
+	}
+
+	m.SetEnabled(true)
+	if !m.ProviderAvailable() {
+		t.Error("ProviderAvailable() should be true when enabled")
+	}
+
+	m.SetEnabled(false)
+	if !m.ProviderAvailable() {
+		t.Error("ProviderAvailable() should still be true when disabled")
+	}
+}

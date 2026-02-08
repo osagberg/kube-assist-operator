@@ -46,6 +46,10 @@ type CheckPluginReconciler struct {
 // +kubebuilder:rbac:groups=assist.cluster.local,resources=checkplugins,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=assist.cluster.local,resources=checkplugins/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=assist.cluster.local,resources=checkplugins/finalizers,verbs=update
+// CheckPlugin targets are user-defined GVRs (spec.targetResource), so the
+// controller needs read access to arbitrary resource types. Verbs are
+// restricted to read-only (get, list, watch). If CheckPlugin CRDs are not
+// deployed, this ClusterRole rule can be removed from generated RBAC.
 // +kubebuilder:rbac:groups="*",resources="*",verbs=get;list;watch
 
 func (r *CheckPluginReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -61,13 +65,13 @@ func (r *CheckPluginReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, err
 	}
 
-	checkerName := cp.Spec.DisplayName
+	registryKey := cp.Name
 
 	// Handle deletion via finalizer
 	if !cp.DeletionTimestamp.IsZero() {
 		if controllerutil.ContainsFinalizer(cp, checkPluginFinalizer) {
-			log.Info("Unregistering plugin checker on deletion", "plugin", checkerName)
-			r.Registry.Unregister("plugin:" + checkerName)
+			log.Info("Unregistering plugin checker on deletion", "plugin", cp.Spec.DisplayName, "registryKey", registryKey)
+			r.Registry.Unregister("plugin:" + registryKey)
 
 			controllerutil.RemoveFinalizer(cp, checkPluginFinalizer)
 			if err := r.Update(ctx, cp); err != nil {
@@ -86,14 +90,14 @@ func (r *CheckPluginReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 
 	// Compile and register the plugin checker
-	pc, err := plugin.NewPluginChecker(checkerName, cp.Spec)
+	pc, err := plugin.NewPluginChecker(registryKey, cp.Spec)
 	if err != nil {
-		log.Error(err, "Failed to compile plugin checker", "plugin", checkerName)
+		log.Error(err, "Failed to compile plugin checker", "plugin", cp.Spec.DisplayName, "registryKey", registryKey)
 		return r.updateStatus(ctx, cp, false, err.Error())
 	}
 
 	r.Registry.Replace(pc)
-	log.Info("Registered plugin checker", "plugin", checkerName, "rules", len(cp.Spec.Rules))
+	log.Info("Registered plugin checker", "plugin", cp.Spec.DisplayName, "registryKey", registryKey, "rules", len(cp.Spec.Rules))
 
 	return r.updateStatus(ctx, cp, true, "")
 }

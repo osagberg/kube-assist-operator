@@ -368,7 +368,6 @@ func main() {
 		Scheme:           mgr.GetScheme(),
 		Registry:         registry,
 		AIProvider:       aiManager,
-		AIEnabled:        enableAI,
 		DataSource:       ds,
 		Correlator:       causal.NewCorrelator(),
 		NotifierRegistry: notifierRegistry,

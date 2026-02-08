@@ -57,7 +57,6 @@ type TeamHealthRequestReconciler struct {
 	Scheme           *runtime.Scheme
 	Registry         *checker.Registry
 	AIProvider       ai.Provider
-	AIEnabled        bool
 	DataSource       datasource.DataSource
 	Correlator       *causal.Correlator
 	NotifierRegistry *notifier.Registry
@@ -182,7 +181,7 @@ func (r *TeamHealthRequestReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	}
 
 	// Now run AI enhancement with causal context included (single batched call)
-	if r.AIEnabled && r.AIProvider != nil {
+	if r.AIProvider != nil && r.AIProvider.Available() {
 		checkCtx.AIEnabled = true
 		checkCtx.AIProvider = r.AIProvider
 		enhanced, tokens, totalCount, _, aiErr := checker.EnhanceAllWithAI(checkerCtx, results, checkCtx)
@@ -365,8 +364,6 @@ func (r *TeamHealthRequestReconciler) setCondition(hr *assistv1alpha1.TeamHealth
 	})
 }
 
-// launchNotifications acquires the notification semaphore before launching a goroutine
-// to bound goroutine creation under burst load.
 func (r *TeamHealthRequestReconciler) launchNotifications(
 	ctx context.Context,
 	hr *assistv1alpha1.TeamHealthRequest,
@@ -377,14 +374,22 @@ func (r *TeamHealthRequestReconciler) launchNotifications(
 		case r.NotifySem <- struct{}{}:
 			go func() {
 				defer func() { <-r.NotifySem }()
-				r.dispatchNotifications(ctx, hr, totalHealthy, totalIssues, criticalCount, warningCount)
+				notifyCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				notifyCtx = logf.IntoContext(notifyCtx, logf.FromContext(ctx))
+				r.dispatchNotifications(notifyCtx, hr, totalHealthy, totalIssues, criticalCount, warningCount)
 			}()
 		default:
 			log := logf.FromContext(ctx)
 			log.Info("Notification semaphore full, skipping dispatch", "name", hr.Name)
 		}
 	} else {
-		go r.dispatchNotifications(ctx, hr, totalHealthy, totalIssues, criticalCount, warningCount)
+		go func() {
+			notifyCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			notifyCtx = logf.IntoContext(notifyCtx, logf.FromContext(ctx))
+			r.dispatchNotifications(notifyCtx, hr, totalHealthy, totalIssues, criticalCount, warningCount)
+		}()
 	}
 }
 

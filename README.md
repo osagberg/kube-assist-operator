@@ -575,13 +575,15 @@ helm install kube-assist charts/kube-assist \
 | `dashboard.authToken` | `""` | Bearer token for authenticating mutating API requests |
 | `dashboard.authTokenSecretRef.name` | `""` | Secret containing auth token |
 | `dashboard.allowInsecureHttp` | `false` | Allow auth over HTTP without TLS (local/dev only) |
-| `dashboard.maxSSEClients` | `100` | Maximum concurrent SSE connections (rejects with 503 when exceeded) |
+| `dashboard.maxSSEClients` | `100` | Maximum concurrent SSE connections (0 = unlimited, rejects with 503 when exceeded) |
 | `notifications.semaphoreCapacity` | `5` | Maximum concurrent notification dispatches |
 | `dashboard.tls.enabled` | `false` | Enable TLS for dashboard HTTPS |
 | `dashboard.tls.secretName` | `""` | Secret with tls.crt and tls.key |
 | `networkPolicy.enabled` | `true` | Enable network policy |
 | `networkPolicy.ingressMode` | `permissive` | Ingress mode: permissive or strict |
 | `networkPolicy.dnsMode` | `kube-system` | DNS egress: all or kube-system |
+| `networkPolicy.consoleEgress.cidr` | `0.0.0.0/0` | Console backend egress CIDR (when datasource.type=console) |
+| `networkPolicy.consoleEgress.port` | `443` | Console backend egress port |
 | `datasource.type` | `kubernetes` | DataSource backend: kubernetes or console |
 | `datasource.consoleURL` | `""` | Console backend URL (required when type=console) |
 | `datasource.clusterID` | `""` | Cluster identifier for console backend |

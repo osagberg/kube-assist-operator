@@ -18,6 +18,7 @@ limitations under the License.
 package dashboard
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -270,6 +271,41 @@ func (s *Server) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+func (s *Server) sseAuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if s.authToken == "" {
+			next(w, r)
+			return
+		}
+		// Check Authorization header first
+		auth := r.Header.Get("Authorization")
+		if auth != "" && strings.HasPrefix(auth, "Bearer ") {
+			token := strings.TrimPrefix(auth, "Bearer ")
+			gotHash := sha256.Sum256([]byte(token))
+			wantHash := sha256.Sum256([]byte(s.authToken))
+			if subtle.ConstantTimeCompare(gotHash[:], wantHash[:]) == 1 {
+				next(w, r)
+				return
+			}
+			http.Error(w, "Forbidden", http.StatusForbidden)
+			return
+		}
+		// Fallback: check ?token= query parameter (SSE/EventSource can't set headers)
+		qToken := r.URL.Query().Get("token")
+		if qToken == "" {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+		gotHash := sha256.Sum256([]byte(qToken))
+		wantHash := sha256.Sum256([]byte(s.authToken))
+		if subtle.ConstantTimeCompare(gotHash[:], wantHash[:]) != 1 {
+			http.Error(w, "Forbidden", http.StatusForbidden)
+			return
+		}
+		next(w, r)
+	}
+}
+
 // WithAI configures AI provider for enhanced suggestions
 func (s *Server) WithAI(provider ai.Provider, enabled bool) *Server {
 	s.aiProvider = provider
@@ -281,8 +317,10 @@ func (s *Server) WithAI(provider ai.Provider, enabled bool) *Server {
 }
 
 // WithMaxSSEClients sets the maximum number of concurrent SSE connections.
+// WithMaxSSEClients sets the maximum number of concurrent SSE connections.
+// Pass 0 for unlimited.
 func (s *Server) WithMaxSSEClients(max int) *Server {
-	if max > 0 {
+	if max >= 0 {
 		s.maxSSEClients = max
 	}
 	return s
@@ -293,16 +331,16 @@ func (s *Server) Start(ctx context.Context) error {
 	mux := http.NewServeMux()
 
 	// API endpoints
-	mux.HandleFunc("/api/health", s.handleHealth)
-	mux.HandleFunc("/api/health/history", s.handleHealthHistory)
-	mux.HandleFunc("/api/events", s.handleSSE)
+	mux.HandleFunc("/api/health", s.authMiddleware(s.handleHealth))
+	mux.HandleFunc("/api/health/history", s.authMiddleware(s.handleHealthHistory))
+	mux.HandleFunc("/api/events", s.sseAuthMiddleware(s.handleSSE))
 	mux.HandleFunc("/api/check", s.authMiddleware(s.handleTriggerCheck))
 	mux.HandleFunc("/api/settings/ai", s.authMiddleware(s.handleAISettings))
-	mux.HandleFunc("/api/causal/groups", s.handleCausalGroups)
+	mux.HandleFunc("/api/causal/groups", s.authMiddleware(s.handleCausalGroups))
 	mux.HandleFunc("/api/explain", s.authMiddleware(s.handleExplain))
-	mux.HandleFunc("/api/prediction/trend", s.handlePrediction)
-	mux.HandleFunc("/api/clusters", s.handleClusters)
-	mux.HandleFunc("/api/fleet/summary", s.handleFleetSummary)
+	mux.HandleFunc("/api/prediction/trend", s.authMiddleware(s.handlePrediction))
+	mux.HandleFunc("/api/clusters", s.authMiddleware(s.handleClusters))
+	mux.HandleFunc("/api/fleet/summary", s.authMiddleware(s.handleFleetSummary))
 	mux.HandleFunc("/api/settings/ai/catalog", s.handleAICatalog)
 
 	// React SPA dashboard
@@ -311,18 +349,40 @@ func (s *Server) Start(ctx context.Context) error {
 		log.Error(err, "Failed to create sub filesystem for SPA assets")
 	} else {
 		fileServer := http.FileServer(http.FS(spaFS))
-		mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-			path := r.URL.Path
-			// Serve index.html directly for root and SPA routes to avoid
-			// FileServer's redirect loop (it redirects /index.html → ./ → /)
-			if path == "/" || path == "" {
-				http.ServeFileFS(w, r, spaFS, "index.html")
+
+		// When auth is configured, inject the token into index.html so the SPA
+		// can send it on API requests. The token is injected at serve-time (not
+		// build-time) via a <script> tag before </head>.
+		var injectedIndex []byte
+		if s.authToken != "" {
+			raw, readErr := fs.ReadFile(spaFS, "index.html")
+			if readErr != nil {
+				log.Error(readErr, "Failed to read index.html for token injection")
+			} else {
+				snippet := fmt.Sprintf(`<script>window.__DASHBOARD_AUTH_TOKEN__=%q;</script></head>`, s.authToken)
+				injectedIndex = bytes.Replace(raw, []byte("</head>"), []byte(snippet), 1)
+			}
+		}
+
+		serveIndex := func(w http.ResponseWriter, r *http.Request) {
+			if injectedIndex != nil {
+				w.Header().Set("Content-Type", "text/html; charset=utf-8")
+				w.Header().Set("Cache-Control", "no-cache")
+				_, _ = w.Write(injectedIndex)
 				return
 			}
-			// Try static asset first; fall back to index.html for SPA routing
-			f, err := spaFS.Open(path[1:]) // strip leading /
+			http.ServeFileFS(w, r, spaFS, "index.html")
+		}
+
+		mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+			path := r.URL.Path
+			if path == "/" || path == "" {
+				serveIndex(w, r)
+				return
+			}
+			f, err := spaFS.Open(path[1:])
 			if err != nil {
-				http.ServeFileFS(w, r, spaFS, "index.html")
+				serveIndex(w, r)
 				return
 			}
 			_ = f.Close()
@@ -340,7 +400,7 @@ func (s *Server) Start(ctx context.Context) error {
 	if s.authToken == "" {
 		log.Info("WARNING: Dashboard authentication not configured. Set DASHBOARD_AUTH_TOKEN to secure mutating endpoints.")
 	} else {
-		log.Info("Dashboard authentication enabled for mutating endpoints")
+		log.Info("Dashboard authentication enabled for all data endpoints")
 	}
 	if err := s.validateSecurityConfig(); err != nil {
 		return err
@@ -936,7 +996,7 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	clientCh := make(chan HealthUpdate, 10)
 
 	s.mu.Lock()
-	if len(s.clients) >= s.maxSSEClients {
+	if s.maxSSEClients > 0 && len(s.clients) >= s.maxSSEClients {
 		s.mu.Unlock()
 		http.Error(w, "Too many SSE clients", http.StatusServiceUnavailable)
 		return
@@ -1046,12 +1106,17 @@ func (s *Server) handleAISettings(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleGetAISettings(w http.ResponseWriter, _ *http.Request) {
 	s.mu.RLock()
 	resp := AISettingsResponse{
-		Enabled:       s.aiEnabled,
-		Provider:      s.aiConfig.Provider,
-		Model:         s.aiConfig.Model,
-		ExplainModel:  s.aiConfig.ExplainModel,
-		HasAPIKey:     s.aiConfig.APIKey != "",
-		ProviderReady: s.aiProvider != nil && s.aiProvider.Available(),
+		Enabled:      s.aiEnabled,
+		Provider:     s.aiConfig.Provider,
+		Model:        s.aiConfig.Model,
+		ExplainModel: s.aiConfig.ExplainModel,
+		HasAPIKey:    s.aiConfig.APIKey != "",
+		ProviderReady: func() bool {
+			if mgr, ok := s.aiProvider.(*ai.Manager); ok {
+				return mgr.ProviderAvailable()
+			}
+			return s.aiProvider != nil && s.aiProvider.Available()
+		}(),
 	}
 	s.mu.RUnlock()
 
@@ -1135,7 +1200,7 @@ func (s *Server) handlePostAISettings(w http.ResponseWriter, r *http.Request) {
 			Model:         stagedConfig.Model,
 			ExplainModel:  stagedConfig.ExplainModel,
 			HasAPIKey:     stagedConfig.APIKey != "",
-			ProviderReady: mgr.Available(),
+			ProviderReady: mgr.ProviderAvailable(),
 		}
 		log.Info("AI settings updated via dashboard (Manager)", "provider", resp.Provider, "enabled", resp.Enabled)
 

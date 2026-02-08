@@ -1349,3 +1349,308 @@ func TestServer_HandleSSE_ClusterFiltering(t *testing.T) {
 		t.Errorf("SSE initial state TotalHealthy = %d, want 5", update.Summary.TotalHealthy)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// WithMaxSSEClients and unlimited SSE tests
+// ---------------------------------------------------------------------------
+
+func TestWithMaxSSEClients_Zero(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	server.WithMaxSSEClients(0)
+	if server.maxSSEClients != 0 {
+		t.Errorf("WithMaxSSEClients(0) maxSSEClients = %d, want 0", server.maxSSEClients)
+	}
+}
+
+func TestWithMaxSSEClients_Negative(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	server.WithMaxSSEClients(-1)
+	if server.maxSSEClients != 100 {
+		t.Errorf("WithMaxSSEClients(-1) maxSSEClients = %d, want 100 (unchanged)", server.maxSSEClients)
+	}
+}
+
+func TestHandleSSE_UnlimitedClients(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+	server.maxSSEClients = 0 // unlimited
+
+	// Register 200 clients manually
+	channels := make([]chan HealthUpdate, 200)
+	server.mu.Lock()
+	for i := range channels {
+		channels[i] = make(chan HealthUpdate, 1)
+		server.clients[channels[i]] = ""
+	}
+	server.mu.Unlock()
+
+	// 201st connection should still succeed (not get 503)
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodGet, "/api/events", nil).WithContext(ctx)
+	rr := httptest.NewRecorder()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		server.handleSSE(rr, req)
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+	<-done
+
+	if rr.Code == http.StatusServiceUnavailable {
+		t.Error("SSE with maxSSEClients=0 should not reject connections")
+	}
+
+	// Cleanup
+	server.mu.Lock()
+	for _, ch := range channels {
+		delete(server.clients, ch)
+	}
+	server.mu.Unlock()
+}
+
+// ---------------------------------------------------------------------------
+// Auth consistency tests (QA hardening)
+// ---------------------------------------------------------------------------
+
+func TestAuthMiddleware_ProtectsReadEndpoints(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+	server.authToken = testAuthToken
+
+	// All endpoints that should require auth
+	endpoints := []struct {
+		path   string
+		method string
+	}{
+		{"/api/health", http.MethodGet},
+		{"/api/health/history", http.MethodGet},
+		{"/api/causal/groups", http.MethodGet},
+		{"/api/prediction/trend", http.MethodGet},
+		{"/api/clusters", http.MethodGet},
+		{"/api/fleet/summary", http.MethodGet},
+		{"/api/check", http.MethodPost},
+		{"/api/settings/ai", http.MethodGet},
+		{"/api/explain", http.MethodGet},
+	}
+
+	for _, ep := range endpoints {
+		t.Run(ep.method+" "+ep.path, func(t *testing.T) {
+			handler := server.authMiddleware(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			})
+			req := httptest.NewRequest(ep.method, ep.path, nil)
+			rr := httptest.NewRecorder()
+			handler(rr, req)
+			if rr.Code != http.StatusUnauthorized {
+				t.Errorf("%s %s without token: status = %d, want %d", ep.method, ep.path, rr.Code, http.StatusUnauthorized)
+			}
+		})
+	}
+}
+
+func TestAuthMiddleware_AllowsWithValidToken(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+	server.authToken = testAuthToken
+
+	endpoints := []string{
+		"/api/health",
+		"/api/health/history",
+		"/api/causal/groups",
+		"/api/prediction/trend",
+		"/api/clusters",
+		"/api/fleet/summary",
+	}
+
+	for _, path := range endpoints {
+		t.Run(path, func(t *testing.T) {
+			handler := server.authMiddleware(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			})
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			req.Header.Set("Authorization", "Bearer "+testAuthToken)
+			rr := httptest.NewRecorder()
+			handler(rr, req)
+			if rr.Code != http.StatusOK {
+				t.Errorf("%s with valid token: status = %d, want %d", path, rr.Code, http.StatusOK)
+			}
+		})
+	}
+}
+
+func TestAuthMiddleware_PassthroughWhenNoTokenConfigured(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+	// authToken is "" by default (no env var set)
+
+	endpoints := []string{
+		"/api/health",
+		"/api/health/history",
+		"/api/causal/groups",
+	}
+
+	for _, path := range endpoints {
+		t.Run(path, func(t *testing.T) {
+			handler := server.authMiddleware(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			})
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			rr := httptest.NewRecorder()
+			handler(rr, req)
+			if rr.Code != http.StatusOK {
+				t.Errorf("%s without auth config: status = %d, want %d", path, rr.Code, http.StatusOK)
+			}
+		})
+	}
+}
+
+func TestCatalog_RemainsPublic(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+	server.authToken = testAuthToken
+
+	req := httptest.NewRequest(http.MethodGet, "/api/settings/ai/catalog", nil)
+	rr := httptest.NewRecorder()
+	server.handleAICatalog(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("catalog with auth configured: status = %d, want %d", rr.Code, http.StatusOK)
+	}
+}
+
+func TestSSEAuthMiddleware_QueryToken(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+	server.authToken = testAuthToken
+
+	called := false
+	handler := server.sseAuthMiddleware(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/events?token="+testAuthToken, nil)
+	rr := httptest.NewRecorder()
+	handler(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("SSE with valid query token: status = %d, want %d", rr.Code, http.StatusOK)
+	}
+	if !called {
+		t.Error("SSE handler should have been called with valid query token")
+	}
+}
+
+func TestSSEAuthMiddleware_RejectsInvalid(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+	server.authToken = testAuthToken
+
+	handler := server.sseAuthMiddleware(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/events?token=wrong-token", nil)
+	rr := httptest.NewRecorder()
+	handler(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Errorf("SSE with wrong query token: status = %d, want %d", rr.Code, http.StatusForbidden)
+	}
+}
+
+func TestSSEAuthMiddleware_RejectsNoToken(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+	server.authToken = testAuthToken
+
+	handler := server.sseAuthMiddleware(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/events", nil)
+	rr := httptest.NewRecorder()
+	handler(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("SSE with no auth: status = %d, want %d", rr.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestSSEAuthMiddleware_BearerHeader(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+	server.authToken = testAuthToken
+
+	called := false
+	handler := server.sseAuthMiddleware(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/events", nil)
+	req.Header.Set("Authorization", "Bearer "+testAuthToken)
+	rr := httptest.NewRecorder()
+	handler(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("SSE with valid Bearer: status = %d, want %d", rr.Code, http.StatusOK)
+	}
+	if !called {
+		t.Error("SSE handler should have been called with valid Bearer")
+	}
+}
+
+func TestSSEAuthMiddleware_PassthroughWhenNoTokenConfigured(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+	// No authToken configured
+
+	called := false
+	handler := server.sseAuthMiddleware(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/events", nil)
+	rr := httptest.NewRecorder()
+	handler(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("SSE without auth config: status = %d, want %d", rr.Code, http.StatusOK)
+	}
+	if !called {
+		t.Error("SSE handler should have been called when no auth configured")
+	}
+}

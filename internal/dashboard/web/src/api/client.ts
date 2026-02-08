@@ -42,7 +42,8 @@ async function json<T>(url: string, init?: RequestInit): Promise<T> {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), 30_000)
   try {
-    const resp = await fetch(url, { ...init, signal: controller.signal })
+    const headers = { ...getAuthHeaders(), ...init?.headers }
+    const resp = await fetch(url, { ...init, headers, signal: controller.signal })
     if (!resp.ok) throw new Error(`${resp.status} ${resp.statusText}`)
     return resp.json() as Promise<T>
   } finally {
@@ -139,6 +140,11 @@ export async function fetchClusters(): Promise<string[]> {
 
 /** GET /api/events — SSE stream (returns EventSource, caller manages lifecycle) */
 export function createSSEConnection(clusterId?: string): EventSource {
-  const url = clusterId ? `${BASE}/events?clusterId=${encodeURIComponent(clusterId)}` : `${BASE}/events`
-  return new EventSource(url)
+  const url = new URL(
+    clusterId ? `${BASE}/events?clusterId=${encodeURIComponent(clusterId)}` : `${BASE}/events`,
+    window.location.origin,
+  )
+  const token = (window as any).__DASHBOARD_AUTH_TOKEN__ || ''
+  if (token) url.searchParams.set('token', token)
+  return new EventSource(url.toString())
 }

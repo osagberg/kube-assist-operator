@@ -58,9 +58,7 @@ spec:
             - --dashboard-tls-cert-file=/etc/dashboard-tls/tls.crt
             - --dashboard-tls-key-file=/etc/dashboard-tls/tls.key
             {{- end }}
-            {{- if .Values.dashboard.maxSSEClients }}
             - --max-sse-clients={{ .Values.dashboard.maxSSEClients }}
-            {{- end }}
             {{- end }}
             {{- if .Values.ai.enabled }}
             - --enable-ai
@@ -164,15 +162,16 @@ spec:
           {{- with .Values.volumeMounts }}
             {{- toYaml . | nindent 12 }}
           {{- end }}
-      {{- if and .Values.dashboard.enabled .Values.dashboard.tls.enabled .Values.dashboard.tls.secretName }}
+      {{- if or (and .Values.dashboard.enabled .Values.dashboard.tls.enabled .Values.dashboard.tls.secretName) .Values.volumes }}
       volumes:
+        {{- if and .Values.dashboard.enabled .Values.dashboard.tls.enabled .Values.dashboard.tls.secretName }}
         - name: dashboard-tls
           secret:
             secretName: {{ .Values.dashboard.tls.secretName }}
-      {{- end }}
-      {{- with .Values.volumes }}
-      volumes:
+        {{- end }}
+        {{- with .Values.volumes }}
         {{- toYaml . | nindent 8 }}
+        {{- end }}
       {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:

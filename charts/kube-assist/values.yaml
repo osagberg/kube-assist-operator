@@ -71,7 +71,7 @@ dashboard:
   # Allow auth over plain HTTP (local/dev only). Ignored when authToken is empty.
   allowInsecureHttp: false
   # Maximum number of concurrent SSE client connections.
-  # Excess connections are rejected with HTTP 503.
+  # Excess connections are rejected with HTTP 503. Set to 0 for unlimited.
   maxSSEClients: 100
   # Reference to a Secret containing the auth token.
   # If set, takes precedence over authToken.
@@ -210,3 +210,7 @@ networkPolicy:
   #       name: monitoring
   # DNS egress mode: "all" (any namespace) or "kube-system" (restricted to kube-system pods).
   dnsMode: kube-system
+  # Console backend egress (used when datasource.type=console).
+  consoleEgress:
+    cidr: "0.0.0.0/0"
+    port: 443

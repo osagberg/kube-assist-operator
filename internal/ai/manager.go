@@ -119,8 +119,17 @@ func (m *Manager) Analyze(ctx context.Context, request AnalysisRequest) (*Analys
 	return resp, nil
 }
 
-// Available returns true if the current provider is available.
+// Available returns true if the manager is enabled and the current provider is available.
 func (m *Manager) Available() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.enabled && m.provider.Available()
+}
+
+// ProviderAvailable returns true if the underlying provider is available,
+// regardless of the enabled flag. Used by the settings UI to show provider
+// readiness independently from the enabled toggle.
+func (m *Manager) ProviderAvailable() bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.provider.Available()
