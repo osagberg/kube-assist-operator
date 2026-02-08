@@ -2,8 +2,8 @@ import { useState } from 'react'
 import { useCausal } from '../hooks/useCausal'
 import { CausalGroupCard } from './CausalGroup'
 
-export function CausalTimeline() {
-  const { data, loading, error } = useCausal()
+export function CausalTimeline({ clusterId }: { clusterId?: string }) {
+  const { data, loading, error } = useCausal(clusterId)
   const [collapsed, setCollapsed] = useState(false)
 
   if (loading) {

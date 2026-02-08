@@ -297,3 +297,36 @@ func (c *ConsoleDataSource) doRequest(ctx context.Context, reqURL string) (io.Re
 		return nil, fmt.Errorf("consoledatasource: HTTP %d: %s", resp.StatusCode, errBody)
 	}
 }
+
+// ClusterID returns the cluster identifier for this console data source.
+func (c *ConsoleDataSource) ClusterID() string { return c.clusterID }
+
+// ForCluster returns a shallow copy of this ConsoleDataSource scoped to a specific cluster.
+// The returned copy shares the HTTP client, scheme, and auth token.
+func (c *ConsoleDataSource) ForCluster(clusterID string) *ConsoleDataSource {
+	return &ConsoleDataSource{
+		baseURL:     c.baseURL,
+		clusterID:   clusterID,
+		httpClient:  c.httpClient,
+		scheme:      c.scheme,
+		bearerToken: c.bearerToken,
+	}
+}
+
+// GetClusters fetches the list of known cluster IDs from the console backend.
+func (c *ConsoleDataSource) GetClusters(ctx context.Context) ([]string, error) {
+	reqURL := c.baseURL + "/api/v1/clusters"
+	body, err := c.doRequest(ctx, reqURL)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = body.Close() }()
+
+	var resp struct {
+		Clusters []string `json:"clusters"`
+	}
+	if err := json.NewDecoder(body).Decode(&resp); err != nil {
+		return nil, fmt.Errorf("consoledatasource: failed to decode clusters: %w", err)
+	}
+	return resp.Clusters, nil
+}

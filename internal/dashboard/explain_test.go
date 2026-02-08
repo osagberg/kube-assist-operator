@@ -129,12 +129,15 @@ func TestServer_HandleExplain_CachedResponse(t *testing.T) {
 		Confidence:     0.95,
 		TokensUsed:     100,
 	}
-	server.lastIssueHash = "test-hash-123"
-	server.lastExplain = &ExplainCacheEntry{
+	server.mu.Lock()
+	cs := server.getOrCreateClusterState("")
+	cs.lastIssueHash = "test-hash-123"
+	cs.lastExplain = &ExplainCacheEntry{
 		Response:  cachedResp,
 		IssueHash: "test-hash-123",
 		CachedAt:  time.Now(), // fresh cache
 	}
+	server.mu.Unlock()
 
 	req := httptest.NewRequest(http.MethodGet, "/api/explain", nil)
 	rr := httptest.NewRecorder()
@@ -166,8 +169,10 @@ func TestServer_HandleExplain_ExpiredCache(t *testing.T) {
 	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
 	server.WithAI(ai.NewNoOpProvider(), true)
 
-	// Set latest health data
-	server.latest = &HealthUpdate{
+	// Set latest health data via cluster state
+	server.mu.Lock()
+	cs := server.getOrCreateClusterState("")
+	cs.latest = &HealthUpdate{
 		Timestamp:  time.Now(),
 		Namespaces: []string{"default"},
 		Results: map[string]CheckResult{
@@ -179,10 +184,8 @@ func TestServer_HandleExplain_ExpiredCache(t *testing.T) {
 		},
 		Summary: Summary{TotalHealthy: 5},
 	}
-
-	// Set up an expired cache entry
-	server.lastIssueHash = "test-hash-123"
-	server.lastExplain = &ExplainCacheEntry{
+	cs.lastIssueHash = "test-hash-123"
+	cs.lastExplain = &ExplainCacheEntry{
 		Response: &ai.ExplainResponse{
 			Narrative:      "Old cached response.",
 			RiskLevel:      "low",
@@ -191,6 +194,7 @@ func TestServer_HandleExplain_ExpiredCache(t *testing.T) {
 		IssueHash: "test-hash-123",
 		CachedAt:  time.Now().Add(-10 * time.Minute), // expired
 	}
+	server.mu.Unlock()
 
 	req := httptest.NewRequest(http.MethodGet, "/api/explain", nil)
 	rr := httptest.NewRecorder()
@@ -222,23 +226,24 @@ func TestServer_HandleExplain_HashMismatchInvalidatesCache(t *testing.T) {
 	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
 	server.WithAI(ai.NewNoOpProvider(), true)
 
-	// Set latest health data
-	server.latest = &HealthUpdate{
+	// Set latest health data via cluster state
+	server.mu.Lock()
+	cs := server.getOrCreateClusterState("")
+	cs.latest = &HealthUpdate{
 		Timestamp:  time.Now(),
 		Namespaces: []string{"default"},
 		Results:    map[string]CheckResult{},
 		Summary:    Summary{},
 	}
-
-	// Cache with different hash
-	server.lastIssueHash = "new-hash-456"
-	server.lastExplain = &ExplainCacheEntry{
+	cs.lastIssueHash = "new-hash-456"
+	cs.lastExplain = &ExplainCacheEntry{
 		Response: &ai.ExplainResponse{
 			Narrative: "Cached with old hash.",
 		},
 		IssueHash: "old-hash-123", // different from current
 		CachedAt:  time.Now(),
 	}
+	server.mu.Unlock()
 
 	req := httptest.NewRequest(http.MethodGet, "/api/explain", nil)
 	rr := httptest.NewRecorder()

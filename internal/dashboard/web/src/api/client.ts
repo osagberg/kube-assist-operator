@@ -7,6 +7,8 @@ import type {
   ExplainResponse,
   PredictionResult,
   PredictionResponse,
+  ModelCatalog,
+  FleetSummary,
 } from '../types'
 
 const BASE = '/api'
@@ -19,6 +21,9 @@ function getAuthHeaders(): Record<string, string> {
 
 /** Normalize Go nil slices (JSON null) to empty arrays */
 export function normalizeHealth(data: HealthUpdate): HealthUpdate {
+  if (!data.results) {
+    data.results = {}
+  }
   for (const key of Object.keys(data.results)) {
     if (!data.results[key].issues) {
       data.results[key].issues = []
@@ -26,6 +31,9 @@ export function normalizeHealth(data: HealthUpdate): HealthUpdate {
   }
   if (!data.namespaces) {
     data.namespaces = []
+  }
+  if (!data.summary) {
+    data.summary = { totalHealthy: 0, totalIssues: 0, criticalCount: 0, warningCount: 0, infoCount: 0 }
   }
   return data
 }
@@ -43,9 +51,17 @@ async function json<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 /** GET /api/health — current health data */
-export async function fetchHealth(): Promise<HealthUpdate> {
-  const data = await json<HealthUpdate>(`${BASE}/health`)
+export async function fetchHealth(clusterId?: string): Promise<HealthUpdate> {
+  const url = clusterId
+    ? `${BASE}/health?clusterId=${encodeURIComponent(clusterId)}`
+    : `${BASE}/health`
+  const data = await json<HealthUpdate>(url)
   return normalizeHealth(data)
+}
+
+/** GET /api/fleet/summary — aggregate fleet health */
+export function fetchFleetSummary(): Promise<FleetSummary> {
+  return json<FleetSummary>(`${BASE}/fleet/summary`)
 }
 
 /** POST /api/check — trigger immediate health check */
@@ -73,32 +89,56 @@ export function updateAISettings(settings: AISettingsRequest): Promise<AISetting
   })
 }
 
+/** GET /api/settings/ai/catalog — model catalog */
+export function fetchModelCatalog(provider?: string): Promise<ModelCatalog> {
+  const url = new URL(`${BASE}/settings/ai/catalog`, window.location.origin)
+  if (provider) url.searchParams.set('provider', provider)
+  return json<ModelCatalog>(url.toString())
+}
+
 /** GET /api/health/history — health score history */
-export function fetchHealthHistory(params?: { last?: number; since?: string }): Promise<HealthSnapshot[]> {
+export function fetchHealthHistory(params?: { last?: number; since?: string; clusterId?: string }): Promise<HealthSnapshot[]> {
   const url = new URL(`${BASE}/health/history`, window.location.origin)
   if (params?.last) url.searchParams.set('last', String(params.last))
   if (params?.since) url.searchParams.set('since', params.since)
+  if (params?.clusterId) url.searchParams.set('clusterId', params.clusterId)
   return json<HealthSnapshot[]>(url.toString())
 }
 
 /** GET /api/causal/groups — causal correlation analysis */
-export function fetchCausalGroups(): Promise<CausalContext> {
-  return json<CausalContext>(`${BASE}/causal/groups`)
+export function fetchCausalGroups(clusterId?: string): Promise<CausalContext> {
+  const url = clusterId
+    ? `${BASE}/causal/groups?clusterId=${encodeURIComponent(clusterId)}`
+    : `${BASE}/causal/groups`
+  return json<CausalContext>(url)
 }
 
 /** GET /api/explain — AI-generated cluster health explanation */
-export function fetchExplain(): Promise<ExplainResponse> {
-  return json<ExplainResponse>(`${BASE}/explain`)
+export function fetchExplain(clusterId?: string): Promise<ExplainResponse> {
+  const url = clusterId
+    ? `${BASE}/explain?clusterId=${encodeURIComponent(clusterId)}`
+    : `${BASE}/explain`
+  return json<ExplainResponse>(url)
 }
 
 /** GET /api/prediction/trend — predictive health trend analysis */
-export async function fetchPrediction(): Promise<PredictionResult | null> {
-  const data = await json<PredictionResult & PredictionResponse>(`${BASE}/prediction/trend`)
+export async function fetchPrediction(clusterId?: string): Promise<PredictionResult | null> {
+  const url = clusterId
+    ? `${BASE}/prediction/trend?clusterId=${encodeURIComponent(clusterId)}`
+    : `${BASE}/prediction/trend`
+  const data = await json<PredictionResult & PredictionResponse>(url)
   if (data.status === 'insufficient_data') return null
   return data as PredictionResult
 }
 
+/** GET /api/clusters — available clusters */
+export async function fetchClusters(): Promise<string[]> {
+  const data = await json<{ clusters: string[] }>(`${BASE}/clusters`)
+  return data.clusters ?? []
+}
+
 /** GET /api/events — SSE stream (returns EventSource, caller manages lifecycle) */
-export function createSSEConnection(): EventSource {
-  return new EventSource(`${BASE}/events`)
+export function createSSEConnection(clusterId?: string): EventSource {
+  const url = clusterId ? `${BASE}/events?clusterId=${encodeURIComponent(clusterId)}` : `${BASE}/events`
+  return new EventSource(url)
 }

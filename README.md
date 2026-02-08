@@ -112,7 +112,7 @@ helm install kube-assist charts/kube-assist \
   --set dashboard.enabled=true
 
 # Using Kustomize
-make deploy IMG=ghcr.io/osagberg/kube-assist-operator:v1.8.2
+make deploy IMG=ghcr.io/osagberg/kube-assist-operator:v1.9.0
 ```
 
 ---
@@ -392,6 +392,7 @@ The dashboard uses a frosted glass design language with translucent panels, blur
 - **Pipeline progress indicator** -- visual `[Checkers] -> [Causal] -> [AI]` display showing which stage of analysis is currently running
 - **Collapsible sections** -- Causal Timeline, Causal Groups, and Checker Cards all collapse to keep the view manageable
 - **Sticky filter bar** -- stays pinned below the header during scroll with severity tabs, namespace/checker dropdowns, and text search
+- **Cluster selector** -- multi-cluster switching dropdown (invisible in single-cluster mode), SSE reconnects automatically on cluster change
 - **Connection indicator** -- green/yellow/red dot showing SSE connection status
 - **Mobile hamburger menu** -- responsive layout with collapsed navigation at <768px viewport width
 - **Line-clamp suggestions** -- issue suggestions are truncated in list view; click to expand
@@ -427,6 +428,7 @@ If `dashboard.authToken` is configured, TLS must also be configured (`dashboard.
 | `/api/causal/groups` | GET | Causal correlation analysis (correlated issue groups) |
 | `/api/explain` | GET | AI-generated cluster health narrative with risk level and top issues (Bearer token required when configured) |
 | `/api/prediction/trend` | GET | Predictive health trend analysis (direction, velocity, projection) |
+| `/api/clusters` | GET | Available clusters for multi-cluster mode (empty array in single-cluster mode) |
 
 ### Live Updates
 
@@ -787,7 +789,8 @@ make install-cli
 - [x] "Explain this cluster" AI mode — narrative summary of cluster health with risk level, top issues, and trend direction (v1.8.0)
 - [x] Predictive health — trend analysis via linear regression on health history, score projection, risky checker detection (v1.8.0)
 - [x] AI cost optimization — 9 optimizations (severity gating, change-only AI, gpt-4o-mini, prompt caching, token budget, batching, dedup, tiered routing, LRU cache) + 11 Prometheus metrics (v1.8.1-dev)
-- [ ] Cross-cluster via ConsoleDataSource — Phases 1-3 complete (client, server, bridge validation); remaining: e2e multi-cluster tests, dashboard UI
+- [x] Cross-cluster via ConsoleDataSource — all phases complete: client, server, console backend tests (86.5% coverage), dashboard cluster selector UI with SSE reconnect, Helm datasource sync (v1.9.0)
+- [ ] Multi-cluster e2e tests with Kind clusters
 
 ---
 

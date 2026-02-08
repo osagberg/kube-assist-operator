@@ -20,6 +20,7 @@ export interface HealthUpdate {
   results: Record<string, CheckResult>
   summary: Summary
   aiStatus?: AIStatus
+  clusterId?: string
 }
 
 export interface CheckResult {
@@ -54,6 +55,7 @@ export interface AISettingsResponse {
   enabled: boolean
   provider: string
   model?: string
+  explainModel?: string
   hasApiKey: boolean
   providerReady: boolean
 }
@@ -63,6 +65,34 @@ export interface AISettingsRequest {
   provider: string
   apiKey?: string
   model?: string
+  explainModel?: string
+}
+
+// Model catalog types matching internal/ai/catalog.go
+export interface ModelEntry {
+  id: string
+  label: string
+  status: 'active' | 'deprecated'
+  pricingHint?: string
+  verifiedAt: string
+  tier: 'primary' | 'explain' | 'both'
+}
+
+export type ModelCatalog = Record<string, ModelEntry[]>
+
+// Fleet summary types matching internal/dashboard/server.go
+export interface FleetSummary {
+  clusters: FleetClusterEntry[]
+}
+
+export interface FleetClusterEntry {
+  clusterId: string
+  healthScore: number
+  totalIssues: number
+  criticalCount: number
+  warningCount: number
+  infoCount: number
+  lastUpdated: string
 }
 
 // Causal analysis types matching internal/causal/types.go

@@ -96,8 +96,10 @@ func TestServer_HandleHealth_WithData(t *testing.T) {
 
 	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
 
-	// Set some data
-	server.latest = &HealthUpdate{
+	// Set some data via cluster state
+	server.mu.Lock()
+	cs := server.getOrCreateClusterState("")
+	cs.latest = &HealthUpdate{
 		Timestamp:  time.Now(),
 		Namespaces: []string{"default"},
 		Results: map[string]CheckResult{
@@ -111,6 +113,7 @@ func TestServer_HandleHealth_WithData(t *testing.T) {
 			TotalHealthy: 5,
 		},
 	}
+	server.mu.Unlock()
 
 	req := httptest.NewRequest(http.MethodGet, "/api/health", nil)
 	rr := httptest.NewRecorder()
@@ -639,15 +642,18 @@ func TestServer_RunCheck_PopulatesLatest(t *testing.T) {
 
 	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
 
-	if server.latest != nil {
-		t.Error("expected latest to be nil before runCheck")
+	if len(server.clusters) != 0 {
+		t.Error("expected no cluster state before runCheck")
 	}
 
 	// Simulate what Start() does: run initial check synchronously
 	server.runCheck(t.Context())
 
-	if server.latest == nil {
-		t.Error("expected latest to be non-nil after runCheck (no more 'initializing' flash)")
+	server.mu.RLock()
+	cs, ok := server.clusters[""]
+	server.mu.RUnlock()
+	if !ok || cs == nil || cs.latest == nil {
+		t.Error("expected cluster state to be populated after runCheck")
 	}
 }
 
@@ -681,9 +687,12 @@ func TestServer_HandleHealthHistory_Last(t *testing.T) {
 
 	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
 
-	// Add 3 snapshots
+	// Add 3 snapshots via cluster state
+	server.mu.Lock()
+	cs := server.getOrCreateClusterState("")
+	server.mu.Unlock()
 	for i := range 3 {
-		server.history.Add(history.HealthSnapshot{
+		cs.history.Add(history.HealthSnapshot{
 			Timestamp:    time.Now().Add(time.Duration(i) * time.Minute),
 			TotalHealthy: i + 1,
 			TotalIssues:  0,
@@ -717,14 +726,18 @@ func TestServer_HandleHealthHistory_Since(t *testing.T) {
 
 	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
 
+	server.mu.Lock()
+	cs := server.getOrCreateClusterState("")
+	server.mu.Unlock()
+
 	now := time.Now()
 	early := now.Add(-10 * time.Minute)
 	mid := now.Add(-5 * time.Minute)
 	late := now
 
-	server.history.Add(history.HealthSnapshot{Timestamp: early, TotalHealthy: 1, HealthScore: 100})
-	server.history.Add(history.HealthSnapshot{Timestamp: mid, TotalHealthy: 2, HealthScore: 100})
-	server.history.Add(history.HealthSnapshot{Timestamp: late, TotalHealthy: 3, HealthScore: 100})
+	cs.history.Add(history.HealthSnapshot{Timestamp: early, TotalHealthy: 1, HealthScore: 100})
+	cs.history.Add(history.HealthSnapshot{Timestamp: mid, TotalHealthy: 2, HealthScore: 100})
+	cs.history.Add(history.HealthSnapshot{Timestamp: late, TotalHealthy: 3, HealthScore: 100})
 
 	sinceTime := mid.UTC().Format(time.RFC3339)
 	req := httptest.NewRequest(http.MethodGet, "/api/health/history?since="+sinceTime, nil)
@@ -753,7 +766,10 @@ func TestServer_HandleHealthHistory_Default(t *testing.T) {
 
 	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
 
-	server.history.Add(history.HealthSnapshot{
+	server.mu.Lock()
+	cs := server.getOrCreateClusterState("")
+	server.mu.Unlock()
+	cs.history.Add(history.HealthSnapshot{
 		Timestamp:    time.Now(),
 		TotalHealthy: 5,
 		HealthScore:  100,
@@ -845,7 +861,9 @@ func TestServer_HandleCausalGroups_WithData(t *testing.T) {
 
 	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
 
-	server.latestCausal = &causal.CausalContext{
+	server.mu.Lock()
+	cs := server.getOrCreateClusterState("")
+	cs.latestCausal = &causal.CausalContext{
 		Groups: []causal.CausalGroup{
 			{
 				ID:         "test-group-1",
@@ -860,6 +878,7 @@ func TestServer_HandleCausalGroups_WithData(t *testing.T) {
 		TotalIssues:       3,
 		UncorrelatedCount: 1,
 	}
+	server.mu.Unlock()
 
 	req := httptest.NewRequest(http.MethodGet, "/api/causal/groups", nil)
 	rr := httptest.NewRecorder()
@@ -929,12 +948,15 @@ func TestServer_HandleSSE_InitialState(t *testing.T) {
 	registry := checker.NewRegistry()
 	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
 
-	server.latest = &HealthUpdate{
+	server.mu.Lock()
+	cs := server.getOrCreateClusterState("")
+	cs.latest = &HealthUpdate{
 		Timestamp:  time.Now(),
 		Namespaces: []string{"default"},
 		Results:    map[string]CheckResult{},
 		Summary:    Summary{TotalHealthy: 42},
 	}
+	server.mu.Unlock()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -1043,9 +1065,13 @@ func TestServer_HandleHealthHistory_LastUpperBound(t *testing.T) {
 	registry := checker.NewRegistry()
 	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
 
+	server.mu.Lock()
+	cs := server.getOrCreateClusterState("")
+	server.mu.Unlock()
+
 	// Add a few snapshots
 	for i := range 5 {
-		server.history.Add(history.HealthSnapshot{
+		cs.history.Add(history.HealthSnapshot{
 			Timestamp:    time.Now().Add(time.Duration(i) * time.Minute),
 			TotalHealthy: i + 1,
 			HealthScore:  100,
@@ -1118,8 +1144,8 @@ func TestServer_HandleSSE_MaxClientsLimit(t *testing.T) {
 	ch1 := make(chan HealthUpdate, 1)
 	ch2 := make(chan HealthUpdate, 1)
 	server.mu.Lock()
-	server.clients[ch1] = true
-	server.clients[ch2] = true
+	server.clients[ch1] = ""
+	server.clients[ch2] = ""
 	server.mu.Unlock()
 
 	// 3rd connection should get 503
@@ -1137,4 +1163,189 @@ func TestServer_HandleSSE_MaxClientsLimit(t *testing.T) {
 	delete(server.clients, ch1)
 	delete(server.clients, ch2)
 	server.mu.Unlock()
+}
+
+// ---------------------------------------------------------------------------
+// Multi-cluster and fleet tests
+// ---------------------------------------------------------------------------
+
+func TestServer_HandleHealth_WithClusterId(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	server.mu.Lock()
+	cs := server.getOrCreateClusterState("alpha")
+	cs.latest = &HealthUpdate{
+		Timestamp:  time.Now(),
+		ClusterID:  "alpha",
+		Namespaces: []string{"default"},
+		Results:    map[string]CheckResult{},
+		Summary:    Summary{TotalHealthy: 10, TotalIssues: 2, CriticalCount: 1, WarningCount: 1},
+	}
+	server.mu.Unlock()
+
+	// Request with matching clusterId
+	req := httptest.NewRequest(http.MethodGet, "/api/health?clusterId=alpha", nil)
+	rr := httptest.NewRecorder()
+	server.handleHealth(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("handleHealth(?clusterId=alpha) status = %d, want %d", rr.Code, http.StatusOK)
+	}
+
+	var resp HealthUpdate
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("handleHealth(?clusterId=alpha) invalid JSON: %v", err)
+	}
+	if resp.Summary.TotalHealthy != 10 {
+		t.Errorf("handleHealth(?clusterId=alpha) TotalHealthy = %d, want 10", resp.Summary.TotalHealthy)
+	}
+	if resp.ClusterID != "alpha" {
+		t.Errorf("handleHealth(?clusterId=alpha) ClusterID = %q, want %q", resp.ClusterID, "alpha")
+	}
+
+	// Request with non-existent clusterId should return initializing
+	req2 := httptest.NewRequest(http.MethodGet, "/api/health?clusterId=beta", nil)
+	rr2 := httptest.NewRecorder()
+	server.handleHealth(rr2, req2)
+
+	var resp2 map[string]string
+	if err := json.Unmarshal(rr2.Body.Bytes(), &resp2); err != nil {
+		t.Fatalf("handleHealth(?clusterId=beta) invalid JSON: %v", err)
+	}
+	if resp2["status"] != "initializing" {
+		t.Errorf("handleHealth(?clusterId=beta) status = %q, want %q", resp2["status"], "initializing")
+	}
+}
+
+func TestServer_HandleFleetSummary(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	now := time.Now()
+	server.mu.Lock()
+	csA := server.getOrCreateClusterState("alpha")
+	csA.latest = &HealthUpdate{
+		Timestamp:  now,
+		ClusterID:  "alpha",
+		Namespaces: []string{"default"},
+		Results:    map[string]CheckResult{},
+		Summary:    Summary{TotalHealthy: 8, TotalIssues: 2, CriticalCount: 1, WarningCount: 1},
+	}
+	csB := server.getOrCreateClusterState("beta")
+	csB.latest = &HealthUpdate{
+		Timestamp:  now,
+		ClusterID:  "beta",
+		Namespaces: []string{"default", "prod"},
+		Results:    map[string]CheckResult{},
+		Summary:    Summary{TotalHealthy: 10, TotalIssues: 0},
+	}
+	server.mu.Unlock()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/fleet/summary", nil)
+	rr := httptest.NewRecorder()
+	server.handleFleetSummary(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("handleFleetSummary() status = %d, want %d", rr.Code, http.StatusOK)
+	}
+
+	var summary FleetSummary
+	if err := json.Unmarshal(rr.Body.Bytes(), &summary); err != nil {
+		t.Fatalf("handleFleetSummary() invalid JSON: %v", err)
+	}
+
+	if len(summary.Clusters) != 2 {
+		t.Fatalf("handleFleetSummary() clusters = %d, want 2", len(summary.Clusters))
+	}
+
+	// Find each cluster
+	clusterMap := make(map[string]FleetClusterEntry)
+	for _, c := range summary.Clusters {
+		clusterMap[c.ClusterID] = c
+	}
+
+	alpha, ok := clusterMap["alpha"]
+	if !ok {
+		t.Fatal("handleFleetSummary() missing cluster 'alpha'")
+	}
+	if alpha.TotalIssues != 2 {
+		t.Errorf("alpha TotalIssues = %d, want 2", alpha.TotalIssues)
+	}
+	if alpha.CriticalCount != 1 {
+		t.Errorf("alpha CriticalCount = %d, want 1", alpha.CriticalCount)
+	}
+	// 8 healthy out of 10 total = 80%
+	if alpha.HealthScore != 80 {
+		t.Errorf("alpha HealthScore = %f, want 80", alpha.HealthScore)
+	}
+
+	beta, ok := clusterMap["beta"]
+	if !ok {
+		t.Fatal("handleFleetSummary() missing cluster 'beta'")
+	}
+	if beta.TotalIssues != 0 {
+		t.Errorf("beta TotalIssues = %d, want 0", beta.TotalIssues)
+	}
+	if beta.HealthScore != 100 {
+		t.Errorf("beta HealthScore = %f, want 100", beta.HealthScore)
+	}
+}
+
+func TestServer_HandleSSE_ClusterFiltering(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	// Create cluster state for "alpha"
+	server.mu.Lock()
+	csA := server.getOrCreateClusterState("alpha")
+	csA.latest = &HealthUpdate{
+		Timestamp:  time.Now(),
+		ClusterID:  "alpha",
+		Namespaces: []string{"default"},
+		Results:    map[string]CheckResult{},
+		Summary:    Summary{TotalHealthy: 5},
+	}
+	server.mu.Unlock()
+
+	// Subscribe to cluster "alpha"
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/events?clusterId=alpha", nil).WithContext(ctx)
+	rr := httptest.NewRecorder()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		server.handleSSE(rr, req)
+	}()
+
+	// Give handler time to register and send initial state
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	<-done
+
+	body := rr.Body.String()
+	if !strings.Contains(body, "data: ") {
+		t.Fatalf("expected SSE data frame, got: %s", body)
+	}
+
+	line := strings.TrimPrefix(strings.Split(body, "\n")[0], "data: ")
+	var update HealthUpdate
+	if err := json.Unmarshal([]byte(line), &update); err != nil {
+		t.Fatalf("failed to parse SSE data: %v", err)
+	}
+	if update.ClusterID != "alpha" {
+		t.Errorf("SSE initial state ClusterID = %q, want %q", update.ClusterID, "alpha")
+	}
+	if update.Summary.TotalHealthy != 5 {
+		t.Errorf("SSE initial state TotalHealthy = %d, want 5", update.Summary.TotalHealthy)
+	}
 }

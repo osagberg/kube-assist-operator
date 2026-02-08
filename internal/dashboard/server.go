@@ -67,6 +67,7 @@ type AIStatus struct {
 // HealthUpdate represents a health check update sent via SSE
 type HealthUpdate struct {
 	Timestamp  time.Time              `json:"timestamp"`
+	ClusterID  string                 `json:"clusterId,omitempty"`
 	Namespaces []string               `json:"namespaces"`
 	Results    map[string]CheckResult `json:"results"`
 	Summary    Summary                `json:"summary"`
@@ -116,12 +117,42 @@ type ExplainCacheEntry struct {
 	CachedAt  time.Time           `json:"-"`
 }
 
+// clusterState holds per-cluster health state.
+type clusterState struct {
+	latest             *HealthUpdate
+	latestCausal       *causal.CausalContext
+	history            *history.RingBuffer
+	lastIssueHash      string
+	lastAIResult       *AIStatus
+	lastAIEnhancements map[string]map[string]aiEnhancement
+	lastCausalInsights []ai.CausalGroupInsight
+	lastExplain        *ExplainCacheEntry
+	checkCounter       uint64
+}
+
+// FleetSummary provides an aggregate view of all clusters.
+type FleetSummary struct {
+	Clusters []FleetClusterEntry `json:"clusters"`
+}
+
+// FleetClusterEntry contains health summary for a single cluster in the fleet.
+type FleetClusterEntry struct {
+	ClusterID     string  `json:"clusterId"`
+	HealthScore   float64 `json:"healthScore"`
+	TotalIssues   int     `json:"totalIssues"`
+	CriticalCount int     `json:"criticalCount"`
+	WarningCount  int     `json:"warningCount"`
+	InfoCount     int     `json:"infoCount"`
+	LastUpdated   string  `json:"lastUpdated"`
+}
+
 // AISettingsRequest is the JSON body for POST /api/settings/ai
 type AISettingsRequest struct {
-	Enabled  bool   `json:"enabled"`
-	Provider string `json:"provider"`
-	APIKey   string `json:"apiKey,omitempty"`
-	Model    string `json:"model,omitempty"`
+	Enabled      bool   `json:"enabled"`
+	Provider     string `json:"provider"`
+	APIKey       string `json:"apiKey,omitempty"`
+	Model        string `json:"model,omitempty"`
+	ExplainModel string `json:"explainModel,omitempty"`
 }
 
 // AISettingsResponse is the JSON response for GET /api/settings/ai
@@ -129,39 +160,32 @@ type AISettingsResponse struct {
 	Enabled       bool   `json:"enabled"`
 	Provider      string `json:"provider"`
 	Model         string `json:"model,omitempty"`
+	ExplainModel  string `json:"explainModel,omitempty"`
 	HasAPIKey     bool   `json:"hasApiKey"`
 	ProviderReady bool   `json:"providerReady"`
 }
 
 // Server is the dashboard web server
 type Server struct {
-	client             datasource.DataSource
-	registry           *checker.Registry
-	addr               string
-	authToken          string
-	allowInsecureHTTP  bool
-	tlsCertFile        string
-	tlsKeyFile         string
-	aiProvider         ai.Provider
-	aiEnabled          bool
-	aiConfig           ai.Config
-	checkTimeout       time.Duration
-	history            *history.RingBuffer
-	correlator         *causal.Correlator
-	mu                 sync.RWMutex
-	clients            map[chan HealthUpdate]bool
-	maxSSEClients      int
-	latest             *HealthUpdate
-	latestCausal       *causal.CausalContext
-	running            bool
-	checkInFlight      atomic.Bool
-	lastIssueHash      string
-	lastAIResult       *AIStatus
-	lastAIEnhancements map[string]map[string]aiEnhancement // checker -> "type|resource|namespace" -> enhancement
-	lastCausalInsights []ai.CausalGroupInsight
-	lastExplain        *ExplainCacheEntry
-	checkCounter       uint64
-	stopCh             chan struct{}
+	client            datasource.DataSource
+	registry          *checker.Registry
+	addr              string
+	authToken         string
+	allowInsecureHTTP bool
+	tlsCertFile       string
+	tlsKeyFile        string
+	aiProvider        ai.Provider
+	aiEnabled         bool
+	aiConfig          ai.Config
+	checkTimeout      time.Duration
+	correlator        *causal.Correlator
+	mu                sync.RWMutex
+	clients           map[chan HealthUpdate]string // chan -> subscribed clusterId ("" = all)
+	clusters          map[string]*clusterState     // clusterID -> state ("" key for single-cluster)
+	maxSSEClients     int
+	running           bool
+	checkInFlight     atomic.Bool
+	stopCh            chan struct{}
 }
 
 // NewServer creates a new dashboard server
@@ -175,12 +199,25 @@ func NewServer(ds datasource.DataSource, registry *checker.Registry, addr string
 		allowInsecureHTTP: parseBoolEnv("DASHBOARD_ALLOW_INSECURE_HTTP"),
 		aiConfig:          ai.DefaultConfig(),
 		checkTimeout:      2 * time.Minute,
-		history:           history.New(100),
 		correlator:        causal.NewCorrelator(),
-		clients:           make(map[chan HealthUpdate]bool),
+		clients:           make(map[chan HealthUpdate]string),
+		clusters:          make(map[string]*clusterState),
 		maxSSEClients:     100,
 		stopCh:            make(chan struct{}),
 	}
+}
+
+// getOrCreateClusterState returns the state for a cluster, creating it if needed.
+// Must be called with s.mu held (write lock).
+func (s *Server) getOrCreateClusterState(clusterID string) *clusterState {
+	cs, ok := s.clusters[clusterID]
+	if !ok {
+		cs = &clusterState{
+			history: history.New(100),
+		}
+		s.clusters[clusterID] = cs
+	}
+	return cs
 }
 
 func parseBoolEnv(name string) bool {
@@ -264,6 +301,9 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/api/causal/groups", s.handleCausalGroups)
 	mux.HandleFunc("/api/explain", s.authMiddleware(s.handleExplain))
 	mux.HandleFunc("/api/prediction/trend", s.handlePrediction)
+	mux.HandleFunc("/api/clusters", s.handleClusters)
+	mux.HandleFunc("/api/fleet/summary", s.handleFleetSummary)
+	mux.HandleFunc("/api/settings/ai/catalog", s.handleAICatalog)
 
 	// React SPA dashboard
 	spaFS, err := fs.Sub(webAssets, "web/dist")
@@ -368,66 +408,82 @@ func (s *Server) runHealthChecker(ctx context.Context) {
 	}
 }
 
-// broadcastPhase sends a lightweight SSE update with just the current check phase,
-// so the frontend can show a pipeline progress indicator during long checks.
-func (s *Server) broadcastPhase(phase string) {
+// broadcastPhase sends a lightweight SSE update with just the current check phase
+// for a specific cluster, so the frontend can show a pipeline progress indicator.
+func (s *Server) broadcastPhase(clusterID, phase string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.latest == nil {
+	cs, ok := s.clusters[clusterID]
+	if !ok || cs.latest == nil {
 		return
 	}
-	if s.latest.AIStatus == nil {
-		s.latest.AIStatus = &AIStatus{}
+	if cs.latest.AIStatus == nil {
+		cs.latest.AIStatus = &AIStatus{}
 	}
-	s.latest.AIStatus.CheckPhase = phase
-	for clientCh := range s.clients {
+	cs.latest.AIStatus.CheckPhase = phase
+	for clientCh, subscribedID := range s.clients {
+		if subscribedID != "" && subscribedID != clusterID {
+			continue
+		}
 		select {
-		case clientCh <- *s.latest:
+		case clientCh <- *cs.latest:
 		default:
 		}
 	}
 }
 
-// runAIAnalysis handles AI caching, throttling, and enhancement of check results.
-// Extracted from runCheck to reduce cyclomatic complexity.
-func (s *Server) runAIAnalysis(
+// runAIAnalysisForCluster handles AI caching, throttling, and enhancement of check results
+// for a specific cluster's state. All reads/writes to cs are guarded by s.mu.
+func (s *Server) runAIAnalysisForCluster(
 	ctx context.Context,
 	results map[string]*checker.CheckResult,
 	causalCtx *causal.CausalContext,
 	checkCtx *checker.CheckContext,
 	enabled bool,
 	provider ai.Provider,
+	cs *clusterState,
 ) *AIStatus {
-	s.checkCounter++
 	issueHash := computeIssueHash(results)
 
 	if !enabled || provider == nil || !provider.Available() {
+		s.mu.Lock()
+		cs.checkCounter++
+		s.mu.Unlock()
 		return nil
 	}
 
-	hashChanged := issueHash != s.lastIssueHash
-	if !hashChanged && s.lastAIResult != nil {
-		reapplyAIEnhancements(results, s.lastAIEnhancements)
-		if len(s.lastCausalInsights) > 0 {
-			applyCausalInsights(causalCtx, s.lastCausalInsights)
+	// Read cached state under lock
+	s.mu.Lock()
+	cs.checkCounter++
+	hashChanged := issueHash != cs.lastIssueHash
+	cachedResult := cs.lastAIResult
+	cachedEnhancements := cs.lastAIEnhancements
+	cachedInsights := cs.lastCausalInsights
+	s.mu.Unlock()
+
+	if !hashChanged && cachedResult != nil {
+		reapplyAIEnhancements(results, cachedEnhancements)
+		if len(cachedInsights) > 0 {
+			applyCausalInsights(causalCtx, cachedInsights)
 		}
 		log.Info("AI analysis skipped (issues unchanged)", "hash", issueHash[:12])
 		return &AIStatus{
 			Enabled:         enabled,
 			Provider:        provider.Name(),
-			IssuesEnhanced:  s.lastAIResult.IssuesEnhanced,
+			IssuesEnhanced:  cachedResult.IssuesEnhanced,
 			CacheHit:        true,
-			TotalIssueCount: s.lastAIResult.TotalIssueCount,
+			TotalIssueCount: cachedResult.TotalIssueCount,
 			CheckPhase:      "done",
 		}
 	}
 
+	// Long-running AI call — outside lock
 	aiCtx, aiCancel := context.WithTimeout(ctx, 90*time.Second)
 	enhanced, tokens, totalCount, aiResp, aiErr := checker.EnhanceAllWithAI(aiCtx, results, checkCtx)
 	aiCancel()
 
 	if aiErr != nil {
-		return s.handleAIError(aiErr, results, causalCtx, enabled, provider, totalCount)
+		return s.handleAIErrorForCluster(aiErr, results, causalCtx, enabled, provider, totalCount, cs)
 	}
 
 	if enhanced > 0 {
@@ -441,41 +497,51 @@ func (s *Server) runAIAnalysis(
 			TotalIssueCount:  totalCount,
 			CheckPhase:       "done",
 		}
-		s.lastIssueHash = issueHash
-		s.lastAIResult = status
-		s.lastAIEnhancements = snapshotAIEnhancements(results)
+		// Commit AI results atomically under lock
+		s.mu.Lock()
+		cs.lastIssueHash = issueHash
+		cs.lastAIResult = status
+		cs.lastAIEnhancements = snapshotAIEnhancements(results)
 		if aiResp != nil && len(aiResp.CausalInsights) > 0 {
 			applyCausalInsights(causalCtx, aiResp.CausalInsights)
-			s.lastCausalInsights = aiResp.CausalInsights
+			cs.lastCausalInsights = aiResp.CausalInsights
 		}
+		s.mu.Unlock()
 		return status
 	}
 
 	// AI returned 0 enhanced (likely truncated JSON)
-	return s.handleAITruncated(results, causalCtx, enabled, provider, totalCount, tokens)
+	return s.handleAITruncatedForCluster(results, causalCtx, enabled, provider, totalCount, tokens, cs)
 }
 
-// handleAIError handles AI call failure, reusing cached results when available.
-func (s *Server) handleAIError(
+// handleAIErrorForCluster handles AI call failure, reusing cached results when available.
+func (s *Server) handleAIErrorForCluster(
 	aiErr error,
 	results map[string]*checker.CheckResult,
 	causalCtx *causal.CausalContext,
 	enabled bool,
 	provider ai.Provider,
 	totalCount int,
+	cs *clusterState,
 ) *AIStatus {
-	if s.lastAIResult != nil && s.lastAIResult.LastError == "" {
-		reapplyAIEnhancements(results, s.lastAIEnhancements)
-		if len(s.lastCausalInsights) > 0 {
-			applyCausalInsights(causalCtx, s.lastCausalInsights)
+	s.mu.RLock()
+	cachedResult := cs.lastAIResult
+	cachedEnhancements := cs.lastAIEnhancements
+	cachedInsights := cs.lastCausalInsights
+	s.mu.RUnlock()
+
+	if cachedResult != nil && cachedResult.LastError == "" {
+		reapplyAIEnhancements(results, cachedEnhancements)
+		if len(cachedInsights) > 0 {
+			applyCausalInsights(causalCtx, cachedInsights)
 		}
 		log.Info("AI call failed, reusing last good result", "error", aiErr.Error())
 		return &AIStatus{
 			Enabled:         enabled,
 			Provider:        provider.Name(),
-			IssuesEnhanced:  s.lastAIResult.IssuesEnhanced,
+			IssuesEnhanced:  cachedResult.IssuesEnhanced,
 			CacheHit:        true,
-			TotalIssueCount: s.lastAIResult.TotalIssueCount,
+			TotalIssueCount: cachedResult.TotalIssueCount,
 			LastError:       "retrying: " + aiErr.Error(),
 			CheckPhase:      "done",
 		}
@@ -489,27 +555,34 @@ func (s *Server) handleAIError(
 	}
 }
 
-// handleAITruncated handles AI responses with 0 enhanced issues, reusing cached results when available.
-func (s *Server) handleAITruncated(
+// handleAITruncatedForCluster handles AI responses with 0 enhanced issues, reusing cached results when available.
+func (s *Server) handleAITruncatedForCluster(
 	results map[string]*checker.CheckResult,
 	causalCtx *causal.CausalContext,
 	enabled bool,
 	provider ai.Provider,
 	totalCount int,
 	tokens int,
+	cs *clusterState,
 ) *AIStatus {
-	if s.lastAIResult != nil && s.lastAIResult.IssuesEnhanced > 0 {
-		reapplyAIEnhancements(results, s.lastAIEnhancements)
-		if len(s.lastCausalInsights) > 0 {
-			applyCausalInsights(causalCtx, s.lastCausalInsights)
+	s.mu.RLock()
+	cachedResult := cs.lastAIResult
+	cachedEnhancements := cs.lastAIEnhancements
+	cachedInsights := cs.lastCausalInsights
+	s.mu.RUnlock()
+
+	if cachedResult != nil && cachedResult.IssuesEnhanced > 0 {
+		reapplyAIEnhancements(results, cachedEnhancements)
+		if len(cachedInsights) > 0 {
+			applyCausalInsights(causalCtx, cachedInsights)
 		}
 		log.Info("AI response truncated (0 enhanced), reusing last good result", "tokens", tokens)
 		return &AIStatus{
 			Enabled:         enabled,
 			Provider:        provider.Name(),
-			IssuesEnhanced:  s.lastAIResult.IssuesEnhanced,
+			IssuesEnhanced:  cachedResult.IssuesEnhanced,
 			CacheHit:        true,
-			TotalIssueCount: s.lastAIResult.TotalIssueCount,
+			TotalIssueCount: cachedResult.TotalIssueCount,
 			CheckPhase:      "done",
 		}
 	}
@@ -523,15 +596,31 @@ func (s *Server) handleAITruncated(
 	}
 }
 
-// runCheck performs a health check and broadcasts results
+// runCheck performs a health check and broadcasts results.
+// When using ConsoleDataSource, it iterates all clusters. Otherwise, it uses "" as the cluster key.
 func (s *Server) runCheck(ctx context.Context) {
-	// 1. Resolve namespaces via scope resolver — scan all non-system namespaces
-	resolver := scope.NewResolver(s.client, "default")
+	if cds, ok := s.client.(*datasource.ConsoleDataSource); ok {
+		clusters, err := cds.GetClusters(ctx)
+		if err != nil {
+			log.Error(err, "Failed to get clusters")
+			clusters = []string{cds.ClusterID()}
+		}
+		for _, clusterID := range clusters {
+			s.runCheckForCluster(ctx, clusterID, cds.ForCluster(clusterID))
+		}
+	} else {
+		s.runCheckForCluster(ctx, "", s.client)
+	}
+}
+
+// runCheckForCluster performs a health check for a single cluster and broadcasts results.
+func (s *Server) runCheckForCluster(ctx context.Context, clusterID string, ds datasource.DataSource) {
+	resolver := scope.NewResolver(ds, "default")
 	namespaces, err := resolver.ResolveNamespaces(ctx, assistv1alpha1.ScopeConfig{
 		NamespaceSelector: &metav1.LabelSelector{},
 	})
 	if err != nil {
-		log.Error(err, "Failed to resolve namespaces")
+		log.Error(err, "Failed to resolve namespaces", "cluster", clusterID)
 		namespaces = []string{"default"}
 	}
 	namespaces = scope.FilterSystemNamespaces(namespaces)
@@ -542,36 +631,29 @@ func (s *Server) runCheck(ctx context.Context) {
 	checkCtx2, cancel := context.WithTimeout(ctx, s.checkTimeout)
 	defer cancel()
 
-	s.broadcastPhase("checkers")
+	s.broadcastPhase(clusterID, "checkers")
 
-	// 2. Build CheckContext with AIEnabled: false — pure health checks first
 	checkCtx := &checker.CheckContext{
-		DataSource: s.client,
+		DataSource: ds,
 		Namespaces: namespaces,
 		AIEnabled:  false,
 	}
 
-	// 3. RunAll — pure health checks, no AI
 	results := s.registry.RunAll(checkCtx2, checkCtx, nil)
 
-	s.broadcastPhase("causal")
+	s.broadcastPhase(clusterID, "causal")
 
-	// 4. Run causal correlator BEFORE AI so causal context is available
 	now := time.Now()
 	causalCtx := s.correlator.Analyze(causal.CorrelationInput{
 		Results:   results,
 		Timestamp: now,
 	})
 
-	// 5. Populate ClusterContext with namespaces
 	checkCtx.ClusterContext = ai.ClusterContext{
 		Namespaces: namespaces,
 	}
-
-	// 6. Convert causal.CausalContext to ai.CausalAnalysisContext
 	checkCtx.CausalContext = toCausalAnalysisContext(causalCtx)
 
-	// 7. Enable AI and set provider for the batched call
 	s.mu.RLock()
 	provider := s.aiProvider
 	enabled := s.aiEnabled
@@ -580,16 +662,24 @@ func (s *Server) runCheck(ctx context.Context) {
 	checkCtx.AIEnabled = enabled
 	checkCtx.AIProvider = provider
 
-	s.broadcastPhase("ai")
+	s.broadcastPhase(clusterID, "ai")
 
-	aiStatus := s.runAIAnalysis(checkCtx2, results, causalCtx, checkCtx, enabled, provider)
+	// Get or create cluster state for AI analysis
+	s.mu.Lock()
+	cs := s.getOrCreateClusterState(clusterID)
+	s.mu.Unlock()
 
-	// 9. Convert to dashboard format
+	aiStatus := s.runAIAnalysisForCluster(checkCtx2, results, causalCtx, checkCtx, enabled, provider, cs)
+
+	// Convert to dashboard format
 	update := &HealthUpdate{
 		Timestamp:  now,
 		Namespaces: namespaces,
 		Results:    make(map[string]CheckResult),
 		AIStatus:   aiStatus,
+	}
+	if clusterID != "" {
+		update.ClusterID = clusterID
 	}
 
 	var summary Summary
@@ -608,7 +698,6 @@ func (s *Server) runCheck(ctx context.Context) {
 			for _, issue := range result.Issues {
 				suggestion := issue.Suggestion
 				aiEnhanced := strings.Contains(suggestion, "AI Analysis:")
-				// When AI enhanced, show only the AI part
 				if aiEnhanced {
 					if idx := strings.Index(suggestion, "AI Analysis: "); idx >= 0 {
 						suggestion = suggestion[idx+len("AI Analysis: "):]
@@ -646,15 +735,17 @@ func (s *Server) runCheck(ctx context.Context) {
 	}
 	update.Summary = summary
 
-	// 10. Store latest and broadcast
+	// Store latest and broadcast
 	s.mu.Lock()
-	s.latest = update
-	s.latestCausal = causalCtx
-	for clientCh := range s.clients {
+	cs.latest = update
+	cs.latestCausal = causalCtx
+	for clientCh, subscribedID := range s.clients {
+		if subscribedID != "" && subscribedID != clusterID {
+			continue
+		}
 		select {
 		case clientCh <- *update:
 		default:
-			// Client slow, skip
 		}
 	}
 	s.mu.Unlock()
@@ -675,7 +766,7 @@ func (s *Server) runCheck(ctx context.Context) {
 	for name, result := range update.Results {
 		snapshot.ByChecker[name] = len(result.Issues)
 	}
-	s.history.Add(snapshot)
+	cs.history.Add(snapshot)
 }
 
 // toCausalAnalysisContext converts causal.CausalContext to ai.CausalAnalysisContext
@@ -806,25 +897,21 @@ func estimateCost(provider string, tokens int) float64 {
 	if tokens <= 0 {
 		return 0
 	}
-	// Approximate cost per 1K tokens (input+output blended)
-	var costPer1K float64
-	switch provider {
-	case "anthropic":
-		costPer1K = 0.00125 // Haiku 3.5 blended
-	case "openai":
-		costPer1K = 0.00075 // GPT-4o-mini blended
-	default:
-		return 0
-	}
+	costPer1K := ai.CostPer1KTokens(provider, "")
 	return float64(tokens) / 1000.0 * costPer1K
 }
 
 // handleHealth returns current health status
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
+	clusterID := r.URL.Query().Get("clusterId")
 
 	s.mu.RLock()
-	latest := s.latest
+	cs, ok := s.clusters[clusterID]
+	var latest *HealthUpdate
+	if ok {
+		latest = cs.latest
+	}
 	s.mu.RUnlock()
 
 	if latest == nil {
@@ -841,26 +928,22 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 // handleSSE handles Server-Sent Events connections
 func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
-	// Set SSE headers
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
-	// Same-origin only; no CORS header needed for internal dashboard
 
-	// Create client channel
+	clusterID := r.URL.Query().Get("clusterId")
 	clientCh := make(chan HealthUpdate, 10)
 
-	// Register client (enforce limit)
 	s.mu.Lock()
 	if len(s.clients) >= s.maxSSEClients {
 		s.mu.Unlock()
 		http.Error(w, "Too many SSE clients", http.StatusServiceUnavailable)
 		return
 	}
-	s.clients[clientCh] = true
+	s.clients[clientCh] = clusterID
 	s.mu.Unlock()
 
-	// Cleanup on disconnect
 	defer func() {
 		s.mu.Lock()
 		delete(s.clients, clientCh)
@@ -870,8 +953,8 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 
 	// Send initial state
 	s.mu.RLock()
-	if s.latest != nil {
-		data, err := json.Marshal(s.latest)
+	if cs, ok := s.clusters[clusterID]; ok && cs.latest != nil {
+		data, err := json.Marshal(cs.latest)
 		if err != nil {
 			log.Error(err, "Failed to marshal SSE initial state")
 			s.mu.RUnlock()
@@ -880,6 +963,22 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 		_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
 		if f, ok := w.(http.Flusher); ok {
 			f.Flush()
+		}
+	} else if clusterID == "" {
+		// For fleet subscription, send the first available cluster's latest
+		for _, cs := range s.clusters {
+			if cs.latest != nil {
+				data, err := json.Marshal(cs.latest)
+				if err != nil {
+					log.Error(err, "Failed to marshal SSE initial state")
+					break
+				}
+				_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
+				if f, ok := w.(http.Flusher); ok {
+					f.Flush()
+				}
+				break
+			}
 		}
 	}
 	s.mu.RUnlock()
@@ -950,6 +1049,7 @@ func (s *Server) handleGetAISettings(w http.ResponseWriter, _ *http.Request) {
 		Enabled:       s.aiEnabled,
 		Provider:      s.aiConfig.Provider,
 		Model:         s.aiConfig.Model,
+		ExplainModel:  s.aiConfig.ExplainModel,
 		HasAPIKey:     s.aiConfig.APIKey != "",
 		ProviderReady: s.aiProvider != nil && s.aiProvider.Available(),
 	}
@@ -976,61 +1076,68 @@ func (s *Server) handlePostAISettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.mu.Lock()
+	// Stage new config without committing to server state yet
+	s.mu.RLock()
+	stagedConfig := s.aiConfig
+	s.mu.RUnlock()
 
-	s.aiEnabled = req.Enabled
-
-	// Update config - only update fields that are provided
 	if providerName != "" {
-		s.aiConfig.Provider = providerName
+		stagedConfig.Provider = providerName
 	}
 	if req.APIKey != "" {
-		s.aiConfig.APIKey = req.APIKey
+		stagedConfig.APIKey = req.APIKey
 	}
 	if req.Model != "" {
-		s.aiConfig.Model = req.Model
+		stagedConfig.Model = req.Model
 	}
-
-	// Invalidate AI cache so the next check uses the new provider immediately
-	s.lastIssueHash = ""
-	s.lastAIResult = nil
-	s.lastAIEnhancements = nil
-	s.lastCausalInsights = nil
+	stagedConfig.ExplainModel = req.ExplainModel
 
 	// If the provider is an ai.Manager, use Reconfigure() so the controller's
 	// AI provider is also updated (Manager is shared between dashboard and controllers).
-	if mgr, ok := s.aiProvider.(*ai.Manager); ok {
-		provider := s.aiConfig.Provider
-		apiKey := s.aiConfig.APIKey
-		model := s.aiConfig.Model
-		s.mu.Unlock()
-		mgr.SetEnabled(req.Enabled)
+	s.mu.RLock()
+	mgr, isManager := s.aiProvider.(*ai.Manager)
+	s.mu.RUnlock()
+
+	if isManager {
 		if providerName != "" {
-			if err := mgr.Reconfigure(provider, apiKey, model); err != nil {
-				log.Error(err, "Failed to reconfigure AI provider", "provider", provider)
+			if err := mgr.Reconfigure(stagedConfig.Provider, stagedConfig.APIKey, stagedConfig.Model, stagedConfig.ExplainModel); err != nil {
+				log.Error(err, "Failed to reconfigure AI provider", "provider", stagedConfig.Provider)
 				http.Error(w, "Failed to reconfigure AI provider", http.StatusInternalServerError)
 				return
 			}
 		}
-		resp := AISettingsResponse{
-			Enabled:       req.Enabled,
-			Provider:      provider,
-			Model:         model,
-			HasAPIKey:     apiKey != "",
-			ProviderReady: mgr.Available(),
-		}
-		log.Info("AI settings updated via dashboard (Manager)", "provider", resp.Provider, "enabled", resp.Enabled)
+		// Set enabled AFTER successful reconfigure to avoid partial state.
+		// This also overrides Reconfigure's own m.enabled inference.
+		mgr.SetEnabled(req.Enabled)
 
-		// Immediately update live AIStatus so the frontend knows the provider changed
+		// Reconfigure succeeded — commit settings atomically
 		s.mu.Lock()
-		if s.latest != nil {
-			s.latest.AIStatus = &AIStatus{
-				Enabled:  req.Enabled,
-				Provider: provider,
-				Pending:  true,
+		s.aiEnabled = req.Enabled
+		s.aiConfig = stagedConfig
+		for _, cs := range s.clusters {
+			cs.lastIssueHash = ""
+			cs.lastAIResult = nil
+			cs.lastAIEnhancements = nil
+			cs.lastCausalInsights = nil
+			if cs.latest != nil {
+				cs.latest.AIStatus = &AIStatus{
+					Enabled:  req.Enabled,
+					Provider: stagedConfig.Provider,
+					Pending:  true,
+				}
 			}
 		}
 		s.mu.Unlock()
+
+		resp := AISettingsResponse{
+			Enabled:       req.Enabled,
+			Provider:      stagedConfig.Provider,
+			Model:         stagedConfig.Model,
+			ExplainModel:  stagedConfig.ExplainModel,
+			HasAPIKey:     stagedConfig.APIKey != "",
+			ProviderReady: mgr.Available(),
+		}
+		log.Info("AI settings updated via dashboard (Manager)", "provider", resp.Provider, "enabled", resp.Enabled)
 
 		// Trigger immediate check so user doesn't wait for next 30s cycle
 		go func() {
@@ -1050,32 +1157,41 @@ func (s *Server) handlePostAISettings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Fallback: recreate provider directly (no Manager available)
-	provider, _, _, err := ai.NewProvider(s.aiConfig)
+	newProvider, _, _, err := ai.NewProvider(stagedConfig)
 	if err != nil {
-		s.mu.Unlock()
-		log.Error(err, "Failed to create AI provider", "provider", s.aiConfig.Provider)
+		log.Error(err, "Failed to create AI provider", "provider", stagedConfig.Provider)
 		http.Error(w, "Failed to create AI provider", http.StatusInternalServerError)
 		return
 	}
-	s.aiProvider = provider
 
-	resp := AISettingsResponse{
-		Enabled:       s.aiEnabled,
-		Provider:      s.aiConfig.Provider,
-		Model:         s.aiConfig.Model,
-		HasAPIKey:     s.aiConfig.APIKey != "",
-		ProviderReady: provider.Available(),
-	}
-
-	// Immediately update live AIStatus so the frontend knows the provider changed
-	if s.latest != nil {
-		s.latest.AIStatus = &AIStatus{
-			Enabled:  s.aiEnabled,
-			Provider: s.aiConfig.Provider,
-			Pending:  true,
+	// Provider creation succeeded — commit settings atomically
+	s.mu.Lock()
+	s.aiEnabled = req.Enabled
+	s.aiConfig = stagedConfig
+	s.aiProvider = newProvider
+	for _, cs := range s.clusters {
+		cs.lastIssueHash = ""
+		cs.lastAIResult = nil
+		cs.lastAIEnhancements = nil
+		cs.lastCausalInsights = nil
+		if cs.latest != nil {
+			cs.latest.AIStatus = &AIStatus{
+				Enabled:  req.Enabled,
+				Provider: stagedConfig.Provider,
+				Pending:  true,
+			}
 		}
 	}
 	s.mu.Unlock()
+
+	resp := AISettingsResponse{
+		Enabled:       req.Enabled,
+		Provider:      stagedConfig.Provider,
+		Model:         stagedConfig.Model,
+		ExplainModel:  stagedConfig.ExplainModel,
+		HasAPIKey:     stagedConfig.APIKey != "",
+		ProviderReady: newProvider.Available(),
+	}
 
 	log.Info("AI settings updated via dashboard", "provider", resp.Provider, "enabled", resp.Enabled)
 
@@ -1098,6 +1214,31 @@ func (s *Server) handlePostAISettings(w http.ResponseWriter, r *http.Request) {
 // handleHealthHistory returns historical health snapshots
 func (s *Server) handleHealthHistory(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
+	clusterID := r.URL.Query().Get("clusterId")
+
+	s.mu.RLock()
+	cs, ok := s.clusters[clusterID]
+	s.mu.RUnlock()
+
+	if !ok {
+		if lastParam := r.URL.Query().Get("last"); lastParam != "" {
+			n, err := strconv.Atoi(lastParam)
+			if err != nil || n < 1 {
+				http.Error(w, "invalid 'last' parameter", http.StatusBadRequest)
+				return
+			}
+		}
+		if sinceParam := r.URL.Query().Get("since"); sinceParam != "" {
+			if _, err := time.Parse(time.RFC3339, sinceParam); err != nil {
+				http.Error(w, "invalid 'since' parameter, use RFC3339", http.StatusBadRequest)
+				return
+			}
+		}
+		if err := json.NewEncoder(w).Encode([]history.HealthSnapshot{}); err != nil {
+			log.Error(err, "Failed to encode response", "handler", "handleHealthHistory")
+		}
+		return
+	}
 
 	if lastParam := r.URL.Query().Get("last"); lastParam != "" {
 		n, err := strconv.Atoi(lastParam)
@@ -1108,7 +1249,7 @@ func (s *Server) handleHealthHistory(w http.ResponseWriter, r *http.Request) {
 		if n > 1000 {
 			n = 1000
 		}
-		if err := json.NewEncoder(w).Encode(s.history.Last(n)); err != nil {
+		if err := json.NewEncoder(w).Encode(cs.history.Last(n)); err != nil {
 			log.Error(err, "Failed to encode response", "handler", "handleHealthHistory")
 		}
 		return
@@ -1120,24 +1261,28 @@ func (s *Server) handleHealthHistory(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "invalid 'since' parameter, use RFC3339", http.StatusBadRequest)
 			return
 		}
-		if err := json.NewEncoder(w).Encode(s.history.Since(t)); err != nil {
+		if err := json.NewEncoder(w).Encode(cs.history.Since(t)); err != nil {
 			log.Error(err, "Failed to encode response", "handler", "handleHealthHistory")
 		}
 		return
 	}
 
 	// Default: return last 50
-	if err := json.NewEncoder(w).Encode(s.history.Last(50)); err != nil {
+	if err := json.NewEncoder(w).Encode(cs.history.Last(50)); err != nil {
 		log.Error(err, "Failed to encode response", "handler", "handleHealthHistory")
 	}
 }
 
 // handleCausalGroups returns the latest causal correlation analysis
-func (s *Server) handleCausalGroups(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) handleCausalGroups(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
+	clusterID := r.URL.Query().Get("clusterId")
 
 	s.mu.RLock()
-	cc := s.latestCausal
+	var cc *causal.CausalContext
+	if cs, ok := s.clusters[clusterID]; ok {
+		cc = cs.latestCausal
+	}
 	s.mu.RUnlock()
 
 	if cc == nil {
@@ -1179,12 +1324,20 @@ func (s *Server) handleExplain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check cache: valid if issue hash matches and within 5 minutes
+	// Read from cluster state (use "" key for backward compat)
+	clusterID := r.URL.Query().Get("clusterId")
 	s.mu.RLock()
-	currentHash := s.lastIssueHash
-	cached := s.lastExplain
-	latest := s.latest
-	causalCtx := s.latestCausal
+	cs := s.clusters[clusterID]
+	var currentHash string
+	var cached *ExplainCacheEntry
+	var latest *HealthUpdate
+	var causalCtx *causal.CausalContext
+	if cs != nil {
+		currentHash = cs.lastIssueHash
+		cached = cs.lastExplain
+		latest = cs.latest
+		causalCtx = cs.latestCausal
+	}
 	s.mu.RUnlock()
 
 	if cached != nil && cached.IssueHash == currentHash && time.Since(cached.CachedAt) < 5*time.Minute {
@@ -1217,7 +1370,7 @@ func (s *Server) handleExplain(w http.ResponseWriter, r *http.Request) {
 	healthMap["summary"] = latest.Summary
 
 	// Get history for trend context
-	historySnapshots := s.history.Last(20)
+	historySnapshots := cs.history.Last(20)
 	historyForPrompt := make([]any, 0, len(historySnapshots))
 	for _, snap := range historySnapshots {
 		historyForPrompt = append(historyForPrompt, map[string]any{
@@ -1275,10 +1428,12 @@ func (s *Server) handleExplain(w http.ResponseWriter, r *http.Request) {
 
 	// Cache the result
 	s.mu.Lock()
-	s.lastExplain = &ExplainCacheEntry{
-		Response:  explainResp,
-		IssueHash: currentHash,
-		CachedAt:  time.Now(),
+	if cs != nil {
+		cs.lastExplain = &ExplainCacheEntry{
+			Response:  explainResp,
+			IssueHash: currentHash,
+			CachedAt:  time.Now(),
+		}
 	}
 	s.mu.Unlock()
 
@@ -1297,12 +1452,27 @@ func (s *Server) handlePrediction(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 
-	// Get history snapshots
-	snapshots := s.history.Last(50)
+	clusterID := r.URL.Query().Get("clusterId")
+
+	s.mu.RLock()
+	cs, ok := s.clusters[clusterID]
+	s.mu.RUnlock()
+
+	if !ok {
+		w.WriteHeader(http.StatusOK)
+		if err := json.NewEncoder(w).Encode(map[string]string{
+			"status":  "insufficient_data",
+			"message": "Need at least 5 health snapshots for prediction",
+		}); err != nil {
+			log.Error(err, "Failed to encode prediction response")
+		}
+		return
+	}
+
+	snapshots := cs.history.Last(50)
 
 	result := prediction.Analyze(snapshots)
 	if result == nil {
-		// Not enough data
 		w.WriteHeader(http.StatusOK)
 		if err := json.NewEncoder(w).Encode(map[string]string{
 			"status":  "insufficient_data",
@@ -1315,6 +1485,85 @@ func (s *Server) handlePrediction(w http.ResponseWriter, r *http.Request) {
 
 	if err := json.NewEncoder(w).Encode(result); err != nil {
 		log.Error(err, "Failed to encode prediction response")
+	}
+}
+
+// handleClusters returns the list of known cluster IDs from the console backend.
+// Falls back to an empty array when not running in console mode.
+func (s *Server) handleClusters(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	if cds, ok := s.client.(*datasource.ConsoleDataSource); ok {
+		clusters, err := cds.GetClusters(r.Context())
+		if err != nil {
+			log.Error(err, "Failed to get clusters")
+			if err := json.NewEncoder(w).Encode(map[string]any{"clusters": []string{}}); err != nil {
+				log.Error(err, "Failed to encode response", "handler", "handleClusters")
+			}
+			return
+		}
+		if err := json.NewEncoder(w).Encode(map[string]any{"clusters": clusters}); err != nil {
+			log.Error(err, "Failed to encode response", "handler", "handleClusters")
+		}
+		return
+	}
+
+	if err := json.NewEncoder(w).Encode(map[string]any{"clusters": []string{}}); err != nil {
+		log.Error(err, "Failed to encode response", "handler", "handleClusters")
+	}
+}
+
+// handleFleetSummary returns an aggregate view of all clusters.
+func (s *Server) handleFleetSummary(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	s.mu.RLock()
+	summary := FleetSummary{
+		Clusters: make([]FleetClusterEntry, 0, len(s.clusters)),
+	}
+	for clusterID, cs := range s.clusters {
+		if cs.latest == nil {
+			continue
+		}
+		total := cs.latest.Summary.TotalHealthy + cs.latest.Summary.TotalIssues
+		score := float64(100)
+		if total > 0 {
+			score = float64(cs.latest.Summary.TotalHealthy) / float64(total) * 100
+		}
+		summary.Clusters = append(summary.Clusters, FleetClusterEntry{
+			ClusterID:     clusterID,
+			HealthScore:   score,
+			TotalIssues:   cs.latest.Summary.TotalIssues,
+			CriticalCount: cs.latest.Summary.CriticalCount,
+			WarningCount:  cs.latest.Summary.WarningCount,
+			InfoCount:     cs.latest.Summary.InfoCount,
+			LastUpdated:   cs.latest.Timestamp.Format(time.RFC3339),
+		})
+	}
+	s.mu.RUnlock()
+
+	if err := json.NewEncoder(w).Encode(summary); err != nil {
+		log.Error(err, "Failed to encode response", "handler", "handleFleetSummary")
+	}
+}
+
+// handleAICatalog returns the model catalog, optionally filtered by provider.
+// GET /api/settings/ai/catalog?provider=anthropic
+func (s *Server) handleAICatalog(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	catalog := ai.DefaultCatalog()
+
+	if provider := r.URL.Query().Get("provider"); provider != "" {
+		filtered := ai.ModelCatalog{}
+		if models := catalog.ForProvider(provider); models != nil {
+			filtered[provider] = models
+		}
+		catalog = filtered
+	}
+
+	if err := json.NewEncoder(w).Encode(catalog); err != nil {
+		log.Error(err, "Failed to encode response", "handler", "handleAICatalog")
 	}
 }
 

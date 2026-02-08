@@ -143,14 +143,17 @@ func (m *Manager) SetEnabled(enabled bool) {
 // Reconfigure swaps the active AI provider at runtime. This is thread-safe
 // and intended to be called from the dashboard settings API.
 // Pass empty strings to keep current values for provider/model.
-func (m *Manager) Reconfigure(providerName, apiKey, model string) error {
+// explainModel configures a separate model for explain/narrative mode;
+// when empty, the explain provider mirrors the primary provider.
+func (m *Manager) Reconfigure(providerName, apiKey, model, explainModel string) error {
 	cfg := Config{
-		Provider: providerName,
-		APIKey:   apiKey,
-		Model:    model,
+		Provider:     providerName,
+		APIKey:       apiKey,
+		Model:        model,
+		ExplainModel: explainModel,
 	}
 
-	newProvider, _, _, err := NewProvider(cfg)
+	newProvider, newExplain, _, err := NewProvider(cfg)
 	if err != nil {
 		return fmt.Errorf("creating provider: %w", err)
 	}
@@ -158,7 +161,7 @@ func (m *Manager) Reconfigure(providerName, apiKey, model string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.provider = newProvider
-	m.explainProvider = newProvider // reset explain to same on reconfigure
+	m.explainProvider = newExplain
 	m.enabled = providerName != "" && providerName != ProviderNameNoop
 	// Clear cache on reconfigure
 	if m.cache != nil {

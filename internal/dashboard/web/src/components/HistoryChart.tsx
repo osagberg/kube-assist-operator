@@ -15,20 +15,20 @@ const trendColors: Record<string, string> = {
   degrading: 'severity-pill-critical',
 }
 
-export function HistoryChart() {
+export function HistoryChart({ clusterId }: { clusterId?: string }) {
   const [data, setData] = useState<HealthSnapshot[]>([])
   const [prediction, setPrediction] = useState<PredictionResult | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    fetchHealthHistory({ last: 50 })
+    fetchHealthHistory({ last: 50, clusterId })
       .then((d) => { setData(d); setError(null) })
       .catch((e) => setError(e instanceof Error ? e.message : 'Failed to load history'))
 
-    fetchPrediction()
+    fetchPrediction(clusterId)
       .then(setPrediction)
       .catch(() => setPrediction(null))  // silently fail, prediction is optional
-  }, [])
+  }, [clusterId])
 
   if (error || data.length === 0) return null
 

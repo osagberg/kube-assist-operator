@@ -24,8 +24,8 @@ const trendArrows: Record<string, string> = {
   unknown: '?',
 }
 
-export function ClusterExplain() {
-  const { data, loading, error, refresh } = useExplain()
+export function ClusterExplain({ clusterId }: { clusterId?: string }) {
+  const { data, loading, error, refresh } = useExplain(clusterId)
   const [collapsed, setCollapsed] = useState(true)
 
   // Don't render until user explicitly opens it

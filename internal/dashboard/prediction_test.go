@@ -39,9 +39,13 @@ func TestServer_HandlePrediction_InsufficientData(t *testing.T) {
 
 	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
 
+	server.mu.Lock()
+	cs := server.getOrCreateClusterState("")
+	server.mu.Unlock()
+
 	// Add only 3 snapshots (less than MinDataPoints)
 	for i := range 3 {
-		server.history.Add(history.HealthSnapshot{
+		cs.history.Add(history.HealthSnapshot{
 			Timestamp:    time.Now().Add(time.Duration(i) * 30 * time.Second),
 			TotalHealthy: 10,
 			TotalIssues:  0,
@@ -75,13 +79,17 @@ func TestServer_HandlePrediction_WithData(t *testing.T) {
 
 	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
 
+	server.mu.Lock()
+	cs := server.getOrCreateClusterState("")
+	server.mu.Unlock()
+
 	// Add 10 snapshots with a degrading trend
 	base := time.Now().Add(-5 * time.Minute)
 	for i := range 10 {
 		score := 95.0 - float64(i)*2
 		healthy := int(score)
 		issues := 100 - healthy
-		server.history.Add(history.HealthSnapshot{
+		cs.history.Add(history.HealthSnapshot{
 			Timestamp:    base.Add(time.Duration(i) * 30 * time.Second),
 			TotalHealthy: healthy,
 			TotalIssues:  issues,

@@ -6,20 +6,26 @@ const MAX_RETRIES = 10
 const BASE_DELAY = 1000
 const MAX_DELAY = 60000
 
-export function useSSE(paused: boolean) {
+export function useSSE(paused: boolean, clusterId?: string) {
   const [data, setData] = useState<HealthUpdate | null>(null)
   const [connected, setConnected] = useState(false)
   const esRef = useRef<EventSource | null>(null)
   const retriesRef = useRef(0)
   const retryTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const mountedRef = useRef(true)
+  const pausedRef = useRef(paused)
+
+  // Keep pausedRef in sync so onerror can check it
+  pausedRef.current = paused
 
   const connect = useCallback(() => {
+    if (pausedRef.current || !mountedRef.current) return
+
     if (esRef.current) {
       esRef.current.close()
     }
 
-    const es = createSSEConnection()
+    const es = createSSEConnection(clusterId)
     esRef.current = es
 
     es.onopen = () => {
@@ -39,7 +45,7 @@ export function useSSE(paused: boolean) {
     }
 
     es.onerror = () => {
-      if (!mountedRef.current) return
+      if (!mountedRef.current || pausedRef.current) return
       setConnected(false)
       es.close()
       if (retriesRef.current >= MAX_RETRIES) return
@@ -48,7 +54,7 @@ export function useSSE(paused: boolean) {
       retriesRef.current++
       retryTimeoutRef.current = setTimeout(connect, delay + jitter)
     }
-  }, [])
+  }, [clusterId])
 
   useEffect(() => {
     mountedRef.current = true
@@ -73,7 +79,7 @@ export function useSSE(paused: boolean) {
         retryTimeoutRef.current = null
       }
     }
-  }, [paused, connect])
+  }, [paused, clusterId, connect])
 
   return { data, connected }
 }

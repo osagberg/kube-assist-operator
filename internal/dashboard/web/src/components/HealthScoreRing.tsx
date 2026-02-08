@@ -1,19 +1,26 @@
 interface Props {
   score: number
+  size?: 'sm' | 'md'
 }
 
-export function HealthScoreRing({ score }: Props) {
-  const radius = 54
+export function HealthScoreRing({ score, size = 'md' }: Props) {
+  const isSmall = size === 'sm'
+  const svgSize = isSmall ? 64 : 140
+  const center = svgSize / 2
+  const radius = isSmall ? 24 : 54
+  const strokeWidth = isSmall ? 5 : 10
+  const fontSize = isSmall ? 14 : 28
   const circumference = 2 * Math.PI * radius
   const offset = circumference - (score / 100) * circumference
   const color = score >= 80 ? '#10B981' : score >= 50 ? '#F59E0B' : '#EF4444'
+  const filterId = isSmall ? 'score-glow-sm' : 'score-glow'
 
   return (
     <div className="flex flex-col items-center">
-      <svg width="140" height="140" viewBox="0 0 140 140">
+      <svg width={svgSize} height={svgSize} viewBox={`0 0 ${svgSize} ${svgSize}`}>
         <defs>
-          <filter id="score-glow">
-            <feGaussianBlur stdDeviation="3" result="blur" />
+          <filter id={filterId}>
+            <feGaussianBlur stdDeviation={isSmall ? 1.5 : 3} result="blur" />
             <feMerge>
               <feMergeNode in="blur" />
               <feMergeNode in="SourceGraphic" />
@@ -21,36 +28,37 @@ export function HealthScoreRing({ score }: Props) {
           </filter>
         </defs>
         <circle
-          cx="70" cy="70" r={radius}
+          cx={center} cy={center} r={radius}
           fill="none"
           stroke="var(--ring-track)"
-          strokeWidth="10"
+          strokeWidth={strokeWidth}
         />
         <circle
-          cx="70" cy="70" r={radius}
+          cx={center} cy={center} r={radius}
           fill="none"
           stroke={color}
-          strokeWidth="10"
+          strokeWidth={strokeWidth}
           strokeLinecap="round"
           strokeDasharray={circumference}
           strokeDashoffset={offset}
           className="transition-all duration-700 ease-out"
-          transform="rotate(-90 70 70)"
-          filter="url(#score-glow)"
+          transform={`rotate(-90 ${center} ${center})`}
+          filter={`url(#${filterId})`}
         />
         <text
-          x="70" y="70"
+          x={center} y={center}
           textAnchor="middle"
           dominantBaseline="central"
           fill="var(--text-primary)"
-          className="text-2xl font-bold"
-          fontSize="28"
+          fontSize={fontSize}
           fontWeight="bold"
         >
           {Math.round(score)}%
         </text>
       </svg>
-      <span className="text-sm mt-1" style={{ color: 'var(--text-secondary)' }}>Health Score</span>
+      {!isSmall && (
+        <span className="text-sm mt-1" style={{ color: 'var(--text-secondary)' }}>Health Score</span>
+      )}
     </div>
   )
 }

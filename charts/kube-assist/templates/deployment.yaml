@@ -78,10 +78,29 @@ spec:
             - --ai-monthly-token-limit={{ .Values.ai.budget.monthlyTokenLimit }}
             {{- end }}
             {{- end }}
+            {{- if and .Values.datasource (ne .Values.datasource.type "kubernetes") }}
+            - --datasource={{ .Values.datasource.type }}
+            {{- end }}
+            {{- if and .Values.datasource .Values.datasource.consoleURL }}
+            - --console-url={{ .Values.datasource.consoleURL }}
+            {{- end }}
+            {{- if and .Values.datasource .Values.datasource.clusterID }}
+            - --cluster-id={{ .Values.datasource.clusterID }}
+            {{- end }}
             {{- if .Values.notifications.semaphoreCapacity }}
             - --notify-sem-capacity={{ .Values.notifications.semaphoreCapacity }}
             {{- end }}
           env:
+            {{- if and .Values.datasource .Values.datasource.bearerTokenSecretRef.name }}
+            - name: CONSOLE_BEARER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.datasource.bearerTokenSecretRef.name }}
+                  key: {{ .Values.datasource.bearerTokenSecretRef.key | default "bearer-token" }}
+            {{- else if and .Values.datasource .Values.datasource.bearerToken }}
+            - name: CONSOLE_BEARER_TOKEN
+              value: {{ .Values.datasource.bearerToken | quote }}
+            {{- end }}
             {{- if and .Values.ai.enabled .Values.ai.apiKeySecretRef.name }}
             - name: KUBE_ASSIST_AI_API_KEY
               valueFrom:

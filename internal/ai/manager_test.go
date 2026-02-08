@@ -106,7 +106,7 @@ func TestManager_Provider(t *testing.T) {
 func TestManager_Reconfigure_Noop(t *testing.T) {
 	m := NewManager(NewNoOpProvider(), nil, true, nil, nil)
 
-	err := m.Reconfigure(ProviderNameNoop, "", "")
+	err := m.Reconfigure(ProviderNameNoop, "", "", "")
 	if err != nil {
 		t.Fatalf("Reconfigure(noop) error = %v", err)
 	}
@@ -123,7 +123,7 @@ func TestManager_Reconfigure_Noop(t *testing.T) {
 func TestManager_Reconfigure_OpenAI(t *testing.T) {
 	m := NewManager(NewNoOpProvider(), nil, false, nil, nil)
 
-	err := m.Reconfigure(ProviderNameOpenAI, "test-key", "gpt-4")
+	err := m.Reconfigure(ProviderNameOpenAI, "test-key", "gpt-4", "")
 	if err != nil {
 		t.Fatalf("Reconfigure(openai) error = %v", err)
 	}
@@ -142,7 +142,7 @@ func TestManager_Reconfigure_OpenAI(t *testing.T) {
 func TestManager_Reconfigure_Anthropic(t *testing.T) {
 	m := NewManager(NewNoOpProvider(), nil, false, nil, nil)
 
-	err := m.Reconfigure(ProviderNameAnthropic, "test-key", "claude-sonnet-4-5-20250929")
+	err := m.Reconfigure(ProviderNameAnthropic, "test-key", "claude-sonnet-4-5-20250929", "")
 	if err != nil {
 		t.Fatalf("Reconfigure(anthropic) error = %v", err)
 	}
@@ -158,7 +158,7 @@ func TestManager_Reconfigure_Anthropic(t *testing.T) {
 func TestManager_Reconfigure_InvalidProvider(t *testing.T) {
 	m := NewManager(NewNoOpProvider(), nil, true, nil, nil)
 
-	err := m.Reconfigure("unknown-provider", "", "")
+	err := m.Reconfigure("unknown-provider", "", "", "")
 	if err == nil {
 		t.Error("Reconfigure(unknown) should return error")
 	}
@@ -172,7 +172,7 @@ func TestManager_Reconfigure_InvalidProvider(t *testing.T) {
 func TestManager_Reconfigure_EmptyProvider(t *testing.T) {
 	m := NewManager(NewNoOpProvider(), nil, true, nil, nil)
 
-	err := m.Reconfigure("", "", "")
+	err := m.Reconfigure("", "", "", "")
 	if err != nil {
 		t.Fatalf("Reconfigure('') error = %v", err)
 	}
@@ -213,7 +213,7 @@ func TestManager_ConcurrentAccess(t *testing.T) {
 	// Concurrent reconfigures
 	for range 10 {
 		wg.Go(func() {
-			_ = m.Reconfigure(ProviderNameNoop, "", "")
+			_ = m.Reconfigure(ProviderNameNoop, "", "", "")
 		})
 	}
 
@@ -240,7 +240,7 @@ func TestManager_ReconfigurePreservesThread(t *testing.T) {
 	m := NewManager(NewNoOpProvider(), nil, false, nil, nil)
 
 	// Reconfigure to openai
-	err := m.Reconfigure(ProviderNameOpenAI, "key1", "gpt-4")
+	err := m.Reconfigure(ProviderNameOpenAI, "key1", "gpt-4", "")
 	if err != nil {
 		t.Fatalf("first reconfigure error = %v", err)
 	}
@@ -249,7 +249,7 @@ func TestManager_ReconfigurePreservesThread(t *testing.T) {
 	}
 
 	// Reconfigure back to noop
-	err = m.Reconfigure(ProviderNameNoop, "", "")
+	err = m.Reconfigure(ProviderNameNoop, "", "", "")
 	if err != nil {
 		t.Fatalf("second reconfigure error = %v", err)
 	}
@@ -365,5 +365,36 @@ func TestManager_TieredRouting(t *testing.T) {
 	// Verify the manager has different providers stored
 	if m.Provider() != primary {
 		t.Error("Provider() should return primary provider")
+	}
+}
+
+func TestManager_Reconfigure_WithExplainModel(t *testing.T) {
+	m := NewManager(NewNoOpProvider(), nil, false, nil, nil)
+
+	// Reconfigure with different explain model
+	err := m.Reconfigure(ProviderNameAnthropic, "test-key", "claude-sonnet-4-5-20250929", "claude-haiku-4-5-20251001")
+	if err != nil {
+		t.Fatalf("Reconfigure with explainModel error = %v", err)
+	}
+
+	if m.Name() != ProviderNameAnthropic {
+		t.Errorf("Name() = %s, want %s", m.Name(), ProviderNameAnthropic)
+	}
+	if !m.Enabled() {
+		t.Error("should be enabled")
+	}
+}
+
+func TestManager_Reconfigure_SameExplainModel(t *testing.T) {
+	m := NewManager(NewNoOpProvider(), nil, false, nil, nil)
+
+	// When explainModel equals model, explain should be same as primary
+	err := m.Reconfigure(ProviderNameAnthropic, "test-key", "claude-haiku-4-5-20251001", "claude-haiku-4-5-20251001")
+	if err != nil {
+		t.Fatalf("Reconfigure with same explainModel error = %v", err)
+	}
+
+	if m.Name() != ProviderNameAnthropic {
+		t.Errorf("Name() = %s, want %s", m.Name(), ProviderNameAnthropic)
 	}
 }

@@ -113,6 +113,25 @@ ai:
     dailyTokenLimit: 0
     monthlyTokenLimit: 0
 
+# DataSource backend settings.
+# Use "kubernetes" (default) for local cluster or "console" for cross-cluster
+# monitoring via a console backend HTTP API.
+datasource:
+  # Backend type: "kubernetes" or "console".
+  type: "kubernetes"
+  # Console backend URL (required when type=console).
+  consoleURL: ""
+  # Cluster identifier sent to the console backend (required when type=console).
+  clusterID: ""
+  # Bearer token for authenticating with the console backend.
+  # If empty, no Authorization header is sent.
+  bearerToken: ""
+  # Reference to a Secret containing the bearer token.
+  # If set, takes precedence over bearerToken.
+  bearerTokenSecretRef:
+    name: ""
+    key: "bearer-token"
+
 # Notification dispatch settings.
 notifications:
   # Maximum number of concurrent notification dispatches (goroutine semaphore).

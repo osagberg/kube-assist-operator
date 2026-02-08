@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { useHealth } from './hooks/useHealth'
 import { useSSE } from './hooks/useSSE'
+import { useClusters } from './hooks/useClusters'
+import { useFleet } from './hooks/useFleet'
 import { useSettings } from './hooks/useSettings'
 import { triggerCheck } from './api/client'
 import { HealthScoreRing } from './components/HealthScoreRing'
@@ -9,6 +11,8 @@ import { SeverityTabs } from './components/SeverityTabs'
 import type { Severity } from './components/SeverityTabs'
 import { SearchBar } from './components/SearchBar'
 import { NamespaceFilter } from './components/NamespaceFilter'
+import { ClusterSelector } from './components/ClusterSelector'
+import { FleetOverview } from './components/FleetOverview'
 import { ExportButton } from './components/ExportButton'
 import { SettingsModal } from './components/SettingsModal'
 import { HistoryChart } from './components/HistoryChart'
@@ -21,13 +25,13 @@ import { ErrorBoundary } from './components/ErrorBoundary'
 const severityKeys: Severity[] = ['all', 'Critical', 'Warning', 'Info']
 
 function App() {
-  const { health, error, loading, refresh, setHealth } = useHealth()
   const [dark, setDark] = useState(() =>
     window.matchMedia('(prefers-color-scheme: dark)').matches
   )
   const [search, setSearch] = useState('')
   const [severity, setSeverity] = useState<Severity>('all')
   const [namespace, setNamespace] = useState('')
+  const [cluster, setCluster] = useState<string | null>(null)
   const [paused, setPaused] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
   const [showHelp, setShowHelp] = useState(false)
@@ -36,12 +40,24 @@ function App() {
   const nsRef = useRef<HTMLSelectElement>(null)
 
   const { settings, save: saveSettings } = useSettings()
-  const { data: sseData, connected } = useSSE(paused)
+  const { clusters } = useClusters()
+  const showFleet = cluster === '' && clusters.length > 1
+  const effectiveCluster = (cluster === null || showFleet) ? undefined : cluster || undefined
+  const { health, error, loading, refresh, setHealth } = useHealth(effectiveCluster)
+  const { fleet } = useFleet(showFleet)
+  const { data: sseData, connected } = useSSE(paused || showFleet, effectiveCluster)
 
   // Update health from SSE
   useEffect(() => {
     if (sseData) setHealth(sseData)
   }, [sseData, setHealth])
+
+  // Auto-select first cluster when clusters load (only when uninitialized)
+  useEffect(() => {
+    if (clusters.length > 0 && cluster === null) {
+      setCluster(clusters.length > 1 ? '' : clusters[0])
+    }
+  }, [clusters, cluster])
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', dark)
@@ -96,6 +112,7 @@ function App() {
           <div className="flex items-center gap-3">
             <h1 className="text-lg font-semibold tracking-tight" style={{ color: 'var(--text-primary)' }}>KubeAssist</h1>
             <span className="text-[11px] font-medium px-2.5 py-0.5 rounded-full bg-accent-muted text-accent">Dashboard</span>
+            <ClusterSelector clusters={clusters} selected={cluster ?? ''} onChange={setCluster} />
             <span className={`w-2 h-2 rounded-full ${connected ? 'severity-dot-healthy' : paused ? 'severity-dot-warning' : 'severity-dot-critical'}`} title={connected ? 'Connected' : paused ? 'Paused' : 'Disconnected'} role="status" aria-label={connected ? 'Connected to server' : paused ? 'Updates paused' : 'Disconnected from server'} />
           </div>
           {/* Desktop buttons */}
@@ -194,13 +211,20 @@ function App() {
           </div>
         )}
 
-        {loading && !health && (
+        {loading && !health && !showFleet && (
           <div className="flex items-center justify-center py-20">
             <div className="w-8 h-8 border-2 border-accent-muted border-t-accent rounded-full animate-spin" />
           </div>
         )}
 
-        {health && (
+        {showFleet && fleet && (
+          <FleetOverview
+            clusters={fleet.clusters}
+            onDrillDown={(id) => setCluster(id)}
+          />
+        )}
+
+        {!showFleet && health && (
           <div className="space-y-6">
             {/* Summary Row */}
             <div className="flex flex-col md:flex-row items-start gap-6">
@@ -214,13 +238,13 @@ function App() {
             </div>
 
             {/* Explain This Cluster */}
-            <ClusterExplain />
+            <ClusterExplain clusterId={effectiveCluster} />
 
             {/* History Chart */}
-            <HistoryChart />
+            <HistoryChart clusterId={effectiveCluster} />
 
             {/* Causal Analysis */}
-            <CausalTimeline />
+            <CausalTimeline clusterId={effectiveCluster} />
 
             {/* Filters */}
             <div className="sticky top-14 z-30 glass-panel -mx-6 px-6 py-3 rounded-none">

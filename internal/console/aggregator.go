@@ -22,6 +22,7 @@ package console
 import (
 	"fmt"
 	"log/slog"
+	"sort"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/clientcmd"
@@ -79,6 +80,7 @@ func (a *Aggregator) ClusterIDs() []string {
 	for id := range a.clusters {
 		ids = append(ids, id)
 	}
+	sort.Strings(ids)
 	return ids
 }
 
