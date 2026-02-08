@@ -4,7 +4,7 @@ import { useSSE } from './hooks/useSSE'
 import { useClusters } from './hooks/useClusters'
 import { useFleet } from './hooks/useFleet'
 import { useSettings } from './hooks/useSettings'
-import { triggerCheck } from './api/client'
+import { triggerCheck, fetchCapabilities } from './api/client'
 import { HealthScoreRing } from './components/HealthScoreRing'
 import { CheckerCard } from './components/CheckerCard'
 import { SeverityTabs } from './components/SeverityTabs'
@@ -18,9 +18,12 @@ import { SettingsModal } from './components/SettingsModal'
 import { HistoryChart } from './components/HistoryChart'
 import { CausalTimeline } from './components/CausalTimeline'
 import { ClusterExplain } from './components/ClusterExplain'
+import { DiagnoseModal } from './components/DiagnoseModal'
 import { useKeyboardShortcuts, KeyboardShortcutsHelp } from './components/KeyboardShortcuts'
 import { ToastContainer, showToast } from './components/Toast'
 import { ErrorBoundary } from './components/ErrorBoundary'
+
+import type { TargetKind } from './types'
 
 const severityKeys: Severity[] = ['all', 'Critical', 'Warning', 'Info']
 
@@ -34,12 +37,18 @@ function App() {
   const [cluster, setCluster] = useState<string | null>(null)
   const [paused, setPaused] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
+  const [showDiagnose, setShowDiagnose] = useState(false)
+  const [diagnosePrefill, setDiagnosePrefill] = useState<{ namespace?: string; targetKind?: TargetKind; targetName?: string } | undefined>()
   const [showHelp, setShowHelp] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
   const searchRef = useRef<HTMLInputElement>(null)
   const nsRef = useRef<HTMLSelectElement>(null)
 
   const { settings, save: saveSettings } = useSettings()
+  const [canDiagnose, setCanDiagnose] = useState(false)
+  useEffect(() => {
+    fetchCapabilities().then((c) => setCanDiagnose(c.troubleshootCreate)).catch(() => setCanDiagnose(false))
+  }, [])
   const { clusters } = useClusters()
   const showFleet = cluster === '' && clusters.length > 1
   const effectiveCluster = (cluster === null || showFleet) ? undefined : cluster || undefined
@@ -85,6 +94,11 @@ function App() {
     }
   }
 
+  const handleDiagnose = useCallback((prefill?: { namespace?: string; targetKind?: TargetKind; targetName?: string }) => {
+    setDiagnosePrefill(prefill)
+    setShowDiagnose(true)
+  }, [])
+
   const toggleTheme = useCallback(() => setDark((d) => !d), [])
   const togglePause = useCallback(() => {
     setPaused((p) => {
@@ -123,6 +137,9 @@ function App() {
             <button onClick={handleTriggerCheck} className="glass-button px-3 py-1.5 rounded-lg text-sm" style={{ color: 'var(--text-secondary)' }} aria-label="Refresh health data">
               Refresh
             </button>
+            {canDiagnose && <button onClick={() => handleDiagnose()} className="glass-button px-3 py-1.5 rounded-lg text-sm" style={{ color: 'var(--text-secondary)' }} aria-label="Create TroubleshootRequest">
+              Diagnose
+            </button>}
             <button onClick={() => setShowSettings(true)} className="glass-button px-3 py-1.5 rounded-lg text-sm" style={{ color: 'var(--text-secondary)' }} aria-label="Open AI settings">
               AI Settings
             </button>
@@ -152,6 +169,9 @@ function App() {
                 <button onClick={() => { handleTriggerCheck(); setMenuOpen(false) }} className="glass-button px-3 py-1.5 rounded-lg text-sm w-full text-left" style={{ color: 'var(--text-secondary)' }} aria-label="Refresh health data">
                   Refresh
                 </button>
+                {canDiagnose && <button onClick={() => { handleDiagnose(); setMenuOpen(false) }} className="glass-button px-3 py-1.5 rounded-lg text-sm w-full text-left" style={{ color: 'var(--text-secondary)' }} aria-label="Create TroubleshootRequest">
+                  Diagnose
+                </button>}
                 <button onClick={() => { setShowSettings(true); setMenuOpen(false) }} className="glass-button px-3 py-1.5 rounded-lg text-sm w-full text-left" style={{ color: 'var(--text-secondary)' }} aria-label="Open AI settings">
                   AI Settings
                 </button>
@@ -270,6 +290,7 @@ function App() {
                     search={search}
                     severity={severity}
                     namespace={namespace}
+                    onDiagnose={canDiagnose ? handleDiagnose : undefined}
                   />
                 ))}
             </div>
@@ -293,6 +314,11 @@ function App() {
           showToast('AI settings saved', 'success')
           return result
         }}
+      />
+      <DiagnoseModal
+        open={showDiagnose}
+        onClose={() => { setShowDiagnose(false); setDiagnosePrefill(undefined) }}
+        prefill={diagnosePrefill}
       />
       <KeyboardShortcutsHelp open={showHelp} onClose={() => setShowHelp(false)} />
       <ToastContainer />

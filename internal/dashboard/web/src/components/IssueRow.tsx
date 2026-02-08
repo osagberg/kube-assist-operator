@@ -1,8 +1,9 @@
 import { useState } from 'react'
-import type { Issue } from '../types'
+import type { Issue, TargetKind } from '../types'
 
 interface Props {
   issue: Issue
+  onDiagnose?: (prefill?: { namespace?: string; targetKind?: TargetKind; targetName?: string }) => void
 }
 
 const severityPills: Record<string, string> = {
@@ -24,7 +25,28 @@ function stripIssueRefs(text: string): string {
     .trim()
 }
 
-export function IssueRow({ issue }: Props) {
+const RESOURCE_KIND_MAP: Record<string, TargetKind> = {
+  deployment: 'Deployment',
+  deployments: 'Deployment',
+  statefulset: 'StatefulSet',
+  statefulsets: 'StatefulSet',
+  daemonset: 'DaemonSet',
+  daemonsets: 'DaemonSet',
+  pod: 'Pod',
+  pods: 'Pod',
+  replicaset: 'ReplicaSet',
+  replicasets: 'ReplicaSet',
+}
+
+function parseResourceKindAndName(resource: string): { kind?: TargetKind; name: string } {
+  const slashIdx = resource.indexOf('/')
+  if (slashIdx === -1) return { name: resource }
+  const rawKind = resource.slice(0, slashIdx).toLowerCase()
+  const name = resource.slice(slashIdx + 1)
+  return { kind: RESOURCE_KIND_MAP[rawKind], name }
+}
+
+export function IssueRow({ issue, onDiagnose }: Props) {
   const [copied, setCopied] = useState(false)
   const [showFull, setShowFull] = useState(false)
   const pillClass = severityPills[issue.severity] ?? severityPills.Info
@@ -45,7 +67,7 @@ export function IssueRow({ issue }: Props) {
   return (
     <div className="px-4 py-2 transition-all duration-200 hover:bg-glass-200">
       <div className="flex items-start justify-between gap-2">
-        <div className="flex items-start gap-2.5 min-w-0">
+        <div className="flex items-start gap-2.5 min-w-0 flex-1">
           <span className={`${pillClass} mt-0.5`}>{pillText}</span>
           <div className="min-w-0">
             <div className="font-medium text-sm flex items-center gap-1.5">
@@ -90,6 +112,22 @@ export function IssueRow({ issue }: Props) {
             )}
           </div>
         </div>
+        {onDiagnose && (
+          <button
+            onClick={() => {
+              const parsed = parseResourceKindAndName(issue.resource)
+              onDiagnose({
+                namespace: issue.namespace,
+                targetKind: parsed.kind,
+                targetName: parsed.name,
+              })
+            }}
+            className="text-xs text-accent hover:underline flex-shrink-0 mt-0.5 transition-all duration-200"
+            aria-label={`Diagnose ${issue.resource}`}
+          >
+            Diagnose
+          </button>
+        )}
       </div>
     </div>
   )

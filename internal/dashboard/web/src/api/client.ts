@@ -9,6 +9,8 @@ import type {
   PredictionResponse,
   ModelCatalog,
   FleetSummary,
+  CreateTroubleshootRequest,
+  TroubleshootRequestSummary,
 } from '../types'
 
 const BASE = '/api'
@@ -136,6 +138,32 @@ export async function fetchPrediction(clusterId?: string): Promise<PredictionRes
 export async function fetchClusters(): Promise<string[]> {
   const data = await json<{ clusters: string[] }>(`${BASE}/clusters`)
   return data.clusters ?? []
+}
+
+/** POST /api/troubleshoot — create a TroubleshootRequest CR */
+export function createTroubleshootRequest(
+  body: CreateTroubleshootRequest,
+): Promise<{ name: string; namespace: string; phase: string }> {
+  return json(`${BASE}/troubleshoot`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+    body: JSON.stringify(body),
+  })
+}
+
+/** GET /api/troubleshoot — list TroubleshootRequest CRs */
+export function listTroubleshootRequests(namespace?: string): Promise<TroubleshootRequestSummary[]> {
+  const url = new URL(`${BASE}/troubleshoot`, window.location.origin)
+  if (namespace) url.searchParams.set('namespace', namespace)
+  return json<TroubleshootRequestSummary[]>(url.toString())
+}
+
+/** GET /api/capabilities — feature flags */
+export interface Capabilities {
+  troubleshootCreate: boolean
+}
+export function fetchCapabilities(): Promise<Capabilities> {
+  return json<Capabilities>(`${BASE}/capabilities`)
 }
 
 /** GET /api/events — SSE stream (returns EventSource, caller manages lifecycle) */

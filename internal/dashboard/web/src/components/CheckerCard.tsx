@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import type { CheckResult } from '../types'
+import type { CheckResult, TargetKind } from '../types'
 import { IssueRow } from './IssueRow'
 import type { Severity } from './SeverityTabs'
 
@@ -9,9 +9,10 @@ interface Props {
   search: string
   severity: Severity
   namespace: string
+  onDiagnose?: (prefill?: { namespace?: string; targetKind?: TargetKind; targetName?: string }) => void
 }
 
-export function CheckerCard({ name, result, search, severity, namespace }: Props) {
+export function CheckerCard({ name, result, search, severity, namespace, onDiagnose }: Props) {
   const [collapsed, setCollapsed] = useState(false)
 
   const filteredIssues = result.issues.filter((issue) => {
@@ -73,7 +74,7 @@ export function CheckerCard({ name, result, search, severity, namespace }: Props
       {!collapsed && filteredIssues.length > 0 && (
         <div className="border-t border-edge">
           {filteredIssues.map((issue) => (
-            <IssueRow key={`${issue.namespace}-${issue.resource}-${issue.type}`} issue={issue} />
+            <IssueRow key={`${issue.namespace}-${issue.resource}-${issue.type}`} issue={issue} onDiagnose={onDiagnose} />
           ))}
         </div>
       )}

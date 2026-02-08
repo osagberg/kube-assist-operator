@@ -112,7 +112,7 @@ helm install kube-assist charts/kube-assist \
   --set dashboard.enabled=true
 
 # Using Kustomize
-make deploy IMG=ghcr.io/osagberg/kube-assist-operator:v1.9.0
+make deploy IMG=ghcr.io/osagberg/kube-assist-operator:v1.11.0
 ```
 
 ---
@@ -395,6 +395,7 @@ The dashboard uses a frosted glass design language with translucent panels, blur
 - **Cluster selector** -- multi-cluster switching dropdown (invisible in single-cluster mode), SSE reconnects automatically on cluster change
 - **Connection indicator** -- green/yellow/red dot showing SSE connection status
 - **Mobile hamburger menu** -- responsive layout with collapsed navigation at <768px viewport width
+- **Diagnose button** -- create TroubleshootRequest CRs directly from the dashboard header or contextually from any issue row (hidden in console mode)
 - **Line-clamp suggestions** -- issue suggestions are truncated in list view; click to expand
 
 ### Enable Dashboard
@@ -429,6 +430,9 @@ If `dashboard.authToken` is configured, TLS must also be configured (`dashboard.
 | `/api/explain` | GET | AI-generated cluster health narrative with risk level and top issues (Bearer token required when configured) |
 | `/api/prediction/trend` | GET | Predictive health trend analysis (direction, velocity, projection) |
 | `/api/clusters` | GET | Available clusters for multi-cluster mode (empty array in single-cluster mode) |
+| `/api/troubleshoot` | POST | Create TroubleshootRequest CR from dashboard (requires kubernetes datasource) |
+| `/api/troubleshoot` | GET | List TroubleshootRequest CRs |
+| `/api/capabilities` | GET | Feature flags for frontend (troubleshootCreate, etc.) |
 
 ### Live Updates
 
@@ -792,6 +796,7 @@ make install-cli
 - [x] Predictive health — trend analysis via linear regression on health history, score projection, risky checker detection (v1.8.0)
 - [x] AI cost optimization — 9 optimizations (severity gating, change-only AI, gpt-4o-mini, prompt caching, token budget, batching, dedup, tiered routing, LRU cache) + 11 Prometheus metrics (v1.8.1-dev)
 - [x] Cross-cluster via ConsoleDataSource — all phases complete: client, server, console backend tests (86.5% coverage), dashboard cluster selector UI with SSE reconnect, Helm datasource sync (v1.9.0)
+- [x] TroubleshootRequest creation from dashboard — DiagnoseModal, contextual diagnose on issues, K8s name validation, capabilities-gated UI for console mode (v1.11.0)
 - [ ] Multi-cluster e2e tests with Kind clusters
 
 ---

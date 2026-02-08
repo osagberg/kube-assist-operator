@@ -157,6 +157,25 @@ export interface PredictionResponse {
   message?: string
 }
 
+// TroubleshootRequest types matching internal/dashboard/server.go
+export type TroubleshootAction = 'diagnose' | 'logs' | 'events' | 'describe' | 'all'
+export type TargetKind = 'Deployment' | 'StatefulSet' | 'DaemonSet' | 'Pod' | 'ReplicaSet'
+
+export interface CreateTroubleshootRequest {
+  namespace: string
+  target: { kind: TargetKind; name: string }
+  actions?: TroubleshootAction[]
+  tailLines?: number
+  ttlSecondsAfterFinished?: number
+}
+
+export interface TroubleshootRequestSummary {
+  name: string
+  namespace: string
+  phase: string
+  target: { kind: string; name: string }
+}
+
 // Health history types matching internal/history/ringbuffer.go
 export interface HealthSnapshot {
   timestamp: string

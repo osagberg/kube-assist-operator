@@ -414,6 +414,9 @@ func main() {
 		dashboardServer := dashboard.NewServer(ds, registry, dashboardAddr).
 			WithAI(aiManager, enableAI).
 			WithMaxSSEClients(maxSSEClients)
+		if datasourceType == "kubernetes" {
+			dashboardServer = dashboardServer.WithK8sWriter(mgr.GetClient(), mgr.GetScheme())
+		}
 		if dashboardTLSCertFile != "" && dashboardTLSKeyFile != "" {
 			dashboardServer.WithTLS(dashboardTLSCertFile, dashboardTLSKeyFile)
 		}

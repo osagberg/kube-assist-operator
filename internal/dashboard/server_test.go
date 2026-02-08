@@ -29,6 +29,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
+	assistv1alpha1 "github.com/osagberg/kube-assist-operator/api/v1alpha1"
 	"github.com/osagberg/kube-assist-operator/internal/ai"
 	"github.com/osagberg/kube-assist-operator/internal/causal"
 	"github.com/osagberg/kube-assist-operator/internal/checker"
@@ -1652,5 +1653,319 @@ func TestSSEAuthMiddleware_PassthroughWhenNoTokenConfigured(t *testing.T) {
 	}
 	if !called {
 		t.Error("SSE handler should have been called when no auth configured")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TroubleshootRequest CRUD tests
+// ---------------------------------------------------------------------------
+
+func newTestServerWithWriter(t *testing.T) *Server {
+	t.Helper()
+	scheme := runtime.NewScheme()
+	_ = assistv1alpha1.AddToScheme(scheme)
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	ds := datasource.NewKubernetes(fakeClient)
+	server := NewServer(ds, registry, ":8080")
+	server.WithK8sWriter(fakeClient, scheme)
+	return server
+}
+
+const testTargetName = "my-app"
+
+func TestHandleCreateTroubleshoot_Success(t *testing.T) {
+	server := newTestServerWithWriter(t)
+
+	body := CreateTroubleshootBody{
+		Namespace: defaultNamespace,
+		Actions:   []string{"diagnose", "logs"},
+		TailLines: 200,
+	}
+	body.Target.Kind = defaultTargetKind
+	body.Target.Name = testTargetName
+
+	data, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/api/troubleshoot", bytes.NewReader(data))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	server.handleCreateTroubleshoot(rr, req)
+
+	if rr.Code != http.StatusCreated {
+		t.Errorf("POST /api/troubleshoot status = %d, want %d; body = %s", rr.Code, http.StatusCreated, rr.Body.String())
+	}
+
+	var resp CreateTroubleshootResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("returned invalid JSON: %v", err)
+	}
+	if resp.Namespace != defaultNamespace {
+		t.Errorf("response namespace = %q, want %q", resp.Namespace, defaultNamespace)
+	}
+	if resp.Phase != "Pending" {
+		t.Errorf("response phase = %q, want %q", resp.Phase, "Pending")
+	}
+	if resp.Name == "" {
+		t.Error("expected non-empty name in response")
+	}
+	if !strings.HasPrefix(resp.Name, "dash-") {
+		t.Errorf("expected name to start with 'dash-', got %q", resp.Name)
+	}
+}
+
+func TestHandleCreateTroubleshoot_MissingTargetName(t *testing.T) {
+	server := newTestServerWithWriter(t)
+
+	body := CreateTroubleshootBody{
+		Namespace: defaultNamespace,
+	}
+	body.Target.Kind = defaultTargetKind
+	// Target.Name intentionally empty
+
+	data, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/api/troubleshoot", bytes.NewReader(data))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	server.handleCreateTroubleshoot(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("POST /api/troubleshoot without target.name status = %d, want %d", rr.Code, http.StatusBadRequest)
+	}
+}
+
+func TestHandleCreateTroubleshoot_InvalidKind(t *testing.T) {
+	server := newTestServerWithWriter(t)
+
+	body := CreateTroubleshootBody{
+		Namespace: defaultNamespace,
+	}
+	body.Target.Kind = "CronJob"
+	body.Target.Name = testTargetName
+
+	data, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/api/troubleshoot", bytes.NewReader(data))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	server.handleCreateTroubleshoot(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("POST /api/troubleshoot with invalid kind status = %d, want %d", rr.Code, http.StatusBadRequest)
+	}
+}
+
+func TestHandleCreateTroubleshoot_NoWriter(t *testing.T) {
+	scheme := runtime.NewScheme()
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(fakeClient), registry, ":8080")
+	// k8sWriter not set
+
+	body := CreateTroubleshootBody{
+		Namespace: defaultNamespace,
+	}
+	body.Target.Kind = defaultTargetKind
+	body.Target.Name = testTargetName
+
+	data, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/api/troubleshoot", bytes.NewReader(data))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	server.handleCreateTroubleshoot(rr, req)
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Errorf("POST /api/troubleshoot without writer status = %d, want %d", rr.Code, http.StatusServiceUnavailable)
+	}
+}
+
+func TestHandleCreateTroubleshoot_InvalidActions(t *testing.T) {
+	server := newTestServerWithWriter(t)
+
+	body := CreateTroubleshootBody{
+		Namespace: defaultNamespace,
+		Actions:   []string{"diagnose", "hack"},
+	}
+	body.Target.Kind = defaultTargetKind
+	body.Target.Name = testTargetName
+
+	data, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/api/troubleshoot", bytes.NewReader(data))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	server.handleCreateTroubleshoot(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("POST /api/troubleshoot with invalid action status = %d, want %d", rr.Code, http.StatusBadRequest)
+	}
+}
+
+func TestHandleListTroubleshoot(t *testing.T) {
+	server := newTestServerWithWriter(t)
+
+	// Create a CR first
+	cr := &assistv1alpha1.TroubleshootRequest{}
+	cr.GenerateName = "test-"
+	cr.Namespace = defaultNamespace
+	cr.Spec.Target.Kind = defaultTargetKind
+	cr.Spec.Target.Name = testTargetName
+	cr.Spec.Actions = []assistv1alpha1.TroubleshootAction{assistv1alpha1.ActionDiagnose}
+	cr.Spec.TailLines = 100
+
+	if err := server.k8sWriter.Create(context.Background(), cr); err != nil {
+		t.Fatalf("failed to create test CR: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/troubleshoot", nil)
+	rr := httptest.NewRecorder()
+
+	server.handleCreateTroubleshoot(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("GET /api/troubleshoot status = %d, want %d; body = %s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+
+	var summaries []TroubleshootRequestSummary
+	if err := json.Unmarshal(rr.Body.Bytes(), &summaries); err != nil {
+		t.Fatalf("returned invalid JSON: %v", err)
+	}
+	if len(summaries) != 1 {
+		t.Fatalf("expected 1 summary, got %d", len(summaries))
+	}
+	if summaries[0].Target.Name != testTargetName {
+		t.Errorf("summary target.name = %q, want %q", summaries[0].Target.Name, testTargetName)
+	}
+	if summaries[0].Target.Kind != defaultTargetKind {
+		t.Errorf("summary target.kind = %q, want %q", summaries[0].Target.Kind, defaultTargetKind)
+	}
+}
+
+func TestHandleCreateTroubleshoot_Defaults(t *testing.T) {
+	server := newTestServerWithWriter(t)
+
+	// Minimal body — only target.name
+	body := `{"target":{"name":"` + testTargetName + `"}}`
+	req := httptest.NewRequest(http.MethodPost, "/api/troubleshoot", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	server.handleCreateTroubleshoot(rr, req)
+
+	if rr.Code != http.StatusCreated {
+		t.Errorf("POST /api/troubleshoot minimal body status = %d, want %d; body = %s", rr.Code, http.StatusCreated, rr.Body.String())
+	}
+
+	var resp CreateTroubleshootResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("returned invalid JSON: %v", err)
+	}
+	// Should default to "default" namespace
+	if resp.Namespace != defaultNamespace {
+		t.Errorf("default namespace = %q, want %q", resp.Namespace, defaultNamespace)
+	}
+}
+
+func TestHandleCapabilities_WithWriter(t *testing.T) {
+	server := newTestServerWithWriter(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/capabilities", nil)
+	rr := httptest.NewRecorder()
+	server.handleCapabilities(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("GET /api/capabilities status = %d, want %d", rr.Code, http.StatusOK)
+	}
+	var caps map[string]bool
+	if err := json.Unmarshal(rr.Body.Bytes(), &caps); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if !caps["troubleshootCreate"] {
+		t.Error("expected troubleshootCreate=true when k8sWriter is set")
+	}
+}
+
+func TestHandleCapabilities_NoWriter(t *testing.T) {
+	scheme := runtime.NewScheme()
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(fakeClient), registry, ":8080")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/capabilities", nil)
+	rr := httptest.NewRecorder()
+	server.handleCapabilities(rr, req)
+
+	var caps map[string]bool
+	if err := json.Unmarshal(rr.Body.Bytes(), &caps); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if caps["troubleshootCreate"] {
+		t.Error("expected troubleshootCreate=false when k8sWriter is nil")
+	}
+}
+
+func TestHandleCreateTroubleshoot_InvalidTargetName(t *testing.T) {
+	server := newTestServerWithWriter(t)
+
+	body := CreateTroubleshootBody{
+		Namespace: defaultNamespace,
+	}
+	body.Target.Kind = defaultTargetKind
+	body.Target.Name = "INVALID_NAME"
+
+	data, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/api/troubleshoot", bytes.NewReader(data))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	server.handleCreateTroubleshoot(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("invalid target name status = %d, want %d", rr.Code, http.StatusBadRequest)
+	}
+}
+
+func TestHandleCreateTroubleshoot_TailLinesTooLarge(t *testing.T) {
+	server := newTestServerWithWriter(t)
+
+	body := CreateTroubleshootBody{
+		Namespace: defaultNamespace,
+		TailLines: 99999,
+	}
+	body.Target.Kind = defaultTargetKind
+	body.Target.Name = testTargetName
+
+	data, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/api/troubleshoot", bytes.NewReader(data))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	server.handleCreateTroubleshoot(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("excessive tailLines status = %d, want %d", rr.Code, http.StatusBadRequest)
+	}
+}
+
+func TestHandleCreateTroubleshoot_ActionsNormalizesAll(t *testing.T) {
+	server := newTestServerWithWriter(t)
+
+	body := CreateTroubleshootBody{
+		Namespace: defaultNamespace,
+		Actions:   []string{"logs", "all", "events"},
+	}
+	body.Target.Kind = defaultTargetKind
+	body.Target.Name = testTargetName
+
+	data, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/api/troubleshoot", bytes.NewReader(data))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	server.handleCreateTroubleshoot(rr, req)
+
+	if rr.Code != http.StatusCreated {
+		t.Errorf("all-normalization status = %d, want %d; body = %s", rr.Code, http.StatusCreated, rr.Body.String())
 	}
 }

@@ -28,6 +28,8 @@ import (
 	"io/fs"
 	"net/http"
 	"os"
+	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -36,6 +38,8 @@ import (
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	assistv1alpha1 "github.com/osagberg/kube-assist-operator/api/v1alpha1"
@@ -180,6 +184,8 @@ type Server struct {
 	aiConfig          ai.Config
 	checkTimeout      time.Duration
 	correlator        *causal.Correlator
+	k8sWriter         client.Client // optional: for creating TroubleshootRequest CRs
+	scheme            *runtime.Scheme
 	mu                sync.RWMutex
 	clients           map[chan HealthUpdate]string // chan -> subscribed clusterId ("" = all)
 	clusters          map[string]*clusterState     // clusterID -> state ("" key for single-cluster)
@@ -326,6 +332,13 @@ func (s *Server) WithMaxSSEClients(max int) *Server {
 	return s
 }
 
+// WithK8sWriter configures a Kubernetes client for creating TroubleshootRequest CRs.
+func (s *Server) WithK8sWriter(c client.Client, scheme *runtime.Scheme) *Server {
+	s.k8sWriter = c
+	s.scheme = scheme
+	return s
+}
+
 // Start starts the dashboard server
 func (s *Server) Start(ctx context.Context) error {
 	mux := http.NewServeMux()
@@ -342,6 +355,8 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/api/clusters", s.authMiddleware(s.handleClusters))
 	mux.HandleFunc("/api/fleet/summary", s.authMiddleware(s.handleFleetSummary))
 	mux.HandleFunc("/api/settings/ai/catalog", s.handleAICatalog)
+	mux.HandleFunc("/api/troubleshoot", s.authMiddleware(s.handleCreateTroubleshoot))
+	mux.HandleFunc("/api/capabilities", s.handleCapabilities)
 
 	// React SPA dashboard
 	spaFS, err := fs.Sub(webAssets, "web/dist")
@@ -1629,6 +1644,232 @@ func (s *Server) handleAICatalog(w http.ResponseWriter, r *http.Request) {
 
 	if err := json.NewEncoder(w).Encode(catalog); err != nil {
 		log.Error(err, "Failed to encode response", "handler", "handleAICatalog")
+	}
+}
+
+// CreateTroubleshootBody is the JSON body for POST /api/troubleshoot.
+type CreateTroubleshootBody struct {
+	Namespace string `json:"namespace"`
+	Target    struct {
+		Kind string `json:"kind"`
+		Name string `json:"name"`
+	} `json:"target"`
+	Actions   []string `json:"actions,omitempty"`
+	TailLines int32    `json:"tailLines,omitempty"`
+	TTL       *int32   `json:"ttlSecondsAfterFinished,omitempty"`
+}
+
+// CreateTroubleshootResponse is the JSON response for POST /api/troubleshoot.
+type CreateTroubleshootResponse struct {
+	Name      string `json:"name"`
+	Namespace string `json:"namespace"`
+	Phase     string `json:"phase"`
+}
+
+// TroubleshootRequestSummary is a brief summary of a TroubleshootRequest.
+type TroubleshootRequestSummary struct {
+	Name      string `json:"name"`
+	Namespace string `json:"namespace"`
+	Phase     string `json:"phase"`
+	Target    struct {
+		Kind string `json:"kind"`
+		Name string `json:"name"`
+	} `json:"target"`
+}
+
+const (
+	defaultTargetKind = "Deployment"
+	defaultNamespace  = "default"
+	maxTailLines      = int32(10000)
+	maxTTLSeconds     = int32(86400) // 24 hours
+)
+
+// k8sNameRe matches valid Kubernetes resource names (RFC 1123 DNS label).
+var k8sNameRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9\-]{0,61}[a-z0-9])?$`)
+
+var validTargetKinds = map[string]bool{
+	defaultTargetKind: true,
+	"StatefulSet":     true,
+	"DaemonSet":       true,
+	"Pod":             true,
+	"ReplicaSet":      true,
+}
+
+var validActions = map[string]bool{
+	"diagnose": true,
+	"logs":     true,
+	"events":   true,
+	"describe": true,
+	"all":      true,
+}
+
+// handleCreateTroubleshoot handles POST and GET for /api/troubleshoot.
+func (s *Server) handleCreateTroubleshoot(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodPost:
+		s.handlePostTroubleshoot(w, r)
+	case http.MethodGet:
+		s.handleListTroubleshoot(w, r)
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *Server) handlePostTroubleshoot(w http.ResponseWriter, r *http.Request) {
+	if s.k8sWriter == nil {
+		http.Error(w, "TroubleshootRequest creation not available (console mode)", http.StatusServiceUnavailable)
+		return
+	}
+
+	var body CreateTroubleshootBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "Invalid JSON body", http.StatusBadRequest)
+		return
+	}
+
+	// Validate target name (required, valid K8s name)
+	if body.Target.Name == "" {
+		http.Error(w, "target.name is required", http.StatusBadRequest)
+		return
+	}
+	if !k8sNameRe.MatchString(body.Target.Name) {
+		http.Error(w, "target.name must be a valid Kubernetes name (lowercase, alphanumeric, hyphens)", http.StatusBadRequest)
+		return
+	}
+
+	// Default target kind
+	if body.Target.Kind == "" {
+		body.Target.Kind = defaultTargetKind
+	}
+	if !validTargetKinds[body.Target.Kind] {
+		http.Error(w, "invalid target.kind: must be one of Deployment, StatefulSet, DaemonSet, Pod, ReplicaSet", http.StatusBadRequest)
+		return
+	}
+
+	// Default namespace (validate if provided)
+	if body.Namespace == "" {
+		body.Namespace = defaultNamespace
+	}
+	if !k8sNameRe.MatchString(body.Namespace) {
+		http.Error(w, "namespace must be a valid Kubernetes name (lowercase, alphanumeric, hyphens)", http.StatusBadRequest)
+		return
+	}
+
+	// Default actions — normalize "all" (mutually exclusive with specifics)
+	if len(body.Actions) == 0 {
+		body.Actions = []string{"diagnose"}
+	}
+	for _, a := range body.Actions {
+		if !validActions[a] {
+			http.Error(w, fmt.Sprintf("invalid action %q: must be one of diagnose, logs, events, describe, all", a), http.StatusBadRequest)
+			return
+		}
+	}
+	// If "all" is specified, normalize to just ["all"]
+	if slices.Contains(body.Actions, "all") {
+		body.Actions = []string{"all"}
+	}
+
+	// Default and bound tailLines
+	if body.TailLines <= 0 {
+		body.TailLines = 100
+	}
+	if body.TailLines > maxTailLines {
+		http.Error(w, fmt.Sprintf("tailLines must be <= %d", maxTailLines), http.StatusBadRequest)
+		return
+	}
+
+	// Bound TTL
+	if body.TTL != nil && (*body.TTL <= 0 || *body.TTL > maxTTLSeconds) {
+		http.Error(w, fmt.Sprintf("ttlSecondsAfterFinished must be between 1 and %d", maxTTLSeconds), http.StatusBadRequest)
+		return
+	}
+
+	actions := make([]assistv1alpha1.TroubleshootAction, len(body.Actions))
+	for i, a := range body.Actions {
+		actions[i] = assistv1alpha1.TroubleshootAction(a)
+	}
+
+	cr := &assistv1alpha1.TroubleshootRequest{
+		ObjectMeta: metav1.ObjectMeta{
+			GenerateName: "dash-",
+			Namespace:    body.Namespace,
+		},
+		Spec: assistv1alpha1.TroubleshootRequestSpec{
+			Target: assistv1alpha1.TargetRef{
+				Kind: body.Target.Kind,
+				Name: body.Target.Name,
+			},
+			Actions:                 actions,
+			TailLines:               body.TailLines,
+			TTLSecondsAfterFinished: body.TTL,
+		},
+	}
+
+	if err := s.k8sWriter.Create(r.Context(), cr); err != nil {
+		log.Error(err, "Failed to create TroubleshootRequest")
+		http.Error(w, "Failed to create TroubleshootRequest: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	resp := CreateTroubleshootResponse{
+		Name:      cr.Name,
+		Namespace: cr.Namespace,
+		Phase:     string(assistv1alpha1.PhasePending),
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		log.Error(err, "Failed to encode response", "handler", "handlePostTroubleshoot")
+	}
+}
+
+func (s *Server) handleListTroubleshoot(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	if s.k8sWriter == nil {
+		http.Error(w, "TroubleshootRequest listing not available (console mode)", http.StatusServiceUnavailable)
+		return
+	}
+
+	var list assistv1alpha1.TroubleshootRequestList
+	ns := r.URL.Query().Get("namespace")
+	var opts []client.ListOption
+	if ns != "" {
+		opts = append(opts, client.InNamespace(ns))
+	}
+
+	if err := s.k8sWriter.List(r.Context(), &list, opts...); err != nil {
+		log.Error(err, "Failed to list TroubleshootRequests")
+		http.Error(w, "Failed to list TroubleshootRequests: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	summaries := make([]TroubleshootRequestSummary, len(list.Items))
+	for i, item := range list.Items {
+		summaries[i] = TroubleshootRequestSummary{
+			Name:      item.Name,
+			Namespace: item.Namespace,
+			Phase:     string(item.Status.Phase),
+		}
+		summaries[i].Target.Kind = item.Spec.Target.Kind
+		summaries[i].Target.Name = item.Spec.Target.Name
+	}
+
+	if err := json.NewEncoder(w).Encode(summaries); err != nil {
+		log.Error(err, "Failed to encode response", "handler", "handleListTroubleshoot")
+	}
+}
+
+// handleCapabilities returns feature flags so the frontend can hide unsupported actions.
+func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	resp := map[string]bool{
+		"troubleshootCreate": s.k8sWriter != nil,
+	}
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		log.Error(err, "Failed to encode capabilities response")
 	}
 }
 
