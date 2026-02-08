@@ -93,6 +93,8 @@ func main() {
 	var aiExplainModel string
 	var aiDailyTokenLimit int
 	var aiMonthlyTokenLimit int
+	var maxSSEClients int
+	var notifySemCapacity int
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
@@ -120,6 +122,10 @@ func main() {
 		"Max AI tokens per day (0 = unlimited).")
 	flag.IntVar(&aiMonthlyTokenLimit, "ai-monthly-token-limit", 0,
 		"Max AI tokens per month (0 = unlimited).")
+	flag.IntVar(&maxSSEClients, "max-sse-clients", 100,
+		"Maximum concurrent SSE dashboard connections (0 = unlimited).")
+	flag.IntVar(&notifySemCapacity, "notify-sem-capacity", 5,
+		"Maximum concurrent notification dispatches.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
@@ -320,7 +326,7 @@ func main() {
 		DataSource:       ds,
 		Correlator:       causal.NewCorrelator(),
 		NotifierRegistry: notifierRegistry,
-		NotifySem:        make(chan struct{}, 5),
+		NotifySem:        make(chan struct{}, notifySemCapacity),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "TeamHealthRequest")
 		os.Exit(1)
@@ -361,7 +367,8 @@ func main() {
 	// Start dashboard server if enabled
 	if enableDashboard {
 		dashboardServer := dashboard.NewServer(ds, registry, dashboardAddr).
-			WithAI(aiManager, enableAI)
+			WithAI(aiManager, enableAI).
+			WithMaxSSEClients(maxSSEClients)
 		if dashboardTLSCertFile != "" && dashboardTLSKeyFile != "" {
 			dashboardServer.WithTLS(dashboardTLSCertFile, dashboardTLSKeyFile)
 		}

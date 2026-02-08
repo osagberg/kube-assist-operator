@@ -243,6 +243,14 @@ func (s *Server) WithAI(provider ai.Provider, enabled bool) *Server {
 	return s
 }
 
+// WithMaxSSEClients sets the maximum number of concurrent SSE connections.
+func (s *Server) WithMaxSSEClients(max int) *Server {
+	if max > 0 {
+		s.maxSSEClients = max
+	}
+	return s
+}
+
 // Start starts the dashboard server
 func (s *Server) Start(ctx context.Context) error {
 	mux := http.NewServeMux()

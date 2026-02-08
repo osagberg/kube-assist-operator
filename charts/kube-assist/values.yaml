@@ -70,6 +70,9 @@ dashboard:
   authToken: ""
   # Allow auth over plain HTTP (local/dev only). Ignored when authToken is empty.
   allowInsecureHttp: false
+  # Maximum number of concurrent SSE client connections.
+  # Excess connections are rejected with HTTP 503.
+  maxSSEClients: 100
   # Reference to a Secret containing the auth token.
   # If set, takes precedence over authToken.
   authTokenSecretRef:
@@ -109,6 +112,11 @@ ai:
   budget:
     dailyTokenLimit: 0
     monthlyTokenLimit: 0
+
+# Notification dispatch settings.
+notifications:
+  # Maximum number of concurrent notification dispatches (goroutine semaphore).
+  semaphoreCapacity: 5
 
 resources:
   limits:

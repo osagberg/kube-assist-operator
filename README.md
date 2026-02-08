@@ -28,7 +28,7 @@ Most monitoring tools tell you *what* is broken. KubeAssist tells you *why* and 
 - **Frosted glass dashboard** -- modern React 19 SPA with dark/light themes, severity pills for colorblind accessibility, collapsible sections, and a pipeline progress indicator
 - **GitOps-native** -- first-class Flux CD integration with graceful degradation when Flux is not installed
 - **Predictive health** -- linear regression trend analysis on health history with projected scores, velocity detection, and risky checker identification
-- **Enterprise patterns** -- DataSource abstraction, pluggable notifiers, webhook validation, TTL cleanup, leader election
+- **Enterprise patterns** -- DataSource abstraction, pluggable notifiers, webhook validation, TTL cleanup, leader election, bounded concurrency
 - **Single binary** -- dashboard, API, operator, and CLI all compile into one Go binary (~22K lines of code: 20K Go + 2K TypeScript)
 
 ---
@@ -575,6 +575,8 @@ helm install kube-assist charts/kube-assist \
 | `dashboard.authToken` | `""` | Bearer token for authenticating mutating API requests |
 | `dashboard.authTokenSecretRef.name` | `""` | Secret containing auth token |
 | `dashboard.allowInsecureHttp` | `false` | Allow auth over HTTP without TLS (local/dev only) |
+| `dashboard.maxSSEClients` | `100` | Maximum concurrent SSE connections (rejects with 503 when exceeded) |
+| `notifications.semaphoreCapacity` | `5` | Maximum concurrent notification dispatches |
 | `dashboard.tls.enabled` | `false` | Enable TLS for dashboard HTTPS |
 | `dashboard.tls.secretName` | `""` | Secret with tls.crt and tls.key |
 | `networkPolicy.enabled` | `true` | Enable network policy |
