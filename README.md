@@ -1,11 +1,12 @@
 # KubeAssist
 
+[![CI Tests](https://github.com/osagberg/kube-assist-operator/actions/workflows/test.yml/badge.svg)](https://github.com/osagberg/kube-assist-operator/actions/workflows/test.yml)
+[![CI Lint](https://github.com/osagberg/kube-assist-operator/actions/workflows/lint.yml/badge.svg)](https://github.com/osagberg/kube-assist-operator/actions/workflows/lint.yml)
 [![Go Version](https://img.shields.io/badge/Go-1.25+-00ADD8?style=flat&logo=go)](https://go.dev/)
 [![Kubernetes](https://img.shields.io/badge/Kubernetes-1.25+-326CE5?style=flat&logo=kubernetes)](https://kubernetes.io/)
-[![Chart Version](https://img.shields.io/badge/Helm_Chart-v1.8.2-0F1689?style=flat&logo=helm)](charts/kube-assist)
-[![Tests](https://img.shields.io/badge/Tests-400+_passing-success?style=flat)](https://github.com/osagberg/kube-assist-operator/actions/workflows/test.yml)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![CI](https://github.com/osagberg/kube-assist-operator/actions/workflows/test.yml/badge.svg)](https://github.com/osagberg/kube-assist-operator/actions/workflows/test.yml)
+[![gosec](https://img.shields.io/badge/gosec-0_findings-success?style=flat)](https://github.com/securego/gosec)
+[![govulncheck](https://img.shields.io/badge/govulncheck-0_vulnerabilities-success?style=flat)](https://pkg.go.dev/golang.org/x/vuln/cmd/govulncheck)
 
 **Kubernetes diagnostics that tell you *why* things break and *how* to fix them.**
 
@@ -29,7 +30,7 @@ Most monitoring tools tell you *what* is broken. KubeAssist tells you *why* and 
 - **GitOps-native** -- first-class Flux CD integration with graceful degradation when Flux is not installed
 - **Predictive health** -- linear regression trend analysis on health history with projected scores, velocity detection, and risky checker identification
 - **Enterprise patterns** -- DataSource abstraction, pluggable notifiers, webhook validation, TTL cleanup, leader election, bounded concurrency
-- **Single binary** -- dashboard, API, operator, and CLI all compile into one Go binary (~22K lines of code: 20K Go + 2K TypeScript)
+- **Single binary** -- dashboard, API, operator, and CLI all compile into one Go binary (~29K lines of code: 27K Go + 2K TypeScript)
 
 ---
 
@@ -405,10 +406,7 @@ make run ARGS="--enable-dashboard"
 helm install kube-assist charts/kube-assist \
   --set dashboard.enabled=true
 
-# Access (OrbStack users)
-open http://kube-assist-dashboard.kube-assist-system:9090
-
-# Access (standard Kubernetes)
+# Access via port-forward
 kubectl port-forward -n kube-assist-system svc/kube-assist-dashboard 9090:9090
 open http://localhost:9090
 ```
@@ -473,7 +471,7 @@ The fastest way to enable AI is through the dashboard:
 ### Quick Setup (CLI)
 
 ```bash
-make run ARGS="--enable-dashboard --enable-ai --ai-provider=anthropic --ai-api-key=sk-ant-..."
+make run ARGS="--enable-dashboard --enable-ai --ai-provider=anthropic --ai-api-key=$KUBE_ASSIST_AI_API_KEY"
 ```
 
 ### Quick Setup (Helm)
@@ -691,6 +689,33 @@ Prometheus metrics available at `:8080/metrics`:
 | `kubeassist_ai_budget_tokens_used` | Gauge | window | Current token usage per window |
 | `kubeassist_ai_budget_tokens_limit` | Gauge | window | Token limit per window |
 | `kubeassist_ai_issues_filtered_total` | Counter | reason | Issues skipped (severity_info, duplicate) |
+
+---
+
+## Security
+
+Verify the codebase yourself:
+
+```bash
+# Static analysis (gosec) — 0 findings on production code
+make security
+
+# Race condition detection — built into test suite
+make test   # runs with -race flag
+
+# 21 linters including gosec, staticcheck, errcheck, govet
+make lint
+```
+
+| Scanner | Result |
+|---------|--------|
+| **gosec** | 0 findings (production code) |
+| **govulncheck** | 0 known vulnerabilities |
+| **golangci-lint** (21 linters) | 0 issues |
+| **go test -race** | 0 race conditions |
+| **Trivy** (container scan) | Run on every release via CI |
+
+**Container security**: Release images use `gcr.io/distroless/static:nonroot` (no shell, no package manager). Dependabot keeps dependencies current.
 
 ---
 

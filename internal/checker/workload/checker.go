@@ -20,6 +20,7 @@ package workload
 import (
 	"context"
 	"fmt"
+	"math"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -231,7 +232,8 @@ func (c *Checker) diagnosePod(pod *corev1.Pod, namespace, resourceRef string, re
 		}
 
 		// Check restart count
-		if cs.RestartCount > int32(restartThreshold) {
+		threshold := int32(min(restartThreshold, math.MaxInt32)) // #nosec G115 -- bounded by min()
+		if restartThreshold >= 0 && cs.RestartCount > threshold {
 			issues = append(issues, checker.Issue{
 				Type:      "HighRestartCount",
 				Severity:  checker.SeverityWarning,

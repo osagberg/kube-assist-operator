@@ -239,7 +239,7 @@ kubectl get deployment kube-assist-controller-manager -n kube-assist-system -o y
 
 Option A - Command line flag:
 ```bash
---enable-ai --ai-provider=anthropic --ai-api-key=sk-ant-xxx
+--enable-ai --ai-provider=anthropic --ai-api-key=$KUBE_ASSIST_AI_API_KEY
 ```
 
 Option B - Environment variable:
@@ -257,7 +257,7 @@ env:
 Create the secret:
 ```bash
 kubectl create secret generic kube-assist-ai \
-  --from-literal=api-key=sk-ant-xxx \
+  --from-literal=api-key=your-api-key-here \
   -n kube-assist-system
 ```
 
@@ -404,7 +404,7 @@ The API returns the error message in the response body:
 ```bash
 curl -X POST http://localhost:9090/api/settings/ai \
   -H 'Content-Type: application/json' \
-  -d '{"enabled":true,"provider":"anthropic","apiKey":"sk-ant-..."}'
+  -d '{"enabled":true,"provider":"anthropic","apiKey":"your-api-key-here"}'
 ```
 
 **2. Verify provider name is valid**

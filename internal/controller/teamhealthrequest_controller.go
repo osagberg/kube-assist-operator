@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"math"
 	"net/url"
 	"time"
 
@@ -199,8 +200,9 @@ func (r *TeamHealthRequestReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	warningCount := 0
 
 	for name, result := range results {
+		healthy := min(result.Healthy, math.MaxInt32)
 		apiResult := assistv1alpha1.CheckerResult{
-			Healthy: int32(result.Healthy),
+			Healthy: int32(healthy), // #nosec G115 -- bounded by min()
 		}
 
 		// Track resources checked per checker

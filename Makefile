@@ -109,6 +109,14 @@ lint-fix: golangci-lint ## Run golangci-lint linter and perform fixes
 lint-config: golangci-lint ## Verify golangci-lint linter configuration
 	"$(GOLANGCI_LINT)" config verify
 
+.PHONY: security
+security: ## Run security scanners (gosec + govulncheck).
+	@echo "=== gosec ==="
+	go run github.com/securego/gosec/v2/cmd/gosec@latest -exclude-dir=test -quiet ./...
+	@echo "=== govulncheck ==="
+	go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+	@echo "✅ Security scan passed"
+
 ##@ Build
 
 .PHONY: build-web

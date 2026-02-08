@@ -35,7 +35,7 @@ Changes take effect immediately. The dashboard uses the `POST /api/settings/ai` 
   --enable-ai \
   --ai-provider=anthropic \
   --ai-model=claude-haiku-4-5-20251001 \
-  --ai-api-key=sk-ant-...
+  --ai-api-key=$KUBE_ASSIST_AI_API_KEY
 ```
 
 | Flag | Description | Default |
@@ -49,7 +49,7 @@ Changes take effect immediately. The dashboard uses the `POST /api/settings/ai` 
 
 ```bash
 export KUBE_ASSIST_AI_PROVIDER=anthropic
-export KUBE_ASSIST_AI_API_KEY=sk-ant-api03-...
+export KUBE_ASSIST_AI_API_KEY=your-api-key-here
 export KUBE_ASSIST_AI_MODEL=claude-haiku-4-5-20251001
 export KUBE_ASSIST_AI_ENDPOINT=https://api.anthropic.com/v1/messages  # optional
 ```
@@ -79,7 +79,7 @@ Create the secret:
 ```bash
 kubectl create secret generic kube-assist-ai-secret \
   --namespace kube-assist-system \
-  --from-literal=api-key=sk-ant-api03-...
+  --from-literal=api-key=your-api-key-here
 ```
 
 Reference in Helm values:
@@ -236,7 +236,7 @@ When `DASHBOARD_AUTH_TOKEN` is configured, include `Authorization: Bearer <token
 {
   "enabled": true,
   "provider": "anthropic",
-  "apiKey": "sk-ant-...",
+  "apiKey": "your-api-key-here",
   "model": "claude-haiku-4-5-20251001"
 }
 ```
