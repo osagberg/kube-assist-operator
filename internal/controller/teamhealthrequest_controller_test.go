@@ -731,7 +731,7 @@ var _ = Describe("TeamHealthRequest Controller", func() {
 			}
 
 			Expect(launched).To(BeTrue(), "goroutine should be launched when semaphore has capacity")
-			Expect(len(sem)).To(Equal(0), "semaphore should be released")
+			Expect(sem).To(BeEmpty(), "semaphore should be released")
 		})
 
 		It("should bound concurrent dispatches to semaphore capacity", func() {

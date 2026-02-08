@@ -1123,9 +1123,7 @@ func TestServer_HandleSSE_MaxClientsLimit(t *testing.T) {
 	server.mu.Unlock()
 
 	// 3rd connection should get 503
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	req := httptest.NewRequest(http.MethodGet, "/api/events", nil).WithContext(ctx)
+	req := httptest.NewRequest(http.MethodGet, "/api/events", nil).WithContext(t.Context())
 	rr := httptest.NewRecorder()
 
 	server.handleSSE(rr, req)

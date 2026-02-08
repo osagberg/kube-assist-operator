@@ -267,22 +267,9 @@ func (r *TeamHealthRequestReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		return ctrl.Result{}, err
 	}
 
-	// Send notifications if configured (acquire semaphore before launching goroutine
-	// to bound goroutine creation under burst load)
+	// Send notifications if configured
 	if len(healthReq.Spec.Notify) > 0 && r.NotifierRegistry != nil {
-		if r.NotifySem != nil {
-			select {
-			case r.NotifySem <- struct{}{}:
-				go func() {
-					defer func() { <-r.NotifySem }()
-					r.dispatchNotifications(ctx, healthReq, totalHealthy, totalIssues, criticalCount, warningCount)
-				}()
-			default:
-				log.Info("Notification semaphore full, skipping dispatch", "name", healthReq.Name)
-			}
-		} else {
-			go r.dispatchNotifications(ctx, healthReq, totalHealthy, totalIssues, criticalCount, warningCount)
-		}
+		r.launchNotifications(ctx, healthReq, totalHealthy, totalIssues, criticalCount, warningCount)
 	}
 
 	log.Info("TeamHealthRequest completed",
@@ -374,6 +361,29 @@ func (r *TeamHealthRequestReconciler) setCondition(hr *assistv1alpha1.TeamHealth
 		Message:            message,
 		LastTransitionTime: metav1.Now(),
 	})
+}
+
+// launchNotifications acquires the notification semaphore before launching a goroutine
+// to bound goroutine creation under burst load.
+func (r *TeamHealthRequestReconciler) launchNotifications(
+	ctx context.Context,
+	hr *assistv1alpha1.TeamHealthRequest,
+	totalHealthy, totalIssues, criticalCount, warningCount int,
+) {
+	if r.NotifySem != nil {
+		select {
+		case r.NotifySem <- struct{}{}:
+			go func() {
+				defer func() { <-r.NotifySem }()
+				r.dispatchNotifications(ctx, hr, totalHealthy, totalIssues, criticalCount, warningCount)
+			}()
+		default:
+			log := logf.FromContext(ctx)
+			log.Info("Notification semaphore full, skipping dispatch", "name", hr.Name)
+		}
+	} else {
+		go r.dispatchNotifications(ctx, hr, totalHealthy, totalIssues, criticalCount, warningCount)
+	}
 }
 
 // dispatchNotifications sends notifications to configured targets
