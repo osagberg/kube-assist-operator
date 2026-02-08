@@ -25,6 +25,9 @@ func NewWebhookNotifier(webhookURL string) *WebhookNotifier {
 		url: webhookURL,
 		client: &http.Client{
 			Timeout: 10 * time.Second,
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
 		},
 	}
 }
@@ -40,6 +43,10 @@ var privateNetworks = []net.IPNet{
 	{IP: net.IPv4(192, 168, 0, 0), Mask: net.CIDRMask(16, 32)},
 	{IP: net.IPv4(169, 254, 0, 0), Mask: net.CIDRMask(16, 32)},
 	{IP: net.IPv4(127, 0, 0, 0), Mask: net.CIDRMask(8, 32)},
+	{IP: net.IPv6loopback, Mask: net.CIDRMask(128, 128)},
+	{IP: net.IPv6unspecified, Mask: net.CIDRMask(128, 128)},
+	{IP: net.ParseIP("fe80::"), Mask: net.CIDRMask(10, 128)},
+	{IP: net.ParseIP("fc00::"), Mask: net.CIDRMask(7, 128)},
 }
 
 func validateWebhookTarget(rawURL string) error {

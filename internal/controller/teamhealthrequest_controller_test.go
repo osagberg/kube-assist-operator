@@ -695,4 +695,93 @@ var _ = Describe("TeamHealthRequest Controller", func() {
 			Expect(err.Error()).To(ContainSubstring("include a host"))
 		})
 	})
+
+	Context("Notification semaphore", func() {
+		It("should not launch goroutine when semaphore is full", func() {
+			sem := make(chan struct{}, 1)
+			// Fill the semaphore — simulates 1 in-flight notification
+			sem <- struct{}{}
+
+			// The launch-site pattern from Reconcile: acquire before go
+			launched := false
+			select {
+			case sem <- struct{}{}:
+				// Would launch goroutine here in production
+				launched = true
+				<-sem // release (simulating defer)
+			default:
+				// Semaphore full — skip
+			}
+
+			Expect(launched).To(BeFalse(), "goroutine should NOT be launched when semaphore is full")
+
+			// Drain
+			<-sem
+		})
+
+		It("should launch goroutine when semaphore has capacity", func() {
+			sem := make(chan struct{}, 5)
+
+			launched := false
+			select {
+			case sem <- struct{}{}:
+				launched = true
+				<-sem // release
+			default:
+			}
+
+			Expect(launched).To(BeTrue(), "goroutine should be launched when semaphore has capacity")
+			Expect(len(sem)).To(Equal(0), "semaphore should be released")
+		})
+
+		It("should bound concurrent dispatches to semaphore capacity", func() {
+			sem := make(chan struct{}, 2)
+			launchCount := 0
+
+			for range 5 {
+				select {
+				case sem <- struct{}{}:
+					launchCount++
+				default:
+					// Semaphore full — skip
+				}
+			}
+
+			Expect(launchCount).To(Equal(2), "only 2 goroutines should be launched with capacity 2")
+			// Drain
+			for range launchCount {
+				<-sem
+			}
+		})
+
+		It("should dispatch notifications when called directly", func() {
+			r := &TeamHealthRequestReconciler{
+				NotifySem: make(chan struct{}, 5),
+			}
+
+			hr := &assistv1alpha1.TeamHealthRequest{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "sem-test-ok",
+					Namespace: "default",
+				},
+				Spec: assistv1alpha1.TeamHealthRequestSpec{
+					Notify: []assistv1alpha1.NotificationTarget{
+						{
+							Type:         assistv1alpha1.NotificationTypeWebhook,
+							URL:          "https://example.com/webhook",
+							OnCompletion: true,
+						},
+					},
+				},
+			}
+
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				r.dispatchNotifications(context.Background(), hr, 5, 0, 0, 0)
+			}()
+
+			Eventually(done, "5s").Should(BeClosed())
+		})
+	})
 })

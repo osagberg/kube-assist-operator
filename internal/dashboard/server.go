@@ -20,6 +20,7 @@ package dashboard
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -149,6 +150,7 @@ type Server struct {
 	correlator         *causal.Correlator
 	mu                 sync.RWMutex
 	clients            map[chan HealthUpdate]bool
+	maxSSEClients      int
 	latest             *HealthUpdate
 	latestCausal       *causal.CausalContext
 	running            bool
@@ -176,6 +178,7 @@ func NewServer(ds datasource.DataSource, registry *checker.Registry, addr string
 		history:           history.New(100),
 		correlator:        causal.NewCorrelator(),
 		clients:           make(map[chan HealthUpdate]bool),
+		maxSSEClients:     100,
 		stopCh:            make(chan struct{}),
 	}
 }
@@ -219,7 +222,10 @@ func (s *Server) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}
-		if strings.TrimPrefix(auth, "Bearer ") != s.authToken {
+		token := strings.TrimPrefix(auth, "Bearer ")
+		gotHash := sha256.Sum256([]byte(token))
+		wantHash := sha256.Sum256([]byte(s.authToken))
+		if subtle.ConstantTimeCompare(gotHash[:], wantHash[:]) != 1 {
 			http.Error(w, "Forbidden", http.StatusForbidden)
 			return
 		}
@@ -836,8 +842,13 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	// Create client channel
 	clientCh := make(chan HealthUpdate, 10)
 
-	// Register client
+	// Register client (enforce limit)
 	s.mu.Lock()
+	if len(s.clients) >= s.maxSSEClients {
+		s.mu.Unlock()
+		http.Error(w, "Too many SSE clients", http.StatusServiceUnavailable)
+		return
+	}
 	s.clients[clientCh] = true
 	s.mu.Unlock()
 

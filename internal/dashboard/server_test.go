@@ -265,6 +265,41 @@ func TestServer_AuthMiddleware_AcceptsValidToken(t *testing.T) {
 	}
 }
 
+func TestServer_AuthMiddleware_ConstantTimeComparison(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+	server.authToken = testAuthToken
+
+	handler := server.authMiddleware(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	tests := []struct {
+		name       string
+		authHeader string
+		wantCode   int
+	}{
+		{"valid token", "Bearer " + testAuthToken, http.StatusNoContent},
+		{"wrong token", "Bearer wrong", http.StatusForbidden},
+		{"partial prefix match", "Bearer secret-token-extra", http.StatusForbidden},
+		{"empty bearer", "Bearer ", http.StatusForbidden},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/api/check", nil)
+			req.Header.Set("Authorization", tt.authHeader)
+			rr := httptest.NewRecorder()
+			handler(rr, req)
+			if rr.Code != tt.wantCode {
+				t.Errorf("authMiddleware(%q) status = %d, want %d", tt.name, rr.Code, tt.wantCode)
+			}
+		})
+	}
+}
+
 func TestServer_ValidateSecurityConfig_RequiresTLSWhenAuthEnabled(t *testing.T) {
 	scheme := runtime.NewScheme()
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
@@ -1070,4 +1105,38 @@ func TestServer_HandleSSE_Headers(t *testing.T) {
 	if conn != "keep-alive" {
 		t.Errorf("SSE Connection = %q, want keep-alive", conn)
 	}
+}
+
+func TestServer_HandleSSE_MaxClientsLimit(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+	server.maxSSEClients = 2
+
+	// Register 2 clients manually to fill the limit
+	ch1 := make(chan HealthUpdate, 1)
+	ch2 := make(chan HealthUpdate, 1)
+	server.mu.Lock()
+	server.clients[ch1] = true
+	server.clients[ch2] = true
+	server.mu.Unlock()
+
+	// 3rd connection should get 503
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req := httptest.NewRequest(http.MethodGet, "/api/events", nil).WithContext(ctx)
+	rr := httptest.NewRecorder()
+
+	server.handleSSE(rr, req)
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Errorf("3rd SSE client status = %d, want %d (503)", rr.Code, http.StatusServiceUnavailable)
+	}
+
+	// Cleanup
+	server.mu.Lock()
+	delete(server.clients, ch1)
+	delete(server.clients, ch2)
+	server.mu.Unlock()
 }

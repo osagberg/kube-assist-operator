@@ -2,7 +2,7 @@
 
 [![Go Version](https://img.shields.io/badge/Go-1.25+-00ADD8?style=flat&logo=go)](https://go.dev/)
 [![Kubernetes](https://img.shields.io/badge/Kubernetes-1.25+-326CE5?style=flat&logo=kubernetes)](https://kubernetes.io/)
-[![Chart Version](https://img.shields.io/badge/Helm_Chart-v1.8.1-0F1689?style=flat&logo=helm)](charts/kube-assist)
+[![Chart Version](https://img.shields.io/badge/Helm_Chart-v1.8.2-0F1689?style=flat&logo=helm)](charts/kube-assist)
 [![Tests](https://img.shields.io/badge/Tests-400+_passing-success?style=flat)](https://github.com/osagberg/kube-assist-operator/actions/workflows/test.yml)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![CI](https://github.com/osagberg/kube-assist-operator/actions/workflows/test.yml/badge.svg)](https://github.com/osagberg/kube-assist-operator/actions/workflows/test.yml)
@@ -111,7 +111,7 @@ helm install kube-assist charts/kube-assist \
   --set dashboard.enabled=true
 
 # Using Kustomize
-make deploy IMG=ghcr.io/osagberg/kube-assist-operator:v1.8.1
+make deploy IMG=ghcr.io/osagberg/kube-assist-operator:v1.8.2
 ```
 
 ---

@@ -270,6 +270,68 @@ func TestValidateWebhookTarget_SchemeAndHostValidation(t *testing.T) {
 	})
 }
 
+func TestValidateWebhookTarget_BlocksIPv6PrivateTargets(t *testing.T) {
+	tests := []struct {
+		name string
+		url  string
+	}{
+		{
+			name: "rejects IPv6 loopback",
+			url:  "http://[::1]/webhook",
+		},
+		{
+			name: "rejects IPv6 link-local",
+			url:  "http://[fe80::1]/webhook",
+		},
+		{
+			name: "rejects IPv6 ULA",
+			url:  "http://[fc00::1]/webhook",
+		},
+		{
+			name: "rejects IPv6 unspecified",
+			url:  "http://[::]/webhook",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateWebhookTarget(tt.url)
+			if err == nil {
+				t.Fatalf("expected error for %s, got nil", tt.url)
+			}
+			if got := err.Error(); !strings.Contains(got, "private IP") {
+				t.Errorf("error = %q, want to contain private IP message", got)
+			}
+		})
+	}
+}
+
+func TestWebhookNotifier_RedirectNotFollowed(t *testing.T) {
+	// Target server (would be the redirect destination)
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("redirect was followed — request reached target server")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+
+	// Redirecting server sends 302 to target
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+"/webhook", http.StatusFound)
+	}))
+	defer redirector.Close()
+
+	wh := NewWebhookNotifier(redirector.URL)
+	wh.allowPrivate = true // httptest binds to 127.0.0.1
+	err := wh.Send(context.Background(), Notification{Summary: "test"})
+	// 302 is not in 200-299 range, so Send returns an error
+	if err == nil {
+		t.Fatal("expected error for redirect response, got nil")
+	}
+	if got := err.Error(); !strings.Contains(got, "status 302") {
+		t.Errorf("error = %q, want to contain 'status 302'", got)
+	}
+}
+
 func TestRegistry_Len(t *testing.T) {
 	reg := NewRegistry()
 	if reg.Len() != 0 {

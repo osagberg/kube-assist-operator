@@ -320,6 +320,7 @@ func main() {
 		DataSource:       ds,
 		Correlator:       causal.NewCorrelator(),
 		NotifierRegistry: notifierRegistry,
+		NotifySem:        make(chan struct{}, 5),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "TeamHealthRequest")
 		os.Exit(1)

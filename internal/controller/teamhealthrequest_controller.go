@@ -60,6 +60,7 @@ type TeamHealthRequestReconciler struct {
 	DataSource       datasource.DataSource
 	Correlator       *causal.Correlator
 	NotifierRegistry *notifier.Registry
+	NotifySem        chan struct{}
 }
 
 // +kubebuilder:rbac:groups=assist.cluster.local,resources=teamhealthrequests,verbs=get;list;watch;create;update;patch;delete
@@ -266,9 +267,22 @@ func (r *TeamHealthRequestReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		return ctrl.Result{}, err
 	}
 
-	// Send notifications if configured
+	// Send notifications if configured (acquire semaphore before launching goroutine
+	// to bound goroutine creation under burst load)
 	if len(healthReq.Spec.Notify) > 0 && r.NotifierRegistry != nil {
-		go r.dispatchNotifications(context.Background(), healthReq, totalHealthy, totalIssues, criticalCount, warningCount)
+		if r.NotifySem != nil {
+			select {
+			case r.NotifySem <- struct{}{}:
+				go func() {
+					defer func() { <-r.NotifySem }()
+					r.dispatchNotifications(ctx, healthReq, totalHealthy, totalIssues, criticalCount, warningCount)
+				}()
+			default:
+				log.Info("Notification semaphore full, skipping dispatch", "name", healthReq.Name)
+			}
+		} else {
+			go r.dispatchNotifications(ctx, healthReq, totalHealthy, totalIssues, criticalCount, warningCount)
+		}
 	}
 
 	log.Info("TeamHealthRequest completed",
