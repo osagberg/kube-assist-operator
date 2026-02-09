@@ -423,13 +423,18 @@ func severityRank(s string) int {
 	}
 }
 
+// Pre-compiled regexes for normalizeMessage (avoid recompiling on every call).
+var (
+	rePodHash    = regexp.MustCompile(`-[a-f0-9]{5,}(-[a-z0-9]{5})?`)
+	reWhitespace = regexp.MustCompile(`\s+`)
+)
+
 // normalizeMessage strips pod hash suffixes and collapses whitespace for dedup comparison.
 func normalizeMessage(msg string) string {
 	// Strip pod hash suffixes like -7f8b4c5d9f-x2k4p or -abc12
-	re := regexp.MustCompile(`-[a-f0-9]{5,}(-[a-z0-9]{5})?`)
-	msg = re.ReplaceAllString(msg, "-<pod>")
+	msg = rePodHash.ReplaceAllString(msg, "-<pod>")
 	// Collapse multiple spaces
-	msg = regexp.MustCompile(`\s+`).ReplaceAllString(msg, " ")
+	msg = reWhitespace.ReplaceAllString(msg, " ")
 	return strings.TrimSpace(msg)
 }
 

@@ -33,6 +33,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -40,6 +41,11 @@ import (
 	assistv1alpha1 "github.com/osagberg/kube-assist-operator/api/v1alpha1"
 	"github.com/osagberg/kube-assist-operator/internal/checker"
 	"github.com/osagberg/kube-assist-operator/internal/checker/workload"
+)
+
+const (
+	highRestartThreshold int32 = 3
+	defaultTailLines     int64 = 100
 )
 
 // TroubleshootRequestReconciler reconciles a TroubleshootRequest object
@@ -50,6 +56,7 @@ type TroubleshootRequestReconciler struct {
 
 	// Registry is the checker registry (optional, for future use)
 	Registry *checker.Registry
+	Recorder record.EventRecorder
 }
 
 // +kubebuilder:rbac:groups=assist.cluster.local,resources=troubleshootrequests,verbs=get;list;watch;create;update;patch;delete
@@ -131,6 +138,9 @@ func (r *TroubleshootRequestReconciler) Reconcile(ctx context.Context, req ctrl.
 
 	r.setCondition(troubleshoot, assistv1alpha1.ConditionTargetFound, metav1.ConditionTrue,
 		"Found", fmt.Sprintf("Found %d pod(s)", len(pods)))
+	if r.Recorder != nil {
+		r.Recorder.Eventf(troubleshoot, corev1.EventTypeNormal, "TargetFound", "Found %d pod(s) for %s/%s", len(pods), troubleshoot.Spec.Target.Kind, troubleshoot.Spec.Target.Name)
+	}
 
 	// Perform diagnostics
 	var issues []assistv1alpha1.DiagnosticIssue
@@ -214,6 +224,10 @@ func (r *TroubleshootRequestReconciler) Reconcile(ctx context.Context, req ctrl.
 
 	// Update issues gauge by severity
 	r.updateIssuesMetrics(troubleshoot.Namespace, issues)
+
+	if r.Recorder != nil {
+		r.Recorder.Eventf(troubleshoot, corev1.EventTypeNormal, "TroubleshootCompleted", "Found %d issue(s)", len(issues))
+	}
 
 	log.Info("Troubleshooting completed", "issues", len(issues), "summary", troubleshoot.Status.Summary)
 	return ctrl.Result{}, nil
@@ -312,7 +326,7 @@ func (r *TroubleshootRequestReconciler) diagnosePodsDetailed(pods []corev1.Pod) 
 			}
 
 			// Check restart count
-			if cs.RestartCount > 3 {
+			if cs.RestartCount > highRestartThreshold {
 				issues = append(issues, assistv1alpha1.DiagnosticIssue{
 					Type:     "HighRestartCount",
 					Severity: "Warning",
@@ -439,7 +453,7 @@ func (r *TroubleshootRequestReconciler) collectLogs(ctx context.Context, tr *ass
 
 	tailLines := int64(tr.Spec.TailLines)
 	if tailLines == 0 {
-		tailLines = 100
+		tailLines = defaultTailLines
 	}
 
 	totalSize := 0
@@ -649,8 +663,8 @@ func filterRecentRelevantEvents(events []corev1.Event, targetNames map[string]st
 	})
 
 	relevant := make([]string, 0, len(records))
-	for _, record := range records {
-		relevant = append(relevant, record.log)
+	for _, rec := range records {
+		relevant = append(relevant, rec.log)
 	}
 	return relevant
 }
@@ -702,6 +716,9 @@ func (r *TroubleshootRequestReconciler) setFailed(ctx context.Context, original,
 	tr.Status.Summary = message
 	now := metav1.Now()
 	tr.Status.CompletedAt = &now
+	if r.Recorder != nil {
+		r.Recorder.Eventf(tr, corev1.EventTypeWarning, "TroubleshootFailed", "%s", message)
+	}
 
 	r.setCondition(tr, assistv1alpha1.ConditionComplete, metav1.ConditionFalse,
 		"Failed", message)

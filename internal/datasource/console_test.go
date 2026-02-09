@@ -42,7 +42,11 @@ func mustEncode(t *testing.T, w http.ResponseWriter, v any) {
 }
 
 func TestConsoleDataSourceImplementsInterface(t *testing.T) {
-	var _ DataSource = NewConsole("http://localhost", "test-cluster")
+	ds, err := NewConsole("http://localhost", "test-cluster")
+	if err != nil {
+		t.Fatalf("NewConsole: %v", err)
+	}
+	var _ DataSource = ds
 }
 
 func TestConsoleDataSourceGet(t *testing.T) {
@@ -63,9 +67,12 @@ func TestConsoleDataSourceGet(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	ds := NewConsole(srv.URL, "my-cluster")
+	ds, err := NewConsole(srv.URL, "my-cluster")
+	if err != nil {
+		t.Fatalf("NewConsole: %v", err)
+	}
 	got := &corev1.Pod{}
-	err := ds.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: "test-pod"}, got)
+	err = ds.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: "test-pod"}, got)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -84,9 +91,12 @@ func TestConsoleDataSourceGetNotFound(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	ds := NewConsole(srv.URL, "my-cluster")
+	ds, err := NewConsole(srv.URL, "my-cluster")
+	if err != nil {
+		t.Fatalf("NewConsole: %v", err)
+	}
 	got := &corev1.Pod{}
-	err := ds.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: "missing"}, got)
+	err = ds.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: "missing"}, got)
 	if err == nil {
 		t.Fatal("expected error for missing object")
 	}
@@ -102,9 +112,12 @@ func TestConsoleDataSourceGetForbidden(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	ds := NewConsole(srv.URL, "my-cluster")
+	ds, err := NewConsole(srv.URL, "my-cluster")
+	if err != nil {
+		t.Fatalf("NewConsole: %v", err)
+	}
 	got := &corev1.Pod{}
-	err := ds.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: "forbidden"}, got)
+	err = ds.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: "forbidden"}, got)
 	if err == nil {
 		t.Fatal("expected error for forbidden object")
 	}
@@ -120,9 +133,12 @@ func TestConsoleDataSourceGetServerError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	ds := NewConsole(srv.URL, "my-cluster")
+	ds, err := NewConsole(srv.URL, "my-cluster")
+	if err != nil {
+		t.Fatalf("NewConsole: %v", err)
+	}
 	got := &corev1.Pod{}
-	err := ds.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: "test"}, got)
+	err = ds.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: "test"}, got)
 	if err == nil {
 		t.Fatal("expected error for 500 response")
 	}
@@ -148,9 +164,12 @@ func TestConsoleDataSourceList(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	ds := NewConsole(srv.URL, "my-cluster")
+	ds, err := NewConsole(srv.URL, "my-cluster")
+	if err != nil {
+		t.Fatalf("NewConsole: %v", err)
+	}
 	got := &corev1.PodList{}
-	err := ds.List(context.Background(), got, client.InNamespace("default"))
+	err = ds.List(context.Background(), got, client.InNamespace("default"))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -179,9 +198,12 @@ func TestConsoleDataSourceListClusterScoped(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	ds := NewConsole(srv.URL, "my-cluster")
+	ds, err := NewConsole(srv.URL, "my-cluster")
+	if err != nil {
+		t.Fatalf("NewConsole: %v", err)
+	}
 	got := &corev1.NamespaceList{}
-	err := ds.List(context.Background(), got)
+	err = ds.List(context.Background(), got)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -206,14 +228,17 @@ func TestConsoleDataSourceListWithLabelSelector(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	ds := NewConsole(srv.URL, "my-cluster")
+	ds, err := NewConsole(srv.URL, "my-cluster")
+	if err != nil {
+		t.Fatalf("NewConsole: %v", err)
+	}
 
 	selector, _ := metav1.LabelSelectorAsSelector(&metav1.LabelSelector{
 		MatchLabels: map[string]string{"app": "web"},
 	})
 
 	got := &corev1.PodList{}
-	err := ds.List(context.Background(), got,
+	err = ds.List(context.Background(), got,
 		client.InNamespace("default"),
 		client.MatchingLabelsSelector{Selector: selector})
 	if err != nil {
@@ -241,9 +266,12 @@ func TestConsoleDataSourceListWithLimit(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	ds := NewConsole(srv.URL, "my-cluster")
+	ds, err := NewConsole(srv.URL, "my-cluster")
+	if err != nil {
+		t.Fatalf("NewConsole: %v", err)
+	}
 	got := &corev1.PodList{}
-	err := ds.List(context.Background(), got, client.InNamespace("default"), client.Limit(1))
+	err = ds.List(context.Background(), got, client.InNamespace("default"), client.Limit(1))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -264,9 +292,12 @@ func TestConsoleDataSourceBearerToken(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	ds := NewConsole(srv.URL, "my-cluster", WithBearerToken("secret-token"))
+	ds, err := NewConsole(srv.URL, "my-cluster", WithBearerToken("secret-token"))
+	if err != nil {
+		t.Fatalf("NewConsole: %v", err)
+	}
 	got := &corev1.Pod{}
-	err := ds.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: "test-pod"}, got)
+	err = ds.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: "test-pod"}, got)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -287,7 +318,10 @@ func TestConsoleDataSourceNoBearerToken(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	ds := NewConsole(srv.URL, "my-cluster")
+	ds, err := NewConsole(srv.URL, "my-cluster")
+	if err != nil {
+		t.Fatalf("NewConsole: %v", err)
+	}
 	got := &corev1.Pod{}
 	_ = ds.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: "test-pod"}, got)
 	if capturedAuth != "" {
@@ -302,11 +336,14 @@ func TestConsoleDataSourceTimeout(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	ds := NewConsole(srv.URL, "my-cluster", WithHTTPClient(&http.Client{
+	ds, err := NewConsole(srv.URL, "my-cluster", WithHTTPClient(&http.Client{
 		Timeout: 50 * time.Millisecond,
 	}))
+	if err != nil {
+		t.Fatalf("NewConsole: %v", err)
+	}
 	got := &corev1.Pod{}
-	err := ds.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: "test"}, got)
+	err = ds.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: "test"}, got)
 	if err == nil {
 		t.Fatal("expected timeout error")
 	}
@@ -336,9 +373,12 @@ func TestConsoleDataSourceListDeployments(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	ds := NewConsole(srv.URL, "prod")
+	ds, err := NewConsole(srv.URL, "prod")
+	if err != nil {
+		t.Fatalf("NewConsole: %v", err)
+	}
 	got := &appsv1.DeploymentList{}
-	err := ds.List(context.Background(), got, client.InNamespace("production"))
+	err = ds.List(context.Background(), got, client.InNamespace("production"))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -367,9 +407,12 @@ func TestConsoleDataSourceListStatefulSets(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	ds := NewConsole(srv.URL, "my-cluster")
+	ds, err := NewConsole(srv.URL, "my-cluster")
+	if err != nil {
+		t.Fatalf("NewConsole: %v", err)
+	}
 	got := &appsv1.StatefulSetList{}
-	err := ds.List(context.Background(), got, client.InNamespace("cache"))
+	err = ds.List(context.Background(), got, client.InNamespace("cache"))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -392,9 +435,12 @@ func TestConsoleDataSourceListDaemonSets(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	ds := NewConsole(srv.URL, "my-cluster")
+	ds, err := NewConsole(srv.URL, "my-cluster")
+	if err != nil {
+		t.Fatalf("NewConsole: %v", err)
+	}
 	got := &appsv1.DaemonSetList{}
-	err := ds.List(context.Background(), got, client.InNamespace("monitoring"))
+	err = ds.List(context.Background(), got, client.InNamespace("monitoring"))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -417,9 +463,12 @@ func TestConsoleDataSourceListSecrets(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	ds := NewConsole(srv.URL, "my-cluster")
+	ds, err := NewConsole(srv.URL, "my-cluster")
+	if err != nil {
+		t.Fatalf("NewConsole: %v", err)
+	}
 	got := &corev1.SecretList{}
-	err := ds.List(context.Background(), got, client.InNamespace("default"))
+	err = ds.List(context.Background(), got, client.InNamespace("default"))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -445,9 +494,12 @@ func TestConsoleDataSourceListPVCs(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	ds := NewConsole(srv.URL, "my-cluster")
+	ds, err := NewConsole(srv.URL, "my-cluster")
+	if err != nil {
+		t.Fatalf("NewConsole: %v", err)
+	}
 	got := &corev1.PersistentVolumeClaimList{}
-	err := ds.List(context.Background(), got, client.InNamespace("default"))
+	err = ds.List(context.Background(), got, client.InNamespace("default"))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -470,9 +522,12 @@ func TestConsoleDataSourceListNetworkPolicies(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	ds := NewConsole(srv.URL, "my-cluster")
+	ds, err := NewConsole(srv.URL, "my-cluster")
+	if err != nil {
+		t.Fatalf("NewConsole: %v", err)
+	}
 	got := &networkingv1.NetworkPolicyList{}
-	err := ds.List(context.Background(), got, client.InNamespace("secure"))
+	err = ds.List(context.Background(), got, client.InNamespace("secure"))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -495,9 +550,12 @@ func TestConsoleDataSourceListResourceQuotas(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	ds := NewConsole(srv.URL, "my-cluster")
+	ds, err := NewConsole(srv.URL, "my-cluster")
+	if err != nil {
+		t.Fatalf("NewConsole: %v", err)
+	}
 	got := &corev1.ResourceQuotaList{}
-	err := ds.List(context.Background(), got, client.InNamespace("team-a"))
+	err = ds.List(context.Background(), got, client.InNamespace("team-a"))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -527,9 +585,12 @@ func TestConsoleDataSourceListAllNamespaces(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	ds := NewConsole(srv.URL, "my-cluster")
+	ds, err := NewConsole(srv.URL, "my-cluster")
+	if err != nil {
+		t.Fatalf("NewConsole: %v", err)
+	}
 	got := &corev1.PodList{}
-	err := ds.List(context.Background(), got)
+	err = ds.List(context.Background(), got)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -556,9 +617,12 @@ func TestConsoleDataSourceGetClusterScoped(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	ds := NewConsole(srv.URL, "my-cluster")
+	ds, err := NewConsole(srv.URL, "my-cluster")
+	if err != nil {
+		t.Fatalf("NewConsole: %v", err)
+	}
 	got := &corev1.Namespace{}
-	err := ds.Get(context.Background(), client.ObjectKey{Name: "production"}, got)
+	err = ds.Get(context.Background(), client.ObjectKey{Name: "production"}, got)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -578,7 +642,10 @@ func TestConsoleDataSourceAcceptHeader(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	ds := NewConsole(srv.URL, "my-cluster")
+	ds, err := NewConsole(srv.URL, "my-cluster")
+	if err != nil {
+		t.Fatalf("NewConsole: %v", err)
+	}
 	_ = ds.List(context.Background(), &corev1.PodList{}, client.InNamespace("default"))
 	if capturedAccept != "application/json" {
 		t.Errorf("expected Accept: application/json, got: %s", capturedAccept)
@@ -596,10 +663,13 @@ func TestConsoleDataSourceCustomHTTPClient(t *testing.T) {
 	defer srv.Close()
 
 	customClient := &http.Client{Timeout: 5 * time.Second}
-	ds := NewConsole(srv.URL, "my-cluster", WithHTTPClient(customClient))
+	ds, err := NewConsole(srv.URL, "my-cluster", WithHTTPClient(customClient))
+	if err != nil {
+		t.Fatalf("NewConsole: %v", err)
+	}
 
 	got := &corev1.Pod{}
-	err := ds.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: "test"}, got)
+	err = ds.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: "test"}, got)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -618,7 +688,10 @@ func TestConsoleDataSourceBaseURLTrailingSlash(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	ds := NewConsole(srv.URL+"/", "my-cluster")
+	ds, err := NewConsole(srv.URL+"/", "my-cluster")
+	if err != nil {
+		t.Fatalf("NewConsole: %v", err)
+	}
 	_ = ds.List(context.Background(), &corev1.PodList{}, client.InNamespace("default"))
 }
 
@@ -685,11 +758,14 @@ func TestConsoleDataSourceMultiResourceScenario(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	ds := NewConsole(srv.URL, "prod")
+	ds, err := NewConsole(srv.URL, "prod")
+	if err != nil {
+		t.Fatalf("NewConsole: %v", err)
+	}
 
 	// Step 1: List deployments (like workload checker does)
 	deploys := &appsv1.DeploymentList{}
-	err := ds.List(context.Background(), deploys, client.InNamespace("app"))
+	err = ds.List(context.Background(), deploys, client.InNamespace("app"))
 	if err != nil {
 		t.Fatalf("list deployments: %v", err)
 	}
@@ -732,9 +808,12 @@ func TestConsoleDataSourceMalformedJSONResponse(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	ds := NewConsole(srv.URL, "my-cluster")
+	ds, err := NewConsole(srv.URL, "my-cluster")
+	if err != nil {
+		t.Fatalf("NewConsole: %v", err)
+	}
 	got := &corev1.Pod{}
-	err := ds.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: "broken"}, got)
+	err = ds.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: "broken"}, got)
 	if err == nil {
 		t.Fatal("expected decode error for malformed JSON, got nil")
 	}
@@ -755,7 +834,10 @@ func TestConsoleDataSourceContextCancellation(t *testing.T) {
 	defer srv.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	ds := NewConsole(srv.URL, "my-cluster")
+	ds, err := NewConsole(srv.URL, "my-cluster")
+	if err != nil {
+		t.Fatalf("NewConsole: %v", err)
+	}
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -824,9 +906,35 @@ func TestValidateClusterID(t *testing.T) {
 	}
 }
 
+func TestNewConsoleValidation(t *testing.T) {
+	tests := []struct {
+		name      string
+		baseURL   string
+		clusterID string
+		wantErr   bool
+	}{
+		{"valid", "http://localhost:8080", "my-cluster", false},
+		{"empty URL", "", "", true},
+		{"invalid URL scheme", "ftp://example.com", "my-cluster", true},
+		{"empty cluster ID", "http://localhost", "", true},
+		{"invalid cluster ID", "http://localhost", "bad cluster!!", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := NewConsole(tt.baseURL, tt.clusterID)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("NewConsole() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestConsoleDataSourceDefaultTimeout(t *testing.T) {
 	// Verify that the default client has a non-zero timeout.
-	ds := NewConsole("http://localhost", "test-cluster")
+	ds, err := NewConsole("http://localhost", "test-cluster")
+	if err != nil {
+		t.Fatalf("NewConsole: %v", err)
+	}
 	if ds.httpClient.Timeout == 0 {
 		t.Error("expected default HTTP client to have non-zero timeout")
 	}
@@ -836,9 +944,12 @@ func TestConsoleDataSourceDefaultTimeout(t *testing.T) {
 }
 
 func TestDoRequest_RefusesBearerOverHTTP(t *testing.T) {
-	ds := NewConsole("http://remote-host.example.com:8085", "test-cluster", WithBearerToken("secret"))
+	ds, err := NewConsole("http://remote-host.example.com:8085", "test-cluster", WithBearerToken("secret"))
+	if err != nil {
+		t.Fatalf("NewConsole: %v", err)
+	}
 	got := &corev1.Pod{}
-	err := ds.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: "test-pod"}, got)
+	err = ds.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: "test-pod"}, got)
 	if err == nil {
 		t.Fatal("expected error when sending bearer token over HTTP to non-localhost")
 	}
@@ -860,9 +971,12 @@ func TestDoRequest_AllowsBearerOverHTTPS(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	ds := NewConsole(srv.URL, "test-cluster", WithBearerToken("secret"), WithHTTPClient(srv.Client()))
+	ds, err := NewConsole(srv.URL, "test-cluster", WithBearerToken("secret"), WithHTTPClient(srv.Client()))
+	if err != nil {
+		t.Fatalf("NewConsole: %v", err)
+	}
 	got := &corev1.Pod{}
-	err := ds.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: "test-pod"}, got)
+	err = ds.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: "test-pod"}, got)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -881,9 +995,12 @@ func TestDoRequest_AllowsBearerToLocalhost(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	ds := NewConsole(srv.URL, "test-cluster", WithBearerToken("secret"))
+	ds, err := NewConsole(srv.URL, "test-cluster", WithBearerToken("secret"))
+	if err != nil {
+		t.Fatalf("NewConsole: %v", err)
+	}
 	got := &corev1.Pod{}
-	err := ds.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: "test-pod"}, got)
+	err = ds.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: "test-pod"}, got)
 	if err != nil {
 		t.Fatalf("unexpected error with localhost: %v", err)
 	}

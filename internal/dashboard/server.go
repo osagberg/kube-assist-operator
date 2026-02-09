@@ -18,14 +18,12 @@ limitations under the License.
 package dashboard
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"html"
 	"io/fs"
 	"net/http"
 	"os"
@@ -262,19 +260,35 @@ func (s *Server) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 			next(w, r)
 			return
 		}
+
+		// 1. Check Authorization header (programmatic clients / curl)
 		auth := r.Header.Get("Authorization")
-		if auth == "" || !strings.HasPrefix(auth, "Bearer ") {
-			http.Error(w, "Unauthorized", http.StatusUnauthorized)
-			return
-		}
-		token := strings.TrimPrefix(auth, "Bearer ")
-		gotHash := sha256.Sum256([]byte(token))
-		wantHash := sha256.Sum256([]byte(s.authToken))
-		if subtle.ConstantTimeCompare(gotHash[:], wantHash[:]) != 1 {
+		if auth != "" && strings.HasPrefix(auth, "Bearer ") {
+			token := strings.TrimPrefix(auth, "Bearer ")
+			gotHash := sha256.Sum256([]byte(token))
+			wantHash := sha256.Sum256([]byte(s.authToken))
+			if subtle.ConstantTimeCompare(gotHash[:], wantHash[:]) == 1 {
+				next(w, r)
+				return
+			}
 			http.Error(w, "Forbidden", http.StatusForbidden)
 			return
 		}
-		next(w, r)
+
+		// 2. Check session cookie (browser clients — token is never exposed to JS)
+		cookie, err := r.Cookie("__dashboard_session")
+		if err == nil && cookie.Value != "" {
+			gotHash := sha256.Sum256([]byte(cookie.Value))
+			wantHash := sha256.Sum256([]byte(s.authToken))
+			if subtle.ConstantTimeCompare(gotHash[:], wantHash[:]) == 1 {
+				next(w, r)
+				return
+			}
+			http.Error(w, "Forbidden", http.StatusForbidden)
+			return
+		}
+
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 	}
 }
 
@@ -377,11 +391,9 @@ func (s *Server) Start(ctx context.Context) error {
 		}
 
 		serveIndex := func(w http.ResponseWriter, _ *http.Request) {
-			body := indexHTML
 			if s.authToken != "" {
-				escaped := html.EscapeString(s.authToken)
-				meta := []byte(`<meta name="dashboard-auth-token" content="` + escaped + `">`)
-				body = bytes.Replace(body, []byte("</head>"), append(meta, []byte("</head>")...), 1)
+				// Set HttpOnly session cookie — the sole browser auth mechanism.
+				// Token is never exposed to JavaScript (no meta tag, no JS-readable value).
 				http.SetCookie(w, &http.Cookie{
 					Name:     "__dashboard_session",
 					Value:    s.authToken,
@@ -394,7 +406,7 @@ func (s *Server) Start(ctx context.Context) error {
 			}
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write(body)
+			_, _ = w.Write(indexHTML)
 		}
 
 		mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -415,7 +427,7 @@ func (s *Server) Start(ctx context.Context) error {
 
 	server := &http.Server{
 		Addr:         s.addr,
-		Handler:      securityHeaders(mux),
+		Handler:      s.securityHeaders(mux),
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 30 * time.Second,
 	}
@@ -1149,11 +1161,31 @@ func (s *Server) handleGetAISettings(w http.ResponseWriter, _ *http.Request) {
 	}
 }
 
+// Input length limits for AI settings fields.
+const (
+	maxAPIKeyLen = 256
+	maxModelLen  = 128
+)
+
 // handlePostAISettings updates AI configuration at runtime
 func (s *Server) handlePostAISettings(w http.ResponseWriter, r *http.Request) {
 	var req AISettingsRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid JSON body", http.StatusBadRequest)
+		return
+	}
+
+	// Validate field lengths to prevent unbounded input
+	if len(req.APIKey) > maxAPIKeyLen {
+		http.Error(w, fmt.Sprintf("apiKey exceeds maximum length of %d", maxAPIKeyLen), http.StatusBadRequest)
+		return
+	}
+	if len(req.Model) > maxModelLen {
+		http.Error(w, fmt.Sprintf("model exceeds maximum length of %d", maxModelLen), http.StatusBadRequest)
+		return
+	}
+	if len(req.ExplainModel) > maxModelLen {
+		http.Error(w, fmt.Sprintf("explainModel exceeds maximum length of %d", maxModelLen), http.StatusBadRequest)
 		return
 	}
 
@@ -1881,11 +1913,16 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func securityHeaders(next http.Handler) http.Handler {
+func (s *Server) securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
+		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+		if s.tlsConfigured() {
+			w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+		}
 		next.ServeHTTP(w, r)
 	})
 }

@@ -29,7 +29,9 @@ import (
 const (
 	defaultAnthropicEndpoint = "https://api.anthropic.com/v1/messages"
 	defaultAnthropicModel    = "claude-haiku-4-5-20251001"
-	anthropicAPIVersion      = "2023-06-01"
+	// anthropicAPIVersion is the Anthropic API version header value.
+	// Update this when Anthropic releases a new API version.
+	anthropicAPIVersion = "2023-06-01"
 )
 
 // AnthropicProvider implements the Provider interface for Anthropic

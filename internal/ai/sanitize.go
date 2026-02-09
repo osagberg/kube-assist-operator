@@ -17,6 +17,7 @@ limitations under the License.
 package ai
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 )
@@ -73,7 +74,7 @@ func NewSanitizer() *Sanitizer {
 func (s *Sanitizer) AddPattern(pattern string) error {
 	re, err := regexp.Compile(pattern)
 	if err != nil {
-		return err
+		return fmt.Errorf("invalid sanitizer pattern: %w", err)
 	}
 	s.additionalPatterns = append(s.additionalPatterns, re)
 	return nil

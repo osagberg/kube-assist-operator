@@ -82,7 +82,7 @@ func (m *Manager) Analyze(ctx context.Context, request AnalysisRequest) (*Analys
 	estimatedTokens := max(len(request.Issues)*2000, 500)
 	if err := budget.CheckAllowance(estimatedTokens); err != nil {
 		RecordBudgetExceeded(err.Error())
-		return nil, err
+		return nil, fmt.Errorf("AI budget exceeded: %w", err)
 	}
 
 	// Call provider
@@ -96,7 +96,7 @@ func (m *Manager) Analyze(ctx context.Context, request AnalysisRequest) (*Analys
 			mode = "explain"
 		}
 		RecordAICall(provider.Name(), mode, "error", 0, duration)
-		return nil, err
+		return nil, fmt.Errorf("AI analysis failed (%s): %w", provider.Name(), err)
 	}
 
 	// Record usage

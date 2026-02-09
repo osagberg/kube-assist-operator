@@ -27,6 +27,10 @@ spec:
       jsonPath: .spec.target.name
       name: Target
       type: string
+    - description: Target kind
+      jsonPath: .spec.target.kind
+      name: Kind
+      type: string
     - description: Current phase
       jsonPath: .status.phase
       name: Phase
@@ -34,6 +38,7 @@ spec:
     - description: Brief summary
       jsonPath: .status.summary
       name: Summary
+      priority: 1
       type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
@@ -107,6 +112,14 @@ spec:
                 required:
                 - name
                 type: object
+              ttlSecondsAfterFinished:
+                description: |-
+                  ttlSecondsAfterFinished limits the lifetime of a completed/failed request.
+                  After this duration, the request is automatically deleted.
+                  If unset, the request is never auto-deleted.
+                format: int32
+                minimum: 0
+                type: integer
             required:
             - target
             type: object
@@ -311,6 +324,7 @@ rules:
 - apiGroups:
   - ""
   resources:
+  - namespaces
   - nodes
   verbs:
   - get
@@ -330,6 +344,8 @@ rules:
 - apiGroups:
   - assist.cluster.local
   resources:
+  - checkplugins
+  - teamhealthrequests
   - troubleshootrequests
   verbs:
   - create
@@ -342,17 +358,45 @@ rules:
 - apiGroups:
   - assist.cluster.local
   resources:
+  - checkplugins/finalizers
+  - teamhealthrequests/finalizers
   - troubleshootrequests/finalizers
   verbs:
   - update
 - apiGroups:
   - assist.cluster.local
   resources:
+  - checkplugins/status
+  - teamhealthrequests/status
   - troubleshootrequests/status
   verbs:
   - get
   - patch
   - update
+- apiGroups:
+  - helm.toolkit.fluxcd.io
+  resources:
+  - helmreleases
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - kustomize.toolkit.fluxcd.io
+  resources:
+  - kustomizations
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - source.toolkit.fluxcd.io
+  resources:
+  - gitrepositories
+  verbs:
+  - get
+  - list
+  - watch
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
@@ -548,7 +592,7 @@ spec:
         - --health-probe-bind-address=:8081
         command:
         - /manager
-        image: ghcr.io/osagberg/kube-assist-operator:latest
+        image: controller:latest
         livenessProbe:
           httpGet:
             path: /healthz

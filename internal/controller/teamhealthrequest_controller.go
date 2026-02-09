@@ -29,6 +29,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -61,6 +62,7 @@ type TeamHealthRequestReconciler struct {
 	Correlator       *causal.Correlator
 	NotifierRegistry *notifier.Registry
 	NotifySem        chan struct{}
+	Recorder         record.EventRecorder
 }
 
 // +kubebuilder:rbac:groups=assist.cluster.local,resources=teamhealthrequests,verbs=get;list;watch;create;update;patch;delete
@@ -273,6 +275,10 @@ func (r *TeamHealthRequestReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		r.launchNotifications(ctx, healthReq, totalHealthy, totalIssues, criticalCount, warningCount)
 	}
 
+	if r.Recorder != nil {
+		r.Recorder.Eventf(healthReq, corev1.EventTypeNormal, "HealthCheckCompleted", "Checked %d namespace(s): %d healthy, %d issue(s)", len(namespaces), totalHealthy, totalIssues)
+	}
+
 	log.Info("TeamHealthRequest completed",
 		"namespaces", len(namespaces),
 		"healthy", totalHealthy,
@@ -341,6 +347,9 @@ func (r *TeamHealthRequestReconciler) setFailed(
 	now := metav1.Now()
 	hr.Status.LastCheckTime = &now
 	hr.Status.CompletedAt = &now
+	if r.Recorder != nil {
+		r.Recorder.Eventf(hr, corev1.EventTypeWarning, "HealthCheckFailed", "%s", message)
+	}
 
 	r.setCondition(hr, assistv1alpha1.TeamHealthConditionComplete, metav1.ConditionFalse,
 		"Failed", message)

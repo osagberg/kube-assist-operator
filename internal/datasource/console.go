@@ -96,7 +96,13 @@ func ValidateClusterID(clusterID string) error {
 }
 
 // NewConsole creates a DataSource backed by a console backend HTTP API.
-func NewConsole(baseURL, clusterID string, opts ...ConsoleOption) *ConsoleDataSource {
+func NewConsole(baseURL, clusterID string, opts ...ConsoleOption) (*ConsoleDataSource, error) {
+	if err := ValidateConsoleURL(baseURL); err != nil {
+		return nil, err
+	}
+	if err := ValidateClusterID(clusterID); err != nil {
+		return nil, err
+	}
 	s := NewConsoleScheme()
 
 	ds := &ConsoleDataSource{
@@ -110,7 +116,7 @@ func NewConsole(baseURL, clusterID string, opts ...ConsoleOption) *ConsoleDataSo
 	for _, o := range opts {
 		o(ds)
 	}
-	return ds
+	return ds, nil
 }
 
 // NewConsoleScheme builds the runtime.Scheme used by both ConsoleDataSource

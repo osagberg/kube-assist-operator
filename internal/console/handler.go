@@ -145,7 +145,11 @@ func (h *Handler) handleList(w http.ResponseWriter, r *http.Request, reader clie
 		return
 	}
 
-	opts := buildListOptions(r, namespace)
+	opts, err := buildListOptions(r, namespace)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	if err := reader.List(r.Context(), list, opts...); err != nil {
 		writeK8sError(w, err)
 		return
@@ -154,7 +158,8 @@ func (h *Handler) handleList(w http.ResponseWriter, r *http.Request, reader clie
 }
 
 // buildListOptions extracts query parameters into controller-runtime ListOptions.
-func buildListOptions(r *http.Request, namespace string) []client.ListOption {
+// Returns an error if the labelSelector is invalid so the caller can return 400.
+func buildListOptions(r *http.Request, namespace string) ([]client.ListOption, error) {
 	var opts []client.ListOption
 	if namespace != "" {
 		opts = append(opts, client.InNamespace(namespace))
@@ -162,11 +167,10 @@ func buildListOptions(r *http.Request, namespace string) []client.ListOption {
 
 	if sel := r.URL.Query().Get("labelSelector"); sel != "" {
 		parsed, err := labels.Parse(sel)
-		if err == nil {
-			opts = append(opts, client.MatchingLabelsSelector{Selector: parsed})
-		} else {
-			slog.Warn("Invalid labelSelector", "selector", sel, "error", err)
+		if err != nil {
+			return nil, fmt.Errorf("invalid labelSelector %q: %w", sel, err)
 		}
+		opts = append(opts, client.MatchingLabelsSelector{Selector: parsed})
 	}
 
 	if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
@@ -175,7 +179,7 @@ func buildListOptions(r *http.Request, namespace string) []client.ListOption {
 		}
 	}
 
-	return opts
+	return opts, nil
 }
 
 // newObjectForResource returns a typed K8s object for a given resource name.
@@ -307,6 +311,8 @@ func SecurityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
+		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
 		next.ServeHTTP(w, r)
 	})
 }

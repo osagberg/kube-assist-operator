@@ -15,12 +15,9 @@ import type {
 
 const BASE = '/api'
 
-const authToken = document.querySelector('meta[name="dashboard-auth-token"]')?.getAttribute('content') ?? '';
-
-function getAuthHeaders(): Record<string, string> {
-  if (!authToken) return {}
-  return { Authorization: `Bearer ${authToken}` }
-}
+// Authentication is handled via HttpOnly session cookie (__dashboard_session).
+// The cookie is set by the server when serving index.html and sent automatically
+// by the browser with every same-origin request. No token is exposed to JavaScript.
 
 /** Normalize Go nil slices (JSON null) to empty arrays */
 export function normalizeHealth(data: HealthUpdate): HealthUpdate {
@@ -45,8 +42,7 @@ async function json<T>(url: string, init?: RequestInit): Promise<T> {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), 30_000)
   try {
-    const headers = { ...getAuthHeaders(), ...init?.headers }
-    const resp = await fetch(url, { ...init, headers, signal: controller.signal })
+    const resp = await fetch(url, { ...init, signal: controller.signal, credentials: 'same-origin' })
     if (!resp.ok) throw new Error(`${resp.status} ${resp.statusText}`)
     return resp.json() as Promise<T>
   } finally {
@@ -72,7 +68,7 @@ export function fetchFleetSummary(): Promise<FleetSummary> {
 export async function triggerCheck(): Promise<void> {
   const resp = await fetch(`${BASE}/check`, {
     method: 'POST',
-    headers: { ...getAuthHeaders() },
+    credentials: 'same-origin',
   })
   if (!resp.ok) {
     throw new Error(`${resp.status} ${resp.statusText}`)
@@ -88,7 +84,7 @@ export function fetchAISettings(): Promise<AISettingsResponse> {
 export function updateAISettings(settings: AISettingsRequest): Promise<AISettingsResponse> {
   return json<AISettingsResponse>(`${BASE}/settings/ai`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(settings),
   })
 }
@@ -147,7 +143,7 @@ export function createTroubleshootRequest(
 ): Promise<{ name: string; namespace: string; phase: string }> {
   return json(`${BASE}/troubleshoot`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   })
 }

@@ -73,6 +73,8 @@ func (rg *ResourceGraphCorrelator) Correlate(input CorrelationInput) []CausalGro
 
 		// Find ownership chains: if resource A's name is a prefix of resource B's
 		// name and A is a higher-level kind, they're related.
+		// O(n²) pairwise scan — acceptable because issues rarely exceed ~50 per
+		// namespace, and the inner loop short-circuits via the used[j] guard.
 		used := make(map[int]bool)
 		for i := range resources {
 			if used[i] {

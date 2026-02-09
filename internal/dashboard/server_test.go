@@ -20,7 +20,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"html"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
@@ -638,6 +637,69 @@ func TestServer_HandlePostAISettings_WithModel(t *testing.T) {
 	}
 }
 
+func TestServer_HandlePostAISettings_InputValidation(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	tests := []struct {
+		name     string
+		body     AISettingsRequest
+		wantCode int
+	}{
+		{
+			name: "oversized APIKey returns 400",
+			body: AISettingsRequest{
+				Provider: providerNoop,
+				APIKey:   strings.Repeat("k", maxAPIKeyLen+1),
+			},
+			wantCode: http.StatusBadRequest,
+		},
+		{
+			name: "oversized Model returns 400",
+			body: AISettingsRequest{
+				Provider: providerNoop,
+				Model:    strings.Repeat("m", maxModelLen+1),
+			},
+			wantCode: http.StatusBadRequest,
+		},
+		{
+			name: "oversized ExplainModel returns 400",
+			body: AISettingsRequest{
+				Provider:     providerNoop,
+				ExplainModel: strings.Repeat("e", maxModelLen+1),
+			},
+			wantCode: http.StatusBadRequest,
+		},
+		{
+			name: "valid lengths accepted",
+			body: AISettingsRequest{
+				Provider: providerNoop,
+				APIKey:   strings.Repeat("k", maxAPIKeyLen),
+				Model:    strings.Repeat("m", maxModelLen),
+			},
+			wantCode: http.StatusOK,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data, _ := json.Marshal(tt.body)
+			req := httptest.NewRequest(http.MethodPost, "/api/settings/ai", bytes.NewReader(data))
+			req.Header.Set("Content-Type", "application/json")
+			rr := httptest.NewRecorder()
+
+			server.handleAISettings(rr, req)
+
+			if rr.Code != tt.wantCode {
+				t.Errorf("status = %d, want %d; body: %s", rr.Code, tt.wantCode, rr.Body.String())
+			}
+		})
+	}
+}
+
 func TestServer_RunCheck_PopulatesLatest(t *testing.T) {
 	scheme := runtime.NewScheme()
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
@@ -909,35 +971,61 @@ func TestServer_HandleCausalGroups_WithData(t *testing.T) {
 }
 
 func TestServer_SecurityHeaders(t *testing.T) {
-	handler := securityHeaders(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	scheme := runtime.NewScheme()
+	cl := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(cl), registry, ":8080")
+
+	handler := server.securityHeaders(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	rr := httptest.NewRecorder()
-
 	handler.ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusOK {
 		t.Errorf("securityHeaders status = %d, want %d", rr.Code, http.StatusOK)
 	}
 
-	csp := rr.Header().Get("Content-Security-Policy")
-	if csp == "" {
-		t.Error("expected Content-Security-Policy header to be set")
+	checks := map[string]string{
+		"Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'",
+		"X-Content-Type-Options":  "nosniff",
+		"X-Frame-Options":         "DENY",
+		"Referrer-Policy":         "strict-origin-when-cross-origin",
+		"Permissions-Policy":      "camera=(), microphone=(), geolocation=()",
 	}
-	if csp != "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'" {
-		t.Errorf("Content-Security-Policy = %q, want expected CSP value", csp)
+	for header, want := range checks {
+		if got := rr.Header().Get(header); got != want {
+			t.Errorf("%s = %q, want %q", header, got, want)
+		}
 	}
 
-	xcto := rr.Header().Get("X-Content-Type-Options")
-	if xcto != "nosniff" {
-		t.Errorf("X-Content-Type-Options = %q, want %q", xcto, "nosniff")
+	// HSTS should NOT be set when TLS is not configured
+	if hsts := rr.Header().Get("Strict-Transport-Security"); hsts != "" {
+		t.Errorf("HSTS should not be set without TLS, got %q", hsts)
 	}
+}
 
-	xfo := rr.Header().Get("X-Frame-Options")
-	if xfo != "DENY" {
-		t.Errorf("X-Frame-Options = %q, want %q", xfo, "DENY")
+func TestServer_SecurityHeaders_HSTS_WithTLS(t *testing.T) {
+	scheme := runtime.NewScheme()
+	cl := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(cl), registry, ":8080")
+	server.tlsCertFile = "/tmp/cert.pem"
+	server.tlsKeyFile = "/tmp/key.pem"
+
+	handler := server.securityHeaders(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	hsts := rr.Header().Get("Strict-Transport-Security")
+	if hsts != "max-age=31536000; includeSubDomains" {
+		t.Errorf("HSTS = %q, want %q", hsts, "max-age=31536000; includeSubDomains")
 	}
 }
 
@@ -1931,63 +2019,7 @@ func TestHandleCreateTroubleshoot_TailLinesTooLarge(t *testing.T) {
 	}
 }
 
-func TestServeIndex_InjectsMetaTag(t *testing.T) {
-	scheme := runtime.NewScheme()
-	cl := fake.NewClientBuilder().WithScheme(scheme).Build()
-	registry := checker.NewRegistry()
-	server := NewServer(datasource.NewKubernetes(cl), registry, ":8080")
-	server.authToken = testAuthToken
-
-	// Start the server to set up routes (but we won't actually listen)
-	// Instead, test the serveIndex function by building it the same way Start() does
-	spaFS, err := fs.Sub(webAssets, "web/dist")
-	if err != nil {
-		t.Fatalf("failed to create sub filesystem: %v", err)
-	}
-
-	indexHTML, err := fs.ReadFile(spaFS, "index.html")
-	if err != nil {
-		t.Fatalf("failed to read index.html: %v", err)
-	}
-
-	// Simulate what serveIndex does
-	escaped := html.EscapeString(server.authToken)
-	meta := []byte(`<meta name="dashboard-auth-token" content="` + escaped + `">`)
-	body := bytes.Replace(indexHTML, []byte("</head>"), append(meta, []byte("</head>")...), 1)
-
-	if !bytes.Contains(body, []byte(`<meta name="dashboard-auth-token"`)) {
-		t.Error("index.html should contain dashboard-auth-token meta tag when auth is enabled")
-	}
-	if !bytes.Contains(body, []byte(testAuthToken)) {
-		t.Error("meta tag should contain the auth token value")
-	}
-}
-
-func TestServeIndex_NoMetaTag_WhenNoAuth(t *testing.T) {
-	scheme := runtime.NewScheme()
-	cl := fake.NewClientBuilder().WithScheme(scheme).Build()
-	registry := checker.NewRegistry()
-	server := NewServer(datasource.NewKubernetes(cl), registry, ":8080")
-	// authToken is empty (default)
-
-	spaFS, err := fs.Sub(webAssets, "web/dist")
-	if err != nil {
-		t.Fatalf("failed to create sub filesystem: %v", err)
-	}
-
-	indexHTML, err := fs.ReadFile(spaFS, "index.html")
-	if err != nil {
-		t.Fatalf("failed to read index.html: %v", err)
-	}
-
-	// When no auth token, body should be unmodified
-	if bytes.Contains(indexHTML, []byte(`<meta name="dashboard-auth-token"`)) {
-		t.Error("index.html should not contain dashboard-auth-token meta tag when auth is disabled")
-	}
-	_ = server // use server variable
-}
-
-func TestServeIndex_SetsCookie(t *testing.T) {
+func TestServeIndex_NoTokenInHTML(t *testing.T) {
 	scheme := runtime.NewScheme()
 	cl := fake.NewClientBuilder().WithScheme(scheme).Build()
 	registry := checker.NewRegistry()
@@ -1998,32 +2030,68 @@ func TestServeIndex_SetsCookie(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create sub filesystem: %v", err)
 	}
-
-	indexHTML, readErr := fs.ReadFile(spaFS, "index.html")
-	if readErr != nil {
-		t.Fatalf("failed to read index.html: %v", readErr)
+	indexHTML, err := fs.ReadFile(spaFS, "index.html")
+	if err != nil {
+		t.Fatalf("failed to read index.html: %v", err)
 	}
 
-	// Build the serveIndex handler inline (mirrors Start() logic)
+	// Build serveIndex inline (mirrors Start() logic)
 	serveIndex := func(w http.ResponseWriter, _ *http.Request) {
-		body := indexHTML
 		if server.authToken != "" {
-			escaped := html.EscapeString(server.authToken)
-			meta := []byte(`<meta name="dashboard-auth-token" content="` + escaped + `">`)
-			body = bytes.Replace(body, []byte("</head>"), append(meta, []byte("</head>")...), 1)
 			http.SetCookie(w, &http.Cookie{
-				Name:     "__dashboard_session",
-				Value:    server.authToken,
-				Path:     "/",
-				HttpOnly: true,
-				Secure:   server.tlsConfigured(),
+				Name: "__dashboard_session", Value: server.authToken,
+				Path: "/", HttpOnly: true, Secure: server.tlsConfigured(),
 				SameSite: http.SameSiteStrictMode,
 			})
 			w.Header().Set("Cache-Control", "no-store")
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(body)
+		_, _ = w.Write(indexHTML)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rr := httptest.NewRecorder()
+	serveIndex(rr, req)
+
+	body := rr.Body.String()
+	// Auth token must NEVER appear in rendered HTML (meta tag removed)
+	if strings.Contains(body, testAuthToken) {
+		t.Error("auth token must not appear in rendered HTML body")
+	}
+	if strings.Contains(body, "dashboard-auth-token") {
+		t.Error("dashboard-auth-token meta tag must not appear in HTML")
+	}
+}
+
+func TestServeIndex_SetsCookieWithoutMetaTag(t *testing.T) {
+	scheme := runtime.NewScheme()
+	cl := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(cl), registry, ":8080")
+	server.authToken = testAuthToken
+
+	spaFS, err := fs.Sub(webAssets, "web/dist")
+	if err != nil {
+		t.Fatalf("failed to create sub filesystem: %v", err)
+	}
+	indexHTML, err := fs.ReadFile(spaFS, "index.html")
+	if err != nil {
+		t.Fatalf("failed to read index.html: %v", err)
+	}
+
+	serveIndex := func(w http.ResponseWriter, _ *http.Request) {
+		if server.authToken != "" {
+			http.SetCookie(w, &http.Cookie{
+				Name: "__dashboard_session", Value: server.authToken,
+				Path: "/", HttpOnly: true, Secure: server.tlsConfigured(),
+				SameSite: http.SameSiteStrictMode,
+			})
+			w.Header().Set("Cache-Control", "no-store")
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(indexHTML)
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -2033,13 +2101,10 @@ func TestServeIndex_SetsCookie(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Errorf("serveIndex status = %d, want 200", rr.Code)
 	}
-
-	// Check Cache-Control header
 	if cc := rr.Header().Get("Cache-Control"); cc != "no-store" {
 		t.Errorf("Cache-Control = %q, want %q", cc, "no-store")
 	}
 
-	// Check cookie
 	cookies := rr.Result().Cookies()
 	var found bool
 	for _, c := range cookies {
@@ -2059,10 +2124,52 @@ func TestServeIndex_SetsCookie(t *testing.T) {
 	if !found {
 		t.Error("__dashboard_session cookie not set")
 	}
+}
 
-	// Check meta tag in response body
-	if !bytes.Contains(rr.Body.Bytes(), []byte(`<meta name="dashboard-auth-token"`)) {
-		t.Error("response body should contain auth meta tag")
+func TestAuthMiddleware_AcceptsCookie(t *testing.T) {
+	scheme := runtime.NewScheme()
+	cl := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(cl), registry, ":8080")
+	server.authToken = testAuthToken
+
+	called := false
+	handler := server.authMiddleware(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/health", nil)
+	req.AddCookie(&http.Cookie{Name: "__dashboard_session", Value: testAuthToken})
+	rr := httptest.NewRecorder()
+	handler(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Errorf("authMiddleware with valid cookie status = %d, want %d", rr.Code, http.StatusNoContent)
+	}
+	if !called {
+		t.Error("authMiddleware should call next handler with valid cookie")
+	}
+}
+
+func TestAuthMiddleware_RejectsInvalidCookie(t *testing.T) {
+	scheme := runtime.NewScheme()
+	cl := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(cl), registry, ":8080")
+	server.authToken = testAuthToken
+
+	handler := server.authMiddleware(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/health", nil)
+	req.AddCookie(&http.Cookie{Name: "__dashboard_session", Value: "wrong-cookie"})
+	rr := httptest.NewRecorder()
+	handler(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Errorf("authMiddleware with invalid cookie status = %d, want %d", rr.Code, http.StatusForbidden)
 	}
 }
 

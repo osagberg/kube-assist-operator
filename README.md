@@ -586,7 +586,7 @@ helm install kube-assist charts/kube-assist \
 | `networkPolicy.enabled` | `true` | Enable network policy |
 | `networkPolicy.ingressMode` | `permissive` | Ingress mode: permissive or strict |
 | `networkPolicy.dnsMode` | `kube-system` | DNS egress: all or kube-system |
-| `networkPolicy.consoleEgress.cidr` | `0.0.0.0/0` | Console backend egress CIDR (when datasource.type=console) |
+| `networkPolicy.consoleEgress.cidr` | `""` | Console backend egress CIDR (**required** when datasource.type=console; chart fails if empty) |
 | `networkPolicy.consoleEgress.port` | `443` | Console backend egress port |
 | `datasource.type` | `kubernetes` | DataSource backend: kubernetes or console |
 | `datasource.consoleURL` | `""` | Console backend URL (required when type=console) |

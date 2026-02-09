@@ -318,6 +318,7 @@ func TestBuildListOptions(t *testing.T) {
 		path      string
 		namespace string
 		wantCount int
+		wantErr   bool
 	}{
 		{
 			name:      "no params no namespace",
@@ -350,10 +351,10 @@ func TestBuildListOptions(t *testing.T) {
 			wantCount: 3,
 		},
 		{
-			name:      "invalid labelSelector is ignored",
+			name:      "invalid labelSelector returns error",
 			path:      "/test?labelSelector=!!!invalid",
 			namespace: "",
-			wantCount: 0,
+			wantErr:   true,
 		},
 		{
 			name:      "invalid limit is ignored",
@@ -378,7 +379,16 @@ func TestBuildListOptions(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
-			opts := buildListOptions(req, tt.namespace)
+			opts, err := buildListOptions(req, tt.namespace)
+			if tt.wantErr {
+				if err == nil {
+					t.Error("buildListOptions() expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("buildListOptions() unexpected error: %v", err)
+			}
 			if len(opts) != tt.wantCount {
 				t.Errorf("buildListOptions() returned %d opts, want %d", len(opts), tt.wantCount)
 			}
@@ -935,13 +945,16 @@ func TestSecurityHeaders(t *testing.T) {
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
-	if csp := rec.Header().Get("Content-Security-Policy"); csp == "" {
-		t.Error("expected Content-Security-Policy header")
+	checks := map[string]string{
+		"Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'",
+		"X-Content-Type-Options":  "nosniff",
+		"X-Frame-Options":         "DENY",
+		"Referrer-Policy":         "strict-origin-when-cross-origin",
+		"Permissions-Policy":      "camera=(), microphone=(), geolocation=()",
 	}
-	if rec.Header().Get("X-Content-Type-Options") != "nosniff" {
-		t.Error("expected X-Content-Type-Options: nosniff")
-	}
-	if rec.Header().Get("X-Frame-Options") != "DENY" {
-		t.Error("expected X-Frame-Options: DENY")
+	for header, want := range checks {
+		if got := rec.Header().Get(header); got != want {
+			t.Errorf("%s = %q, want %q", header, got, want)
+		}
 	}
 }

@@ -918,4 +918,285 @@ var _ = Describe("TeamHealthRequest Controller", func() {
 			Eventually(done, "5s").Should(BeClosed())
 		})
 	})
+
+	Context("severityMet helper", func() {
+		It("should return true for Critical threshold when critical > 0", func() {
+			r := &TeamHealthRequestReconciler{}
+			Expect(r.severityMet("Critical", 1, 0)).To(BeTrue())
+		})
+
+		It("should return false for Critical threshold when critical = 0", func() {
+			r := &TeamHealthRequestReconciler{}
+			Expect(r.severityMet("Critical", 0, 5)).To(BeFalse())
+		})
+
+		It("should return true for Warning threshold when warning > 0", func() {
+			r := &TeamHealthRequestReconciler{}
+			Expect(r.severityMet("Warning", 0, 1)).To(BeTrue())
+		})
+
+		It("should return true for Warning threshold when critical > 0", func() {
+			r := &TeamHealthRequestReconciler{}
+			Expect(r.severityMet("Warning", 1, 0)).To(BeTrue())
+		})
+
+		It("should return false for Warning threshold when both are 0", func() {
+			r := &TeamHealthRequestReconciler{}
+			Expect(r.severityMet("Warning", 0, 0)).To(BeFalse())
+		})
+
+		It("should return true for Info threshold always", func() {
+			r := &TeamHealthRequestReconciler{}
+			Expect(r.severityMet("Info", 0, 0)).To(BeTrue())
+		})
+
+		It("should return true for unknown threshold", func() {
+			r := &TeamHealthRequestReconciler{}
+			Expect(r.severityMet("Unknown", 0, 0)).To(BeTrue())
+		})
+	})
+
+	Context("launchNotifications", func() {
+		It("should dispatch notifications without semaphore", func() {
+			r := &TeamHealthRequestReconciler{
+				// NotifySem is nil — covers the else branch
+			}
+
+			hr := &assistv1alpha1.TeamHealthRequest{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "launch-no-sem",
+					Namespace: "default",
+				},
+				Spec: assistv1alpha1.TeamHealthRequestSpec{
+					Notify: []assistv1alpha1.NotificationTarget{
+						{
+							Type:         assistv1alpha1.NotificationTypeWebhook,
+							URL:          "https://example.com/webhook",
+							OnCompletion: true,
+						},
+					},
+				},
+			}
+
+			// Should not panic — fire-and-forget goroutine
+			r.launchNotifications(context.Background(), hr, 5, 0, 0, 0)
+			// Give goroutine time to complete
+			time.Sleep(100 * time.Millisecond)
+		})
+
+		It("should skip when semaphore is full", func() {
+			sem := make(chan struct{}, 1)
+			sem <- struct{}{} // fill
+
+			r := &TeamHealthRequestReconciler{
+				NotifySem: sem,
+			}
+
+			hr := &assistv1alpha1.TeamHealthRequest{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "launch-sem-full",
+					Namespace: "default",
+				},
+				Spec: assistv1alpha1.TeamHealthRequestSpec{
+					Notify: []assistv1alpha1.NotificationTarget{
+						{
+							Type:         assistv1alpha1.NotificationTypeWebhook,
+							URL:          "https://example.com/webhook",
+							OnCompletion: true,
+						},
+					},
+				},
+			}
+
+			// Should not panic — just logs and skips
+			r.launchNotifications(context.Background(), hr, 5, 0, 0, 0)
+			time.Sleep(50 * time.Millisecond)
+
+			// Drain
+			<-sem
+		})
+	})
+
+	Context("dispatchNotifications with severity filter", func() {
+		It("should skip notifications when severity filter is not met", func() {
+			r := &TeamHealthRequestReconciler{}
+
+			hr := &assistv1alpha1.TeamHealthRequest{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "sev-filter",
+					Namespace: "default",
+				},
+				Spec: assistv1alpha1.TeamHealthRequestSpec{
+					Notify: []assistv1alpha1.NotificationTarget{
+						{
+							Type:         assistv1alpha1.NotificationTypeWebhook,
+							URL:          "https://example.com/webhook",
+							OnCompletion: true,
+							OnSeverity:   "Critical",
+						},
+					},
+				},
+			}
+
+			// No critical issues — should skip
+			r.dispatchNotifications(context.Background(), hr, 5, 2, 0, 2)
+			// No assertion needed — just verifying it doesn't panic and exits gracefully
+		})
+
+		It("should skip notifications when OnCompletion is false", func() {
+			r := &TeamHealthRequestReconciler{}
+
+			hr := &assistv1alpha1.TeamHealthRequest{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "no-completion",
+					Namespace: "default",
+				},
+				Spec: assistv1alpha1.TeamHealthRequestSpec{
+					Notify: []assistv1alpha1.NotificationTarget{
+						{
+							Type:         assistv1alpha1.NotificationTypeWebhook,
+							URL:          "https://example.com/webhook",
+							OnCompletion: false,
+						},
+					},
+				},
+			}
+
+			r.dispatchNotifications(context.Background(), hr, 5, 0, 0, 0)
+		})
+
+		It("should skip non-webhook notification types", func() {
+			r := &TeamHealthRequestReconciler{}
+
+			hr := &assistv1alpha1.TeamHealthRequest{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "non-webhook",
+					Namespace: "default",
+				},
+				Spec: assistv1alpha1.TeamHealthRequestSpec{
+					Notify: []assistv1alpha1.NotificationTarget{
+						{
+							Type:         "email", // unsupported
+							URL:          "https://example.com/webhook",
+							OnCompletion: true,
+						},
+					},
+				},
+			}
+
+			r.dispatchNotifications(context.Background(), hr, 5, 0, 0, 0)
+		})
+
+		It("should skip notifications with empty URL", func() {
+			r := &TeamHealthRequestReconciler{}
+
+			hr := &assistv1alpha1.TeamHealthRequest{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "empty-url",
+					Namespace: "default",
+				},
+				Spec: assistv1alpha1.TeamHealthRequestSpec{
+					Notify: []assistv1alpha1.NotificationTarget{
+						{
+							Type:         assistv1alpha1.NotificationTypeWebhook,
+							URL:          "",
+							OnCompletion: true,
+						},
+					},
+				},
+			}
+
+			r.dispatchNotifications(context.Background(), hr, 5, 0, 0, 0)
+		})
+
+		It("should read URL from secretRef when URL is empty", func() {
+			ctx := context.Background()
+			// Create secret with webhook URL
+			secret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "webhook-secret-test",
+					Namespace: "default",
+				},
+				Data: map[string][]byte{
+					"url": []byte("https://example.com/from-secret"),
+				},
+			}
+			Expect(k8sClient.Create(ctx, secret)).To(Succeed())
+
+			defer func() {
+				_ = k8sClient.Delete(ctx, secret)
+			}()
+
+			r := &TeamHealthRequestReconciler{
+				Client: k8sClient,
+			}
+
+			hr := &assistv1alpha1.TeamHealthRequest{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "secret-ref-dispatch",
+					Namespace: "default",
+				},
+				Spec: assistv1alpha1.TeamHealthRequestSpec{
+					Notify: []assistv1alpha1.NotificationTarget{
+						{
+							Type:         assistv1alpha1.NotificationTypeWebhook,
+							OnCompletion: true,
+							SecretRef: &assistv1alpha1.SecretKeyRef{
+								Name: "webhook-secret-test",
+								Key:  "url",
+							},
+						},
+					},
+				},
+			}
+
+			// Should not panic, and attempt to send
+			r.dispatchNotifications(ctx, hr, 5, 1, 1, 0)
+		})
+	})
+
+	Context("setFailed helper", func() {
+		const resourceName = "set-failed-health"
+		ctx := context.Background()
+		nn := types.NamespacedName{Name: resourceName, Namespace: "default"}
+
+		AfterEach(func() {
+			hr := &assistv1alpha1.TeamHealthRequest{}
+			if err := k8sClient.Get(ctx, nn, hr); err == nil {
+				_ = k8sClient.Delete(ctx, hr)
+			}
+		})
+
+		It("should set phase to Failed with correct status fields", func() {
+			hr := &assistv1alpha1.TeamHealthRequest{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      resourceName,
+					Namespace: "default",
+				},
+				Spec: assistv1alpha1.TeamHealthRequestSpec{},
+			}
+			Expect(k8sClient.Create(ctx, hr)).To(Succeed())
+			Expect(k8sClient.Get(ctx, nn, hr)).To(Succeed())
+
+			original := hr.DeepCopy()
+			registry := checker.NewRegistry()
+			reconciler := &TeamHealthRequestReconciler{
+				Client:     k8sClient,
+				Scheme:     k8sClient.Scheme(),
+				Registry:   registry,
+				DataSource: datasource.NewKubernetes(k8sClient),
+			}
+
+			result, err := reconciler.setFailed(ctx, original, hr, "namespace resolution failed")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal(reconcile.Result{}))
+
+			fetched := &assistv1alpha1.TeamHealthRequest{}
+			Expect(k8sClient.Get(ctx, nn, fetched)).To(Succeed())
+			Expect(fetched.Status.Phase).To(Equal(assistv1alpha1.TeamHealthPhaseFailed))
+			Expect(fetched.Status.Summary).To(Equal("namespace resolution failed"))
+			Expect(fetched.Status.CompletedAt).NotTo(BeNil())
+			Expect(fetched.Status.LastCheckTime).NotTo(BeNil())
+		})
+	})
 })

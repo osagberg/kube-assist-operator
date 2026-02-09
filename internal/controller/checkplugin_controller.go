@@ -20,9 +20,11 @@ import (
 	"context"
 	"fmt"
 
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -42,16 +44,18 @@ type CheckPluginReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
 	Registry *checker.Registry
+	Recorder record.EventRecorder
 }
 
 // +kubebuilder:rbac:groups=assist.cluster.local,resources=checkplugins,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=assist.cluster.local,resources=checkplugins/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=assist.cluster.local,resources=checkplugins/finalizers,verbs=update
-// CheckPlugin targets are user-defined GVRs (spec.targetResource), so the
-// controller needs read access to arbitrary resource types. Verbs are
-// restricted to read-only (get, list, watch). If CheckPlugin CRDs are not
-// deployed, this ClusterRole rule can be removed from generated RBAC.
-// +kubebuilder:rbac:groups="*",resources="*",verbs=get;list;watch
+//
+// NOTE: CheckPlugin targets user-defined GVRs (spec.targetResource) and may
+// need read access to arbitrary resource types. For broad access, enable
+// checkPlugin.broadRBAC in the Helm chart — which adds a separate ClusterRole
+// with groups="*",resources="*",verbs=get;list;watch. The default generated
+// RBAC does NOT include wildcard permissions.
 
 func (r *CheckPluginReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
@@ -73,6 +77,9 @@ func (r *CheckPluginReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		if controllerutil.ContainsFinalizer(cp, checkPluginFinalizer) {
 			log.Info("Unregistering plugin checker on deletion", "plugin", cp.Spec.DisplayName, "registryKey", registryKey)
 			r.Registry.Unregister("plugin:" + registryKey)
+			if r.Recorder != nil {
+				r.Recorder.Eventf(cp, corev1.EventTypeNormal, "PluginUnregistered", "Unregistered plugin checker %q", cp.Spec.DisplayName)
+			}
 
 			controllerutil.RemoveFinalizer(cp, checkPluginFinalizer)
 			if err := r.Update(ctx, cp); err != nil {
@@ -90,28 +97,38 @@ func (r *CheckPluginReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		}
 	}
 
+	// Save a copy before mutation so we can use MergeFrom for status patch.
+	original := cp.DeepCopy()
+
 	// Compile and register the plugin checker
 	pc, err := plugin.NewPluginChecker(registryKey, cp.Spec)
 	if err != nil {
 		log.Error(err, "Failed to compile plugin checker", "plugin", cp.Spec.DisplayName, "registryKey", registryKey)
-		return r.updateStatus(ctx, cp, false, err.Error())
+		if r.Recorder != nil {
+			r.Recorder.Eventf(cp, corev1.EventTypeWarning, "CompilationFailed", "Failed to compile plugin %q: %s", cp.Spec.DisplayName, err.Error())
+		}
+		return r.updateStatus(ctx, cp, original, false, err.Error())
 	}
 
 	r.Registry.Replace(pc)
 	log.Info("Registered plugin checker", "plugin", cp.Spec.DisplayName, "registryKey", registryKey, "rules", len(cp.Spec.Rules))
+	if r.Recorder != nil {
+		r.Recorder.Eventf(cp, corev1.EventTypeNormal, "PluginRegistered", "Registered plugin checker %q with %d rule(s)", cp.Spec.DisplayName, len(cp.Spec.Rules))
+	}
 
-	return r.updateStatus(ctx, cp, true, "")
+	return r.updateStatus(ctx, cp, original, true, "")
 }
 
-// updateStatus patches the CheckPlugin status fields.
-func (r *CheckPluginReconciler) updateStatus(ctx context.Context, cp *assistv1alpha1.CheckPlugin, ready bool, errMsg string) (ctrl.Result, error) {
+// updateStatus patches the CheckPlugin status fields using a merge patch
+// from the original to avoid conflicts with concurrent spec updates.
+func (r *CheckPluginReconciler) updateStatus(ctx context.Context, cp *assistv1alpha1.CheckPlugin, original *assistv1alpha1.CheckPlugin, ready bool, errMsg string) (ctrl.Result, error) {
 	now := metav1.Now()
 	cp.Status.Ready = ready
 	cp.Status.Error = errMsg
 	cp.Status.LastUpdated = &now
 
-	if err := r.Status().Update(ctx, cp); err != nil {
-		checkPluginLog.Error(err, "Failed to update CheckPlugin status", "plugin", cp.Spec.DisplayName)
+	if err := r.Status().Patch(ctx, cp, client.MergeFrom(original)); err != nil {
+		checkPluginLog.Error(err, "Failed to patch CheckPlugin status", "plugin", cp.Spec.DisplayName)
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{}, nil

@@ -17,26 +17,17 @@ limitations under the License.
 package datasource
 
 import (
-	"context"
-
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// KubernetesDataSource implements DataSource by delegating to a
+// KubernetesDataSource implements DataSource by embedding a
 // controller-runtime client.Reader (typically a manager's cached client).
+// Get and List are promoted from the embedded Reader.
 type KubernetesDataSource struct {
-	reader client.Reader
+	client.Reader
 }
 
 // NewKubernetes creates a DataSource backed by a controller-runtime Reader.
 func NewKubernetes(reader client.Reader) *KubernetesDataSource {
-	return &KubernetesDataSource{reader: reader}
-}
-
-func (k *KubernetesDataSource) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
-	return k.reader.Get(ctx, key, obj, opts...)
-}
-
-func (k *KubernetesDataSource) List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
-	return k.reader.List(ctx, list, opts...)
+	return &KubernetesDataSource{Reader: reader}
 }

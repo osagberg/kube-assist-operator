@@ -287,7 +287,12 @@ func main() {
 		if consoleBearerToken != "" {
 			consoleOpts = append(consoleOpts, datasource.WithBearerToken(consoleBearerToken))
 		}
-		ds = datasource.NewConsole(consoleURL, clusterID, consoleOpts...)
+		cds, err := datasource.NewConsole(consoleURL, clusterID, consoleOpts...)
+		if err != nil {
+			setupLog.Error(err, "failed to create console datasource")
+			os.Exit(1)
+		}
+		ds = cds
 		setupLog.Info("Using console datasource", "url", consoleURL, "cluster", clusterID)
 	default:
 		setupLog.Error(nil, "unknown --datasource value", "datasource", datasourceType)
@@ -358,6 +363,7 @@ func main() {
 		Scheme:    mgr.GetScheme(),
 		Clientset: clientset,
 		Registry:  registry,
+		Recorder:  mgr.GetEventRecorderFor("troubleshootrequest-controller"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "TroubleshootRequest")
 		os.Exit(1)
@@ -372,6 +378,7 @@ func main() {
 		Correlator:       causal.NewCorrelator(),
 		NotifierRegistry: notifierRegistry,
 		NotifySem:        make(chan struct{}, notifySemCapacity),
+		Recorder:         mgr.GetEventRecorderFor("teamhealthrequest-controller"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "TeamHealthRequest")
 		os.Exit(1)
@@ -380,6 +387,7 @@ func main() {
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
 		Registry: registry,
+		Recorder: mgr.GetEventRecorderFor("checkplugin-controller"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "CheckPlugin")
 		os.Exit(1)

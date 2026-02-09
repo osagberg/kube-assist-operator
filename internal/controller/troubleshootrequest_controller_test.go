@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -1612,6 +1613,241 @@ var _ = Describe("TroubleshootRequest Controller", func() {
 			fetched := &assistv1alpha1.TroubleshootRequest{}
 			Expect(k8sClient.Get(ctx, nn, fetched)).To(Succeed())
 			Expect(fetched.Status.Phase).To(Equal(assistv1alpha1.PhaseCompleted))
+		})
+	})
+
+	Context("setFailed helper", func() {
+		const resourceName = "set-failed-tr"
+		ctx := context.Background()
+		nn := types.NamespacedName{Name: resourceName, Namespace: "default"}
+
+		AfterEach(func() {
+			tr := &assistv1alpha1.TroubleshootRequest{}
+			if err := k8sClient.Get(ctx, nn, tr); err == nil {
+				_ = k8sClient.Delete(ctx, tr)
+			}
+		})
+
+		It("should set phase to Failed with summary and conditions", func() {
+			tr := &assistv1alpha1.TroubleshootRequest{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      resourceName,
+					Namespace: "default",
+				},
+				Spec: assistv1alpha1.TroubleshootRequestSpec{
+					Target: assistv1alpha1.TargetRef{Kind: "Deployment", Name: "x"},
+				},
+			}
+			Expect(k8sClient.Create(ctx, tr)).To(Succeed())
+			Expect(k8sClient.Get(ctx, nn, tr)).To(Succeed())
+
+			original := tr.DeepCopy()
+			reconciler := &TroubleshootRequestReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+
+			err := reconciler.setFailed(ctx, original, tr, "test failure reason")
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := &assistv1alpha1.TroubleshootRequest{}
+			Expect(k8sClient.Get(ctx, nn, fetched)).To(Succeed())
+			Expect(fetched.Status.Phase).To(Equal(assistv1alpha1.PhaseFailed))
+			Expect(fetched.Status.Summary).To(Equal("test failure reason"))
+			Expect(fetched.Status.CompletedAt).NotTo(BeNil())
+		})
+	})
+
+	Context("When targeting a ReplicaSet", func() {
+		const resourceName = "rs-tr"
+		const rsName = "test-rs"
+		ctx := context.Background()
+		nn := types.NamespacedName{Name: resourceName, Namespace: "default"}
+
+		BeforeEach(func() {
+			replicas := int32(1)
+			rs := &appsv1.ReplicaSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      rsName,
+					Namespace: "default",
+				},
+				Spec: appsv1.ReplicaSetSpec{
+					Replicas: &replicas,
+					Selector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{"app": "test-rs"},
+					},
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Labels: map[string]string{"app": "test-rs"},
+						},
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{Name: "app", Image: "nginx:latest"},
+							},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, rs)).To(Succeed())
+
+			pod := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-rs-pod-1",
+					Namespace: "default",
+					Labels:    map[string]string{"app": "test-rs"},
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{Name: "app", Image: "nginx:latest"},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+			pod.Status = corev1.PodStatus{
+				Phase:             corev1.PodRunning,
+				ContainerStatuses: []corev1.ContainerStatus{{Name: "app", Ready: true}},
+			}
+			Expect(k8sClient.Status().Update(ctx, pod)).To(Succeed())
+
+			tr := &assistv1alpha1.TroubleshootRequest{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      resourceName,
+					Namespace: "default",
+				},
+				Spec: assistv1alpha1.TroubleshootRequestSpec{
+					Target:  assistv1alpha1.TargetRef{Kind: "ReplicaSet", Name: rsName},
+					Actions: []assistv1alpha1.TroubleshootAction{assistv1alpha1.ActionDiagnose},
+				},
+			}
+			Expect(k8sClient.Create(ctx, tr)).To(Succeed())
+		})
+
+		AfterEach(func() {
+			tr := &assistv1alpha1.TroubleshootRequest{}
+			if err := k8sClient.Get(ctx, nn, tr); err == nil {
+				_ = k8sClient.Delete(ctx, tr)
+			}
+			rs := &appsv1.ReplicaSet{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: rsName, Namespace: "default"}, rs); err == nil {
+				_ = k8sClient.Delete(ctx, rs)
+			}
+			pod := &corev1.Pod{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: "test-rs-pod-1", Namespace: "default"}, pod); err == nil {
+				_ = k8sClient.Delete(ctx, pod)
+			}
+		})
+
+		It("should reconcile ReplicaSet targets", func() {
+			reconciler := &TroubleshootRequestReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+
+			result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal(reconcile.Result{}))
+
+			fetched := &assistv1alpha1.TroubleshootRequest{}
+			Expect(k8sClient.Get(ctx, nn, fetched)).To(Succeed())
+			Expect(fetched.Status.Phase).To(Equal(assistv1alpha1.PhaseCompleted))
+		})
+	})
+
+	Context("When diagnosing a pod with terminated container", func() {
+		It("should detect terminated container issues", func() {
+			reconciler := &TroubleshootRequestReconciler{}
+			pods := []corev1.Pod{{
+				ObjectMeta: metav1.ObjectMeta{Name: "term-pod", Namespace: "default"},
+				Status: corev1.PodStatus{
+					Phase: corev1.PodRunning,
+					ContainerStatuses: []corev1.ContainerStatus{{
+						Name:  "app",
+						Ready: false,
+						State: corev1.ContainerState{
+							Terminated: &corev1.ContainerStateTerminated{
+								Reason:   "OOMKilled",
+								ExitCode: 137,
+							},
+						},
+					}},
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{
+						Name:  "app",
+						Image: "nginx:latest",
+					}},
+				},
+			}}
+
+			issues := reconciler.diagnosePodsDetailed(pods)
+			Expect(issues).NotTo(BeEmpty())
+			foundTerminated := false
+			for _, issue := range issues {
+				if issue.Type == "ContainerNotReady" && strings.Contains(issue.Message, "terminated") {
+					foundTerminated = true
+				}
+			}
+			Expect(foundTerminated).To(BeTrue(), "should detect terminated container")
+		})
+	})
+
+	Context("When diagnosing a pod with scheduling failure", func() {
+		It("should detect scheduling failure issues", func() {
+			reconciler := &TroubleshootRequestReconciler{}
+			pods := []corev1.Pod{{
+				ObjectMeta: metav1.ObjectMeta{Name: "sched-pod", Namespace: "default"},
+				Status: corev1.PodStatus{
+					Phase: corev1.PodPending,
+					Conditions: []corev1.PodCondition{{
+						Type:    corev1.PodScheduled,
+						Status:  corev1.ConditionFalse,
+						Message: "0/3 nodes are available",
+					}},
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{Name: "app", Image: "nginx:latest"}},
+				},
+			}}
+
+			issues := reconciler.diagnosePodsDetailed(pods)
+			foundScheduling := false
+			for _, issue := range issues {
+				if issue.Type == "SchedulingFailed" {
+					foundScheduling = true
+				}
+			}
+			Expect(foundScheduling).To(BeTrue(), "should detect scheduling failure")
+		})
+	})
+
+	Context("When diagnosing a pod with PodNotReady condition", func() {
+		It("should detect PodNotReady condition", func() {
+			reconciler := &TroubleshootRequestReconciler{}
+			pods := []corev1.Pod{{
+				ObjectMeta: metav1.ObjectMeta{Name: "ready-cond-pod", Namespace: "default"},
+				Status: corev1.PodStatus{
+					Phase:             corev1.PodRunning,
+					ContainerStatuses: []corev1.ContainerStatus{{Name: "app", Ready: true}},
+					Conditions: []corev1.PodCondition{{
+						Type:    corev1.PodReady,
+						Status:  corev1.ConditionFalse,
+						Reason:  "ReadinessGateFailed",
+						Message: "readiness gate not met",
+					}},
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{Name: "app", Image: "nginx:latest"}},
+				},
+			}}
+
+			issues := reconciler.diagnosePodsDetailed(pods)
+			foundNotReady := false
+			for _, issue := range issues {
+				if issue.Type == "PodNotReady" {
+					foundNotReady = true
+				}
+			}
+			Expect(foundNotReady).To(BeTrue(), "should detect PodNotReady condition")
 		})
 	})
 

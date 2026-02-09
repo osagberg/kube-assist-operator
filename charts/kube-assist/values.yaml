@@ -153,7 +153,7 @@ notifications:
 resources:
   limits:
     cpu: 500m
-    memory: 128Mi
+    memory: 256Mi
   requests:
     cpu: 10m
     memory: 64Mi
@@ -165,6 +165,7 @@ livenessProbe:
     port: 8081
   initialDelaySeconds: 15
   periodSeconds: 20
+  timeoutSeconds: 3
 
 # Readiness probe configuration. The operator exposes /readyz on the health port.
 readinessProbe:
@@ -173,12 +174,22 @@ readinessProbe:
     port: 8081
   initialDelaySeconds: 5
   periodSeconds: 10
+  timeoutSeconds: 3
 
 nodeSelector: {}
 
 tolerations: []
 
 affinity: {}
+  # Example: spread operator pods across nodes for HA:
+  # podAntiAffinity:
+  #   preferredDuringSchedulingIgnoredDuringExecution:
+  #     - weight: 100
+  #       podAffinityTerm:
+  #         labelSelector:
+  #           matchLabels:
+  #             app.kubernetes.io/name: kube-assist
+  #         topologyKey: kubernetes.io/hostname
 
 # Topology spread constraints for pod scheduling.
 topologySpreadConstraints: []
@@ -230,5 +241,8 @@ networkPolicy:
   dnsMode: kube-system
   # Console backend egress (used when datasource.type=console).
   consoleEgress:
-    cidr: "0.0.0.0/0"
+    # CIDR must be explicitly set when datasource.type=console.
+    # Helm will fail-fast if console mode is enabled without a CIDR.
+    # Example: "203.0.113.0/24"
+    cidr: ""
     port: 443
