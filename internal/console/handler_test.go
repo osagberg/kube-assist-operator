@@ -847,3 +847,101 @@ func TestHandleListGitRepositories(t *testing.T) {
 		t.Errorf("expected 1 gitrepository named cluster-repo, got %v", got.Items)
 	}
 }
+
+// ---- AuthMiddleware ----
+
+func TestAuthMiddleware_SkipsWhenNoToken(t *testing.T) {
+	called := false
+	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := AuthMiddleware("", inner)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/clusters", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", rec.Code)
+	}
+	if !called {
+		t.Error("expected inner handler to be called when no token configured")
+	}
+}
+
+func TestAuthMiddleware_RejectsUnauthenticated(t *testing.T) {
+	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Error("inner handler should not be called")
+	})
+	handler := AuthMiddleware("my-secret", inner)
+
+	tests := []struct {
+		name       string
+		authHeader string
+		wantCode   int
+	}{
+		{"no header", "", http.StatusUnauthorized},
+		{"empty bearer", "Bearer ", http.StatusForbidden},
+		{"wrong token", "Bearer wrong-token", http.StatusForbidden},
+		{"basic auth", "Basic dXNlcjpwYXNz", http.StatusUnauthorized},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/clusters", nil)
+			if tt.authHeader != "" {
+				req.Header.Set("Authorization", tt.authHeader)
+			}
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != tt.wantCode {
+				t.Errorf("expected %d, got %d", tt.wantCode, rec.Code)
+			}
+		})
+	}
+}
+
+func TestAuthMiddleware_AcceptsValidToken(t *testing.T) {
+	const token = "super-secret-token-123"
+	called := false
+	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := AuthMiddleware(token, inner)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/clusters", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", rec.Code)
+	}
+	if !called {
+		t.Error("expected inner handler to be called for valid token")
+	}
+}
+
+func TestSecurityHeaders(t *testing.T) {
+	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := SecurityHeaders(inner)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if csp := rec.Header().Get("Content-Security-Policy"); csp == "" {
+		t.Error("expected Content-Security-Policy header")
+	}
+	if rec.Header().Get("X-Content-Type-Options") != "nosniff" {
+		t.Error("expected X-Content-Type-Options: nosniff")
+	}
+	if rec.Header().Get("X-Frame-Options") != "DENY" {
+		t.Error("expected X-Frame-Options: DENY")
+	}
+}

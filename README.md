@@ -593,6 +593,20 @@ helm install kube-assist charts/kube-assist \
 | `datasource.clusterID` | `""` | Cluster identifier for console backend |
 | `datasource.consoleBearerToken` | `""` | Bearer token for console backend auth |
 
+### Console Backend Standalone Flags
+
+The `console-backend` binary (`cmd/console-backend/`) supports authentication and TLS:
+
+| Flag | Env | Default | Description |
+|------|-----|---------|-------------|
+| `--auth-token` | `CONSOLE_AUTH_TOKEN` | `""` | Bearer token for API authentication |
+| `--tls-cert` | -- | `""` | Path to TLS certificate file |
+| `--tls-key` | -- | `""` | Path to TLS key file |
+| `--addr` | -- | `:8085` | HTTP listen address |
+| `--kubeconfigs` | -- | -- | Comma-separated `cluster-id=kubeconfig-path` pairs |
+
+When `--auth-token` is set, all API routes (except `/healthz`) require `Authorization: Bearer <token>`. Security headers (CSP, X-Content-Type-Options, X-Frame-Options) are always applied.
+
 ### Full Configuration
 
 See [charts/kube-assist/values.yaml](charts/kube-assist/values.yaml) for all options.
@@ -797,6 +811,7 @@ make install-cli
 - [x] AI cost optimization — 9 optimizations (severity gating, change-only AI, gpt-4o-mini, prompt caching, token budget, batching, dedup, tiered routing, LRU cache) + 11 Prometheus metrics (v1.8.1-dev)
 - [x] Cross-cluster via ConsoleDataSource — all phases complete: client, server, console backend tests (86.5% coverage), dashboard cluster selector UI with SSE reconnect, Helm datasource sync (v1.9.0)
 - [x] TroubleshootRequest creation from dashboard — DiagnoseModal, contextual diagnose on issues, K8s name validation, capabilities-gated UI for console mode (v1.11.0)
+- [x] Codex audit remediation — console backend auth/TLS, meta-tag auth token delivery, SSE cookie auth, Prometheus TLS default, strict network policies
 - [ ] Multi-cluster e2e tests with Kind clusters
 
 ---

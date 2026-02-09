@@ -43,10 +43,33 @@ import (
 func main() {
 	var addr string
 	var kubeconfigsFlag string
+	var authToken string
+	var tlsCert, tlsKey string
 	flag.StringVar(&addr, "addr", ":8085", "HTTP listen address.")
 	flag.StringVar(&kubeconfigsFlag, "kubeconfigs", "",
 		"Comma-separated cluster-id=kubeconfig-path pairs (e.g. cluster-a=/tmp/kind-a.yaml,cluster-b=/tmp/kind-b.yaml).")
+	flag.StringVar(&authToken, "auth-token", "", "Bearer token for API authentication (env: CONSOLE_AUTH_TOKEN).")
+	flag.StringVar(&tlsCert, "tls-cert", "", "Path to TLS certificate file.")
+	flag.StringVar(&tlsKey, "tls-key", "", "Path to TLS key file.")
+	var allowInsecure bool
+	flag.BoolVar(&allowInsecure, "allow-insecure", false, "Allow running without auth/TLS (NOT for production).")
 	flag.Parse()
+
+	if authToken == "" {
+		authToken = os.Getenv("CONSOLE_AUTH_TOKEN")
+	}
+
+	if authToken == "" && !allowInsecure {
+		slog.Error("Console backend requires authentication. Set --auth-token, CONSOLE_AUTH_TOKEN, or use --allow-insecure for development.")
+		os.Exit(1)
+	}
+	if (tlsCert == "" || tlsKey == "") && !allowInsecure {
+		slog.Error("Console backend requires TLS. Set --tls-cert and --tls-key, or use --allow-insecure for development.")
+		os.Exit(1)
+	}
+	if allowInsecure {
+		slog.Warn("WARNING: Console backend running without auth/TLS — NOT FOR PRODUCTION USE")
+	}
 
 	if kubeconfigsFlag == "" {
 		slog.Error("--kubeconfigs is required")
@@ -65,13 +88,25 @@ func main() {
 		os.Exit(1)
 	}
 
-	handler := console.NewHandler(agg)
+	h := console.NewHandler(agg)
 	mux := http.NewServeMux()
-	console.RegisterRoutes(mux, handler)
+	console.RegisterRoutes(mux, h)
+
+	var handler http.Handler = mux
+	if authToken != "" {
+		handler = console.AuthMiddleware(authToken, handler)
+		slog.Info("Console backend authentication enabled")
+		if tlsCert == "" || tlsKey == "" {
+			slog.Warn("Auth token configured without TLS — tokens will be sent in plaintext")
+		}
+	} else {
+		slog.Warn("Console backend authentication not configured. Set --auth-token or CONSOLE_AUTH_TOKEN to secure the API.")
+	}
+	handler = console.SecurityHeaders(handler)
 
 	srv := &http.Server{
 		Addr:              addr,
-		Handler:           mux,
+		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      30 * time.Second,
@@ -83,7 +118,14 @@ func main() {
 
 	go func() {
 		slog.Info("Console backend starting", "addr", addr, "clusters", agg.ClusterIDs())
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		var err error
+		if tlsCert != "" && tlsKey != "" {
+			slog.Info("Console backend TLS enabled", "cert", tlsCert)
+			err = srv.ListenAndServeTLS(tlsCert, tlsKey)
+		} else {
+			err = srv.ListenAndServe()
+		}
+		if err != nil && err != http.ErrServerClosed {
 			slog.Error("Server error", "error", err)
 			os.Exit(1)
 		}

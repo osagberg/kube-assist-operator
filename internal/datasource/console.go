@@ -271,6 +271,12 @@ func (c *ConsoleDataSource) doRequest(ctx context.Context, reqURL string) (io.Re
 
 	req.Header.Set("Accept", "application/json")
 	if c.bearerToken != "" {
+		if req.URL.Scheme != "https" {
+			host := req.URL.Hostname()
+			if host != "localhost" && host != "127.0.0.1" && host != "::1" {
+				return nil, fmt.Errorf("refusing to send bearer token over insecure connection to %s", host)
+			}
+		}
 		req.Header.Set("Authorization", "Bearer "+c.bearerToken)
 	}
 

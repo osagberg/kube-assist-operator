@@ -198,16 +198,21 @@ networkPolicy:
   # Controls ingress (health/metrics/dashboard) and egress (DNS, K8s API, AI APIs).
   enabled: true
   # Ingress mode: "permissive" (allow from all) or "strict" (restrict to specified selectors)
-  ingressMode: permissive
+  ingressMode: strict
   # Pod selectors allowed to reach the operator in strict mode.
   # Only used when ingressMode=strict.
-  ingressSelectors: []
-  # - podSelector:
-  #     matchLabels:
-  #       app: prometheus
-  #   namespaceSelector:
-  #     matchLabels:
-  #       name: monitoring
+  # Default selectors for strict ingress mode.
+  # Allows Prometheus scraping and kube-system access.
+  ingressSelectors:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/name: prometheus
+      namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: monitoring
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
   # DNS egress mode: "all" (any namespace) or "kube-system" (restricted to kube-system pods).
   dnsMode: kube-system
   # Console backend egress (used when datasource.type=console).

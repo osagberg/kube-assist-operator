@@ -15,10 +15,11 @@ import type {
 
 const BASE = '/api'
 
+const authToken = document.querySelector('meta[name="dashboard-auth-token"]')?.getAttribute('content') ?? '';
+
 function getAuthHeaders(): Record<string, string> {
-  const token = (window as any).__DASHBOARD_AUTH_TOKEN__ || ''
-  if (!token) return {}
-  return { Authorization: `Bearer ${token}` }
+  if (!authToken) return {}
+  return { Authorization: `Bearer ${authToken}` }
 }
 
 /** Normalize Go nil slices (JSON null) to empty arrays */
@@ -172,7 +173,7 @@ export function createSSEConnection(clusterId?: string): EventSource {
     clusterId ? `${BASE}/events?clusterId=${encodeURIComponent(clusterId)}` : `${BASE}/events`,
     window.location.origin,
   )
-  const token = (window as any).__DASHBOARD_AUTH_TOKEN__ || ''
-  if (token) url.searchParams.set('token', token)
+  // Auth cookie (__dashboard_session) is sent automatically by the browser.
+  // No need to pass token as query parameter.
   return new EventSource(url.toString())
 }

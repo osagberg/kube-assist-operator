@@ -834,3 +834,57 @@ func TestConsoleDataSourceDefaultTimeout(t *testing.T) {
 		t.Errorf("expected 30s default timeout, got %v", ds.httpClient.Timeout)
 	}
 }
+
+func TestDoRequest_RefusesBearerOverHTTP(t *testing.T) {
+	ds := NewConsole("http://remote-host.example.com:8085", "test-cluster", WithBearerToken("secret"))
+	got := &corev1.Pod{}
+	err := ds.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: "test-pod"}, got)
+	if err == nil {
+		t.Fatal("expected error when sending bearer token over HTTP to non-localhost")
+	}
+	if !strings.Contains(err.Error(), "refusing to send bearer token over insecure connection") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestDoRequest_AllowsBearerOverHTTPS(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer secret" {
+			t.Errorf("expected bearer token, got: %s", r.Header.Get("Authorization"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		mustEncode(t, w, &corev1.Pod{
+			TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "Pod"},
+			ObjectMeta: metav1.ObjectMeta{Name: "test-pod", Namespace: "default"},
+		})
+	}))
+	defer srv.Close()
+
+	ds := NewConsole(srv.URL, "test-cluster", WithBearerToken("secret"), WithHTTPClient(srv.Client()))
+	got := &corev1.Pod{}
+	err := ds.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: "test-pod"}, got)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestDoRequest_AllowsBearerToLocalhost(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer secret" {
+			t.Errorf("expected bearer token, got: %s", r.Header.Get("Authorization"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		mustEncode(t, w, &corev1.Pod{
+			TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "Pod"},
+			ObjectMeta: metav1.ObjectMeta{Name: "test-pod", Namespace: "default"},
+		})
+	}))
+	defer srv.Close()
+
+	ds := NewConsole(srv.URL, "test-cluster", WithBearerToken("secret"))
+	got := &corev1.Pod{}
+	err := ds.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: "test-pod"}, got)
+	if err != nil {
+		t.Fatalf("unexpected error with localhost: %v", err)
+	}
+}

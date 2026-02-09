@@ -25,6 +25,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"html"
 	"io/fs"
 	"net/http"
 	"os"
@@ -283,7 +284,8 @@ func (s *Server) sseAuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 			next(w, r)
 			return
 		}
-		// Check Authorization header first
+
+		// 1. Check Authorization header first
 		auth := r.Header.Get("Authorization")
 		if auth != "" && strings.HasPrefix(auth, "Bearer ") {
 			token := strings.TrimPrefix(auth, "Bearer ")
@@ -296,19 +298,22 @@ func (s *Server) sseAuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 			http.Error(w, "Forbidden", http.StatusForbidden)
 			return
 		}
-		// Fallback: check ?token= query parameter (SSE/EventSource can't set headers)
-		qToken := r.URL.Query().Get("token")
-		if qToken == "" {
-			http.Error(w, "Unauthorized", http.StatusUnauthorized)
-			return
-		}
-		gotHash := sha256.Sum256([]byte(qToken))
-		wantHash := sha256.Sum256([]byte(s.authToken))
-		if subtle.ConstantTimeCompare(gotHash[:], wantHash[:]) != 1 {
+
+		// 2. Check session cookie (set when serving index.html)
+		cookie, err := r.Cookie("__dashboard_session")
+		if err == nil && cookie.Value != "" {
+			gotHash := sha256.Sum256([]byte(cookie.Value))
+			wantHash := sha256.Sum256([]byte(s.authToken))
+			if subtle.ConstantTimeCompare(gotHash[:], wantHash[:]) == 1 {
+				next(w, r)
+				return
+			}
 			http.Error(w, "Forbidden", http.StatusForbidden)
 			return
 		}
-		next(w, r)
+
+		// No valid auth method found
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 	}
 }
 
@@ -357,7 +362,6 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/api/settings/ai/catalog", s.handleAICatalog)
 	mux.HandleFunc("/api/troubleshoot", s.authMiddleware(s.handleCreateTroubleshoot))
 	mux.HandleFunc("/api/capabilities", s.handleCapabilities)
-
 	// React SPA dashboard
 	spaFS, err := fs.Sub(webAssets, "web/dist")
 	if err != nil {
@@ -365,28 +369,32 @@ func (s *Server) Start(ctx context.Context) error {
 	} else {
 		fileServer := http.FileServer(http.FS(spaFS))
 
-		// When auth is configured, inject the token into index.html so the SPA
-		// can send it on API requests. The token is injected at serve-time (not
-		// build-time) via a <script> tag before </head>.
-		var injectedIndex []byte
-		if s.authToken != "" {
-			raw, readErr := fs.ReadFile(spaFS, "index.html")
-			if readErr != nil {
-				log.Error(readErr, "Failed to read index.html for token injection")
-			} else {
-				snippet := fmt.Sprintf(`<script>window.__DASHBOARD_AUTH_TOKEN__=%q;</script></head>`, s.authToken)
-				injectedIndex = bytes.Replace(raw, []byte("</head>"), []byte(snippet), 1)
-			}
+		// Read index.html once at startup for token injection
+		indexHTML, readErr := fs.ReadFile(spaFS, "index.html")
+		if readErr != nil {
+			log.Error(readErr, "Failed to read index.html from embedded assets")
+			indexHTML = []byte("<!DOCTYPE html><html><body>Dashboard unavailable</body></html>")
 		}
 
 		serveIndex := func(w http.ResponseWriter, r *http.Request) {
-			if injectedIndex != nil {
-				w.Header().Set("Content-Type", "text/html; charset=utf-8")
-				w.Header().Set("Cache-Control", "no-cache")
-				_, _ = w.Write(injectedIndex)
-				return
+			body := indexHTML
+			if s.authToken != "" {
+				escaped := html.EscapeString(s.authToken)
+				meta := []byte(`<meta name="dashboard-auth-token" content="` + escaped + `">`)
+				body = bytes.Replace(body, []byte("</head>"), append(meta, []byte("</head>")...), 1)
+				http.SetCookie(w, &http.Cookie{
+					Name:     "__dashboard_session",
+					Value:    s.authToken,
+					Path:     "/",
+					HttpOnly: true,
+					Secure:   s.tlsConfigured(),
+					SameSite: http.SameSiteStrictMode,
+				})
+				w.Header().Set("Cache-Control", "no-store")
 			}
-			http.ServeFileFS(w, r, spaFS, "index.html")
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(body)
 		}
 
 		mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {

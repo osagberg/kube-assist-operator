@@ -17,6 +17,8 @@ limitations under the License.
 package console
 
 import (
+	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -273,4 +275,38 @@ func writeK8sError(w http.ResponseWriter, err error) {
 		slog.Error("K8s API error", "error", err)
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 	}
+}
+
+// AuthMiddleware returns middleware that validates a Bearer token using constant-time comparison.
+// When token is empty, all requests are allowed through.
+func AuthMiddleware(token string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if token == "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		auth := r.Header.Get("Authorization")
+		if auth == "" || !strings.HasPrefix(auth, "Bearer ") {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+		got := strings.TrimPrefix(auth, "Bearer ")
+		gotHash := sha256.Sum256([]byte(got))
+		wantHash := sha256.Sum256([]byte(token))
+		if subtle.ConstantTimeCompare(gotHash[:], wantHash[:]) != 1 {
+			http.Error(w, "Forbidden", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// SecurityHeaders wraps a handler with standard security headers.
+func SecurityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		next.ServeHTTP(w, r)
+	})
 }
