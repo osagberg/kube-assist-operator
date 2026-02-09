@@ -191,3 +191,151 @@ func TestTeamHealthRequestWebhook_EmptyChecksAllowed(t *testing.T) {
 		t.Errorf("ValidateCreate() unexpected error for empty checks (should default to all): %v", err)
 	}
 }
+
+func TestTeamHealthRequestWebhook_ValidNotificationHTTPS(t *testing.T) {
+	v := &TeamHealthRequestCustomValidator{}
+	hr := &TeamHealthRequest{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-notify-https", Namespace: "default"},
+		Spec: TeamHealthRequestSpec{
+			Notify: []NotificationTarget{
+				{
+					Type:         NotificationTypeWebhook,
+					URL:          "https://example.com/webhook",
+					OnCompletion: true,
+				},
+			},
+		},
+	}
+	_, err := v.ValidateCreate(context.Background(), hr)
+	if err != nil {
+		t.Errorf("ValidateCreate() unexpected error for valid HTTPS notification: %v", err)
+	}
+}
+
+func TestTeamHealthRequestWebhook_ValidNotificationSecretRef(t *testing.T) {
+	v := &TeamHealthRequestCustomValidator{}
+	hr := &TeamHealthRequest{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-notify-secret", Namespace: "default"},
+		Spec: TeamHealthRequestSpec{
+			Notify: []NotificationTarget{
+				{
+					Type: NotificationTypeWebhook,
+					SecretRef: &SecretKeyRef{
+						Name: "webhook-secret",
+						Key:  "url",
+					},
+					OnCompletion: true,
+				},
+			},
+		},
+	}
+	_, err := v.ValidateCreate(context.Background(), hr)
+	if err != nil {
+		t.Errorf("ValidateCreate() unexpected error for valid SecretRef notification: %v", err)
+	}
+}
+
+func TestTeamHealthRequestWebhook_InvalidNotificationBothURLAndSecretRef(t *testing.T) {
+	v := &TeamHealthRequestCustomValidator{}
+	hr := &TeamHealthRequest{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-notify-both", Namespace: "default"},
+		Spec: TeamHealthRequestSpec{
+			Notify: []NotificationTarget{
+				{
+					Type: NotificationTypeWebhook,
+					URL:  "https://example.com/webhook",
+					SecretRef: &SecretKeyRef{
+						Name: "webhook-secret",
+						Key:  "url",
+					},
+				},
+			},
+		},
+	}
+	_, err := v.ValidateCreate(context.Background(), hr)
+	if err == nil {
+		t.Error("ValidateCreate() expected error when both URL and SecretRef are specified")
+	}
+}
+
+func TestTeamHealthRequestWebhook_InvalidNotificationNoURLOrSecretRef(t *testing.T) {
+	v := &TeamHealthRequestCustomValidator{}
+	hr := &TeamHealthRequest{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-notify-none", Namespace: "default"},
+		Spec: TeamHealthRequestSpec{
+			Notify: []NotificationTarget{
+				{
+					Type:         NotificationTypeWebhook,
+					OnCompletion: true,
+				},
+			},
+		},
+	}
+	_, err := v.ValidateCreate(context.Background(), hr)
+	if err == nil {
+		t.Error("ValidateCreate() expected error when neither URL nor SecretRef is specified")
+	}
+}
+
+func TestTeamHealthRequestWebhook_InvalidNotificationHTTPWithoutAnnotation(t *testing.T) {
+	v := &TeamHealthRequestCustomValidator{}
+	hr := &TeamHealthRequest{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-notify-http", Namespace: "default"},
+		Spec: TeamHealthRequestSpec{
+			Notify: []NotificationTarget{
+				{
+					Type: NotificationTypeWebhook,
+					URL:  "http://example.com/webhook",
+				},
+			},
+		},
+	}
+	_, err := v.ValidateCreate(context.Background(), hr)
+	if err == nil {
+		t.Error("ValidateCreate() expected error for HTTP URL without AllowHTTPWebhooksAnnotation")
+	}
+}
+
+func TestTeamHealthRequestWebhook_ValidNotificationHTTPWithAnnotation(t *testing.T) {
+	v := &TeamHealthRequestCustomValidator{}
+	hr := &TeamHealthRequest{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-notify-http-ok",
+			Namespace: "default",
+			Annotations: map[string]string{
+				AllowHTTPWebhooksAnnotation: "true",
+			},
+		},
+		Spec: TeamHealthRequestSpec{
+			Notify: []NotificationTarget{
+				{
+					Type: NotificationTypeWebhook,
+					URL:  "http://example.com/webhook",
+				},
+			},
+		},
+	}
+	_, err := v.ValidateCreate(context.Background(), hr)
+	if err != nil {
+		t.Errorf("ValidateCreate() unexpected error for HTTP URL with AllowHTTPWebhooksAnnotation: %v", err)
+	}
+}
+
+func TestTeamHealthRequestWebhook_InvalidNotificationMalformedURL(t *testing.T) {
+	v := &TeamHealthRequestCustomValidator{}
+	hr := &TeamHealthRequest{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-notify-bad-url", Namespace: "default"},
+		Spec: TeamHealthRequestSpec{
+			Notify: []NotificationTarget{
+				{
+					Type: NotificationTypeWebhook,
+					URL:  "://not-a-url",
+				},
+			},
+		},
+	}
+	_, err := v.ValidateCreate(context.Background(), hr)
+	if err == nil {
+		t.Error("ValidateCreate() expected error for malformed URL")
+	}
+}

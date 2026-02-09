@@ -2005,7 +2005,7 @@ func TestServeIndex_SetsCookie(t *testing.T) {
 	}
 
 	// Build the serveIndex handler inline (mirrors Start() logic)
-	serveIndex := func(w http.ResponseWriter, r *http.Request) {
+	serveIndex := func(w http.ResponseWriter, _ *http.Request) {
 		body := indexHTML
 		if server.authToken != "" {
 			escaped := html.EscapeString(server.authToken)

@@ -90,7 +90,7 @@ func (r *TeamHealthRequestReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		if apierrors.IsNotFound(err) {
 			return ctrl.Result{}, nil
 		}
-		return ctrl.Result{}, err
+		return ctrl.Result{}, fmt.Errorf("failed to fetch TeamHealthRequest: %w", err)
 	}
 
 	// Save original for patch later
@@ -265,7 +265,7 @@ func (r *TeamHealthRequestReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	patch := client.MergeFrom(original)
 	if err := r.Status().Patch(ctx, healthReq, patch); err != nil {
 		log.Error(err, "Failed to patch status")
-		return ctrl.Result{}, err
+		return ctrl.Result{}, fmt.Errorf("failed to patch TeamHealthRequest status: %w", err)
 	}
 
 	// Send notifications if configured
@@ -364,6 +364,11 @@ func (r *TeamHealthRequestReconciler) setCondition(hr *assistv1alpha1.TeamHealth
 	})
 }
 
+// launchNotifications dispatches webhook notifications in a fire-and-forget
+// goroutine. context.Background() is used intentionally because the parent
+// reconcile ctx is cancelled when Reconcile returns, which would immediately
+// cancel in-flight HTTP requests. The detached context ensures notifications
+// can complete independently with their own 30-second timeout.
 func (r *TeamHealthRequestReconciler) launchNotifications(
 	ctx context.Context,
 	hr *assistv1alpha1.TeamHealthRequest,

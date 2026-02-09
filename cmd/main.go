@@ -394,6 +394,10 @@ func main() {
 			setupLog.Error(err, "unable to create webhook", "webhook", "TeamHealthRequest")
 			os.Exit(1)
 		}
+		if err := assistv1alpha1.SetupCheckPluginWebhookWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create webhook", "webhook", "CheckPlugin")
+			os.Exit(1)
+		}
 	}
 	// +kubebuilder:scaffold:builder
 

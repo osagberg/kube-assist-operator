@@ -612,6 +612,140 @@ var _ = Describe("TeamHealthRequest Controller", func() {
 		})
 	})
 
+	Context("TTL cleanup for failed requests", func() {
+		const resourceName = "ttl-failed-health"
+		ctx := context.Background()
+		nn := types.NamespacedName{Name: resourceName, Namespace: "default"}
+
+		AfterEach(func() {
+			hr := &assistv1alpha1.TeamHealthRequest{}
+			if err := k8sClient.Get(ctx, nn, hr); err == nil {
+				Expect(k8sClient.Delete(ctx, hr)).To(Succeed())
+			}
+		})
+
+		It("should delete a failed request when TTL has expired", func() {
+			hr := &assistv1alpha1.TeamHealthRequest{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      resourceName,
+					Namespace: "default",
+				},
+				Spec: assistv1alpha1.TeamHealthRequestSpec{
+					TTLSecondsAfterFinished: ptr.To(int32(0)),
+				},
+			}
+			Expect(k8sClient.Create(ctx, hr)).To(Succeed())
+
+			fetched := &assistv1alpha1.TeamHealthRequest{}
+			Expect(k8sClient.Get(ctx, nn, fetched)).To(Succeed())
+			fetched.Status.Phase = assistv1alpha1.TeamHealthPhaseFailed
+			pastTime := metav1.NewTime(time.Now().Add(-1 * time.Minute))
+			fetched.Status.CompletedAt = &pastTime
+			Expect(k8sClient.Status().Update(ctx, fetched)).To(Succeed())
+
+			registry := checker.NewRegistry()
+			reconciler := &TeamHealthRequestReconciler{
+				Client:     k8sClient,
+				Scheme:     k8sClient.Scheme(),
+				Registry:   registry,
+				DataSource: datasource.NewKubernetes(k8sClient),
+			}
+
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+			Expect(err).NotTo(HaveOccurred())
+
+			err = k8sClient.Get(ctx, nn, &assistv1alpha1.TeamHealthRequest{})
+			Expect(apierrors.IsNotFound(err)).To(BeTrue(), "expected failed resource to be deleted by TTL")
+		})
+
+		It("should requeue a failed request when TTL has not expired", func() {
+			hr := &assistv1alpha1.TeamHealthRequest{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      resourceName,
+					Namespace: "default",
+				},
+				Spec: assistv1alpha1.TeamHealthRequestSpec{
+					TTLSecondsAfterFinished: ptr.To(int32(3600)),
+				},
+			}
+			Expect(k8sClient.Create(ctx, hr)).To(Succeed())
+
+			fetched := &assistv1alpha1.TeamHealthRequest{}
+			Expect(k8sClient.Get(ctx, nn, fetched)).To(Succeed())
+			fetched.Status.Phase = assistv1alpha1.TeamHealthPhaseFailed
+			now := metav1.Now()
+			fetched.Status.CompletedAt = &now
+			Expect(k8sClient.Status().Update(ctx, fetched)).To(Succeed())
+
+			registry := checker.NewRegistry()
+			reconciler := &TeamHealthRequestReconciler{
+				Client:     k8sClient,
+				Scheme:     k8sClient.Scheme(),
+				Registry:   registry,
+				DataSource: datasource.NewKubernetes(k8sClient),
+			}
+
+			result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(BeNumerically(">", 0), "should requeue for later TTL check")
+
+			Expect(k8sClient.Get(ctx, nn, &assistv1alpha1.TeamHealthRequest{})).To(Succeed())
+		})
+	})
+
+	Context("When running with an unregistered checker name", func() {
+		const resourceName = "unregistered-checker-health"
+		ctx := context.Background()
+		nn := types.NamespacedName{Name: resourceName, Namespace: "default"}
+
+		BeforeEach(func() {
+			// Use a valid checker name that passes webhook validation, but don't register it
+			hr := &assistv1alpha1.TeamHealthRequest{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      resourceName,
+					Namespace: "default",
+				},
+				Spec: assistv1alpha1.TeamHealthRequestSpec{
+					Scope: assistv1alpha1.ScopeConfig{
+						CurrentNamespaceOnly: true,
+					},
+					Checks: []assistv1alpha1.CheckerName{assistv1alpha1.CheckerSecrets},
+				},
+			}
+			Expect(k8sClient.Create(ctx, hr)).To(Succeed())
+		})
+
+		AfterEach(func() {
+			hr := &assistv1alpha1.TeamHealthRequest{}
+			if err := k8sClient.Get(ctx, nn, hr); err == nil {
+				Expect(k8sClient.Delete(ctx, hr)).To(Succeed())
+			}
+		})
+
+		It("should complete with an error in the checker result", func() {
+			// Use an empty registry — "secrets" is a valid API name but not registered
+			registry := checker.NewRegistry()
+
+			reconciler := &TeamHealthRequestReconciler{
+				Client:     k8sClient,
+				Scheme:     k8sClient.Scheme(),
+				Registry:   registry,
+				DataSource: datasource.NewKubernetes(k8sClient),
+			}
+
+			result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal(reconcile.Result{}))
+
+			fetched := &assistv1alpha1.TeamHealthRequest{}
+			Expect(k8sClient.Get(ctx, nn, fetched)).To(Succeed())
+			Expect(fetched.Status.Phase).To(Equal(assistv1alpha1.TeamHealthPhaseCompleted))
+			Expect(fetched.Status.Results).To(HaveKey("secrets"))
+			Expect(fetched.Status.Results["secrets"].Error).NotTo(BeEmpty(),
+				"unregistered checker should have an error in its result")
+		})
+	})
+
 	Context("Helper function tests", func() {
 		It("generateSummary should handle zero issues", func() {
 			r := &TeamHealthRequestReconciler{}

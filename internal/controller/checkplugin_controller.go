@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -62,7 +63,7 @@ func (r *CheckPluginReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			// Object deleted — unregister handled by finalizer
 			return ctrl.Result{}, nil
 		}
-		return ctrl.Result{}, err
+		return ctrl.Result{}, fmt.Errorf("failed to fetch CheckPlugin: %w", err)
 	}
 
 	registryKey := cp.Name
@@ -75,7 +76,7 @@ func (r *CheckPluginReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 			controllerutil.RemoveFinalizer(cp, checkPluginFinalizer)
 			if err := r.Update(ctx, cp); err != nil {
-				return ctrl.Result{}, err
+				return ctrl.Result{}, fmt.Errorf("failed to remove finalizer from CheckPlugin: %w", err)
 			}
 		}
 		return ctrl.Result{}, nil
@@ -85,7 +86,7 @@ func (r *CheckPluginReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	if !controllerutil.ContainsFinalizer(cp, checkPluginFinalizer) {
 		controllerutil.AddFinalizer(cp, checkPluginFinalizer)
 		if err := r.Update(ctx, cp); err != nil {
-			return ctrl.Result{}, err
+			return ctrl.Result{}, fmt.Errorf("failed to add finalizer to CheckPlugin: %w", err)
 		}
 	}
 

@@ -31,10 +31,7 @@ spec:
         {{- if .Values.networkPolicy.ingressSelectors }}
         {{- toYaml .Values.networkPolicy.ingressSelectors | nindent 8 }}
         {{- else }}
-        # Strict mode with no selectors — deny all ingress
-        - podSelector:
-            matchLabels:
-              kube-assist-access: "true"
+        {{- fail "networkPolicy.ingressSelectors must be configured when networkPolicy.ingressMode is 'strict'" }}
         {{- end }}
       {{- end }}
   egress:

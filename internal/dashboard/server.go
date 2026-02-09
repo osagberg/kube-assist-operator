@@ -376,7 +376,7 @@ func (s *Server) Start(ctx context.Context) error {
 			indexHTML = []byte("<!DOCTYPE html><html><body>Dashboard unavailable</body></html>")
 		}
 
-		serveIndex := func(w http.ResponseWriter, r *http.Request) {
+		serveIndex := func(w http.ResponseWriter, _ *http.Request) {
 			body := indexHTML
 			if s.authToken != "" {
 				escaped := html.EscapeString(s.authToken)

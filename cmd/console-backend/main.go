@@ -60,7 +60,8 @@ func main() {
 	}
 
 	if authToken == "" && !allowInsecure {
-		slog.Error("Console backend requires authentication. Set --auth-token, CONSOLE_AUTH_TOKEN, or use --allow-insecure for development.")
+		slog.Error("Console backend requires authentication. " +
+			"Set --auth-token, CONSOLE_AUTH_TOKEN, or use --allow-insecure for development.")
 		os.Exit(1)
 	}
 	if (tlsCert == "" || tlsKey == "") && !allowInsecure {

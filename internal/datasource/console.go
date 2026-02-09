@@ -34,6 +34,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	helmv2 "github.com/fluxcd/helm-controller/api/v2"
 	kustomizev1 "github.com/fluxcd/kustomize-controller/api/v1"
@@ -276,6 +277,8 @@ func (c *ConsoleDataSource) doRequest(ctx context.Context, reqURL string) (io.Re
 			if host != "localhost" && host != "127.0.0.1" && host != "::1" {
 				return nil, fmt.Errorf("refusing to send bearer token over insecure connection to %s", host)
 			}
+			logf.Log.WithName("console-datasource").Info("WARNING: sending bearer token over insecure HTTP connection",
+				"host", host, "url", reqURL)
 		}
 		req.Header.Set("Authorization", "Bearer "+c.bearerToken)
 	}

@@ -142,10 +142,11 @@ type TroubleshootRequestStatus struct {
 
 // Condition types for TroubleshootRequest
 const (
-	ConditionTargetFound   = "TargetFound"
-	ConditionDiagnosed     = "Diagnosed"
-	ConditionLogsCollected = "LogsCollected"
-	ConditionComplete      = "Complete"
+	ConditionTargetFound     = "TargetFound"
+	ConditionDiagnosed       = "Diagnosed"
+	ConditionLogsCollected   = "LogsCollected"
+	ConditionEventsCollected = "EventsCollected"
+	ConditionComplete        = "Complete"
 )
 
 // +kubebuilder:object:root=true

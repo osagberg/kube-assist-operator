@@ -1285,6 +1285,235 @@ var _ = Describe("TroubleshootRequest Controller", func() {
 		})
 	})
 
+	Context("TTL cleanup for failed requests", func() {
+		const resourceName = "ttl-failed-tr"
+		ctx := context.Background()
+		nn := types.NamespacedName{Name: resourceName, Namespace: "default"}
+
+		AfterEach(func() {
+			tr := &assistv1alpha1.TroubleshootRequest{}
+			if err := k8sClient.Get(ctx, nn, tr); err == nil {
+				Expect(k8sClient.Delete(ctx, tr)).To(Succeed())
+			}
+		})
+
+		It("should delete a failed request when TTL has expired", func() {
+			tr := &assistv1alpha1.TroubleshootRequest{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      resourceName,
+					Namespace: "default",
+				},
+				Spec: assistv1alpha1.TroubleshootRequestSpec{
+					Target: assistv1alpha1.TargetRef{
+						Kind: "Deployment",
+						Name: "some-deploy",
+					},
+					TTLSecondsAfterFinished: ptr.To(int32(0)),
+				},
+			}
+			Expect(k8sClient.Create(ctx, tr)).To(Succeed())
+
+			// Set status to Failed with a past CompletedAt
+			fetched := &assistv1alpha1.TroubleshootRequest{}
+			Expect(k8sClient.Get(ctx, nn, fetched)).To(Succeed())
+			fetched.Status.Phase = assistv1alpha1.PhaseFailed
+			pastTime := metav1.NewTime(time.Now().Add(-1 * time.Minute))
+			fetched.Status.CompletedAt = &pastTime
+			Expect(k8sClient.Status().Update(ctx, fetched)).To(Succeed())
+
+			reconciler := &TroubleshootRequestReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Resource should be deleted
+			err = k8sClient.Get(ctx, nn, &assistv1alpha1.TroubleshootRequest{})
+			Expect(apierrors.IsNotFound(err)).To(BeTrue(), "expected failed resource to be deleted by TTL")
+		})
+
+		It("should requeue a failed request when TTL has not expired", func() {
+			tr := &assistv1alpha1.TroubleshootRequest{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      resourceName,
+					Namespace: "default",
+				},
+				Spec: assistv1alpha1.TroubleshootRequestSpec{
+					Target: assistv1alpha1.TargetRef{
+						Kind: "Deployment",
+						Name: "some-deploy",
+					},
+					TTLSecondsAfterFinished: ptr.To(int32(3600)),
+				},
+			}
+			Expect(k8sClient.Create(ctx, tr)).To(Succeed())
+
+			fetched := &assistv1alpha1.TroubleshootRequest{}
+			Expect(k8sClient.Get(ctx, nn, fetched)).To(Succeed())
+			fetched.Status.Phase = assistv1alpha1.PhaseFailed
+			now := metav1.Now()
+			fetched.Status.CompletedAt = &now
+			Expect(k8sClient.Status().Update(ctx, fetched)).To(Succeed())
+
+			reconciler := &TroubleshootRequestReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+
+			result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(BeNumerically(">", 0), "should requeue for later TTL check")
+
+			// Resource should still exist
+			Expect(k8sClient.Get(ctx, nn, &assistv1alpha1.TroubleshootRequest{})).To(Succeed())
+		})
+	})
+
+	Context("When using the describe action", func() {
+		const resourceName = "describe-action-tr"
+		const deployName = "describe-action-deploy"
+		ctx := context.Background()
+		nn := types.NamespacedName{Name: resourceName, Namespace: "default"}
+
+		BeforeEach(func() {
+			replicas := int32(1)
+			deploy := &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      deployName,
+					Namespace: "default",
+				},
+				Spec: appsv1.DeploymentSpec{
+					Replicas: &replicas,
+					Selector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{"app": "describe-action-app"},
+					},
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Labels: map[string]string{"app": "describe-action-app"},
+						},
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{Name: "app", Image: "nginx:latest"},
+							},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, deploy)).To(Succeed())
+
+			pod := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "describe-action-pod-1",
+					Namespace: "default",
+					Labels:    map[string]string{"app": "describe-action-app"},
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{Name: "app", Image: "nginx:latest"},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+			pod.Status = corev1.PodStatus{
+				Phase: corev1.PodRunning,
+				ContainerStatuses: []corev1.ContainerStatus{
+					{Name: "app", Ready: true},
+				},
+			}
+			Expect(k8sClient.Status().Update(ctx, pod)).To(Succeed())
+
+			tr := &assistv1alpha1.TroubleshootRequest{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      resourceName,
+					Namespace: "default",
+				},
+				Spec: assistv1alpha1.TroubleshootRequestSpec{
+					Target: assistv1alpha1.TargetRef{
+						Kind: "Deployment",
+						Name: deployName,
+					},
+					Actions: []assistv1alpha1.TroubleshootAction{assistv1alpha1.ActionDescribe},
+				},
+			}
+			Expect(k8sClient.Create(ctx, tr)).To(Succeed())
+		})
+
+		AfterEach(func() {
+			tr := &assistv1alpha1.TroubleshootRequest{}
+			if err := k8sClient.Get(ctx, nn, tr); err == nil {
+				_ = k8sClient.Delete(ctx, tr)
+			}
+			deploy := &appsv1.Deployment{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: deployName, Namespace: "default"}, deploy); err == nil {
+				_ = k8sClient.Delete(ctx, deploy)
+			}
+			pod := &corev1.Pod{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: "describe-action-pod-1", Namespace: "default"}, pod); err == nil {
+				_ = k8sClient.Delete(ctx, pod)
+			}
+			cm := &corev1.ConfigMap{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: resourceName + "-events", Namespace: "default"}, cm); err == nil {
+				_ = k8sClient.Delete(ctx, cm)
+			}
+		})
+
+		It("should complete and create events ConfigMap for describe action", func() {
+			reconciler := &TroubleshootRequestReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+				// Clientset nil — log collection will fail gracefully, but events uses controller-runtime client
+			}
+
+			result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal(reconcile.Result{}))
+
+			fetched := &assistv1alpha1.TroubleshootRequest{}
+			Expect(k8sClient.Get(ctx, nn, fetched)).To(Succeed())
+			Expect(fetched.Status.Phase).To(Equal(assistv1alpha1.PhaseCompleted))
+
+			// Describe triggers events collection
+			Expect(fetched.Status.EventsConfigMap).To(Equal(fmt.Sprintf("%s-events", resourceName)))
+
+			// Verify the events ConfigMap exists
+			cm := &corev1.ConfigMap{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      fetched.Status.EventsConfigMap,
+				Namespace: "default",
+			}, cm)).To(Succeed())
+			Expect(cm.Data).To(HaveKey("events"))
+		})
+	})
+
+	Context("When targeting an unsupported kind", func() {
+		It("should return an error from findTargetPods for unsupported target kind", func() {
+			reconciler := &TroubleshootRequestReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+
+			tr := &assistv1alpha1.TroubleshootRequest{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "unsupported-kind-tr",
+					Namespace: "default",
+				},
+				Spec: assistv1alpha1.TroubleshootRequestSpec{
+					Target: assistv1alpha1.TargetRef{
+						Kind: "CronJob",
+						Name: "some-cronjob",
+					},
+					Actions: []assistv1alpha1.TroubleshootAction{assistv1alpha1.ActionDiagnose},
+				},
+			}
+
+			_, err := reconciler.findTargetPods(ctx, tr)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("unsupported target kind"))
+		})
+	})
+
 	Context("Default kind behavior", func() {
 		const resourceName = "default-kind-tr"
 		const deployName = "default-kind-deploy"

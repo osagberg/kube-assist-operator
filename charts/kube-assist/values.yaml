@@ -58,6 +58,19 @@ operator:
   # Metrics bind address. Set to "0" to disable metrics.
   metricsBindAddress: ":8080"
 
+# Metrics service settings.
+metrics:
+  service:
+    # Enable a Service for the metrics endpoint (port 8080).
+    # Useful for Prometheus ServiceMonitor discovery.
+    enabled: false
+    # Service type: ClusterIP, NodePort, or LoadBalancer.
+    type: ClusterIP
+    # Service port (external).
+    port: 8080
+    # Annotations to add to the metrics service (e.g. for Prometheus scraping).
+    annotations: {}
+
 # Dashboard settings for the Team Health web UI.
 dashboard:
   # Enable the Team Health Dashboard web server.

@@ -146,6 +146,13 @@ func (p *PluginChecker) Check(ctx context.Context, checkCtx *checker.CheckContex
 				if err != nil {
 					log.Error(err, "CEL evaluation error",
 						"plugin", p.name, "rule", cc.rule.Name, "resource", item.GetName())
+					result.Issues = append(result.Issues, checker.Issue{
+						Type:      fmt.Sprintf("plugin:%s:eval-error", p.name),
+						Severity:  checker.SeverityWarning,
+						Resource:  fmt.Sprintf("%s/%s", gvr.Resource, item.GetName()),
+						Namespace: ns,
+						Message:   fmt.Sprintf("CEL rule %q evaluation failed: %v", cc.rule.Name, err),
+					})
 					continue
 				}
 

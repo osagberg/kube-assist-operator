@@ -80,7 +80,7 @@ func (r *TroubleshootRequestReconciler) Reconcile(ctx context.Context, req ctrl.
 			"namespace": req.Namespace,
 			"result":    "error",
 		}).Inc()
-		return ctrl.Result{}, err
+		return ctrl.Result{}, fmt.Errorf("failed to fetch TroubleshootRequest: %w", err)
 	}
 	// Save original for patch later
 	original := troubleshoot.DeepCopy()
@@ -144,11 +144,15 @@ func (r *TroubleshootRequestReconciler) Reconcile(ctx context.Context, req ctrl.
 	}
 
 	// Collect logs if requested
+	partialData := false
 	for _, action := range troubleshoot.Spec.Actions {
 		if action == assistv1alpha1.ActionLogs || action == assistv1alpha1.ActionAll || action == assistv1alpha1.ActionDescribe {
 			cmName, err := r.collectLogs(ctx, troubleshoot, pods)
 			if err != nil {
 				log.Error(err, "Failed to collect logs")
+				r.setCondition(troubleshoot, assistv1alpha1.ConditionLogsCollected, metav1.ConditionFalse,
+					"Failed", fmt.Sprintf("Log collection failed: %v", err))
+				partialData = true
 			} else {
 				troubleshoot.Status.LogsConfigMap = cmName
 				r.setCondition(troubleshoot, assistv1alpha1.ConditionLogsCollected, metav1.ConditionTrue,
@@ -164,8 +168,13 @@ func (r *TroubleshootRequestReconciler) Reconcile(ctx context.Context, req ctrl.
 			cmName, err := r.collectEvents(ctx, troubleshoot, pods)
 			if err != nil {
 				log.Error(err, "Failed to collect events")
+				r.setCondition(troubleshoot, assistv1alpha1.ConditionEventsCollected, metav1.ConditionFalse,
+					"Failed", fmt.Sprintf("Event collection failed: %v", err))
+				partialData = true
 			} else {
 				troubleshoot.Status.EventsConfigMap = cmName
+				r.setCondition(troubleshoot, assistv1alpha1.ConditionEventsCollected, metav1.ConditionTrue,
+					"Collected", "Events stored in ConfigMap")
 			}
 			break
 		}
@@ -174,6 +183,9 @@ func (r *TroubleshootRequestReconciler) Reconcile(ctx context.Context, req ctrl.
 	// Update status with findings
 	troubleshoot.Status.Issues = issues
 	troubleshoot.Status.Summary = r.generateSummary(pods, issues)
+	if partialData {
+		troubleshoot.Status.Summary += " (partial data)"
+	}
 	troubleshoot.Status.Phase = assistv1alpha1.PhaseCompleted
 	now := metav1.Now()
 	troubleshoot.Status.CompletedAt = &now
@@ -191,7 +203,7 @@ func (r *TroubleshootRequestReconciler) Reconcile(ctx context.Context, req ctrl.
 			"namespace": req.Namespace,
 			"result":    "error",
 		}).Inc()
-		return ctrl.Result{}, err
+		return ctrl.Result{}, fmt.Errorf("failed to patch TroubleshootRequest status: %w", err)
 	}
 
 	// Record success metric

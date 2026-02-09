@@ -184,7 +184,7 @@ func (r *CheckResult) EnhanceWithAI(ctx context.Context, checkCtx *CheckContext)
 	response, err := checkCtx.AIProvider.Analyze(ctx, sanitizedRequest)
 	if err != nil {
 		log.Error(err, "AI analysis failed", "provider", checkCtx.AIProvider.Name(), "issues", len(r.Issues))
-		return nil
+		return fmt.Errorf("AI analysis failed for %s: %w", checkCtx.AIProvider.Name(), err)
 	}
 
 	log.Info("AI analysis completed", "provider", checkCtx.AIProvider.Name(), "suggestions", len(response.EnhancedSuggestions), "tokens", response.TokensUsed)

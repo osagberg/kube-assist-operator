@@ -138,6 +138,17 @@ func (r *Registry) RunAll(ctx context.Context, checkCtx *CheckContext, names []s
 		wg.Add(1)
 		go func(checkerName string) {
 			defer wg.Done()
+			defer func() {
+				if rec := recover(); rec != nil {
+					resultsChan <- struct {
+						name   string
+						result *CheckResult
+					}{checkerName, &CheckResult{
+						CheckerName: checkerName,
+						Error:       fmt.Errorf("checker %q panicked: %v", checkerName, rec),
+					}}
+				}
+			}()
 
 			result, err := r.Run(ctx, checkerName, checkCtx)
 			if err != nil {
