@@ -33,7 +33,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -56,7 +56,7 @@ type TroubleshootRequestReconciler struct {
 
 	// Registry is the checker registry (optional, for future use)
 	Registry *checker.Registry
-	Recorder record.EventRecorder
+	Recorder events.EventRecorder
 }
 
 // +kubebuilder:rbac:groups=assist.cluster.local,resources=troubleshootrequests,verbs=get;list;watch;create;update;patch;delete
@@ -139,7 +139,7 @@ func (r *TroubleshootRequestReconciler) Reconcile(ctx context.Context, req ctrl.
 	r.setCondition(troubleshoot, assistv1alpha1.ConditionTargetFound, metav1.ConditionTrue,
 		"Found", fmt.Sprintf("Found %d pod(s)", len(pods)))
 	if r.Recorder != nil {
-		r.Recorder.Eventf(troubleshoot, corev1.EventTypeNormal, "TargetFound", "Found %d pod(s) for %s/%s", len(pods), troubleshoot.Spec.Target.Kind, troubleshoot.Spec.Target.Name)
+		r.Recorder.Eventf(troubleshoot, nil, corev1.EventTypeNormal, "TargetFound", "TargetFound", "Found %d pod(s) for %s/%s", len(pods), troubleshoot.Spec.Target.Kind, troubleshoot.Spec.Target.Name)
 	}
 
 	// Perform diagnostics
@@ -226,7 +226,7 @@ func (r *TroubleshootRequestReconciler) Reconcile(ctx context.Context, req ctrl.
 	r.updateIssuesMetrics(troubleshoot.Namespace, issues)
 
 	if r.Recorder != nil {
-		r.Recorder.Eventf(troubleshoot, corev1.EventTypeNormal, "TroubleshootCompleted", "Found %d issue(s)", len(issues))
+		r.Recorder.Eventf(troubleshoot, nil, corev1.EventTypeNormal, "TroubleshootCompleted", "TroubleshootCompleted", "Found %d issue(s)", len(issues))
 	}
 
 	log.Info("Troubleshooting completed", "issues", len(issues), "summary", troubleshoot.Status.Summary)
@@ -599,7 +599,7 @@ func (r *TroubleshootRequestReconciler) listEventsByTargets(
 	namespace string,
 	targetNames map[string]struct{},
 ) ([]corev1.Event, error) {
-	events := make([]corev1.Event, 0)
+	k8sEvents := make([]corev1.Event, 0)
 	seen := make(map[string]struct{})
 
 	for name := range targetNames {
@@ -619,21 +619,21 @@ func (r *TroubleshootRequestReconciler) listEventsByTargets(
 				continue
 			}
 			seen[key] = struct{}{}
-			events = append(events, event)
+			k8sEvents = append(k8sEvents, event)
 		}
 	}
 
-	return events, nil
+	return k8sEvents, nil
 }
 
-func filterRecentRelevantEvents(events []corev1.Event, targetNames map[string]struct{}, since time.Time) []string {
+func filterRecentRelevantEvents(k8sEvents []corev1.Event, targetNames map[string]struct{}, since time.Time) []string {
 	type eventRecord struct {
 		ts  time.Time
 		log string
 	}
-	records := make([]eventRecord, 0, len(events))
+	records := make([]eventRecord, 0, len(k8sEvents))
 
-	for _, event := range events {
+	for _, event := range k8sEvents {
 		if _, ok := targetNames[event.InvolvedObject.Name]; !ok {
 			continue
 		}
@@ -717,7 +717,7 @@ func (r *TroubleshootRequestReconciler) setFailed(ctx context.Context, original,
 	now := metav1.Now()
 	tr.Status.CompletedAt = &now
 	if r.Recorder != nil {
-		r.Recorder.Eventf(tr, corev1.EventTypeWarning, "TroubleshootFailed", "%s", message)
+		r.Recorder.Eventf(tr, nil, corev1.EventTypeWarning, "TroubleshootFailed", "TroubleshootFailed", "%s", message)
 	}
 
 	r.setCondition(tr, assistv1alpha1.ConditionComplete, metav1.ConditionFalse,

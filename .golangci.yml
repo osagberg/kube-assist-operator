@@ -40,13 +40,6 @@ linters:
           - dupl
           - lll
         path: internal/*
-      # SA1019: GetEventRecorderFor deprecated in favor of GetEventRecorder (events.EventRecorder).
-      # Migration requires changing all controller Recorder fields + call sites (different API signature).
-      # Tracked as future work item.
-      - linters:
-          - staticcheck
-        text: "SA1019: mgr.GetEventRecorderFor"
-        path: cmd/main\.go
     paths:
       - third_party$
       - builtin$

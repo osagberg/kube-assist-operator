@@ -363,7 +363,7 @@ func main() {
 		Scheme:    mgr.GetScheme(),
 		Clientset: clientset,
 		Registry:  registry,
-		Recorder:  mgr.GetEventRecorderFor("troubleshootrequest-controller"),
+		Recorder:  mgr.GetEventRecorder("troubleshootrequest-controller"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "TroubleshootRequest")
 		os.Exit(1)
@@ -378,7 +378,7 @@ func main() {
 		Correlator:       causal.NewCorrelator(),
 		NotifierRegistry: notifierRegistry,
 		NotifySem:        make(chan struct{}, notifySemCapacity),
-		Recorder:         mgr.GetEventRecorderFor("teamhealthrequest-controller"),
+		Recorder:         mgr.GetEventRecorder("teamhealthrequest-controller"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "TeamHealthRequest")
 		os.Exit(1)
@@ -387,7 +387,7 @@ func main() {
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
 		Registry: registry,
-		Recorder: mgr.GetEventRecorderFor("checkplugin-controller"),
+		Recorder: mgr.GetEventRecorder("checkplugin-controller"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "CheckPlugin")
 		os.Exit(1)

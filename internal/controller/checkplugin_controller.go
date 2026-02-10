@@ -24,7 +24,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -44,7 +44,7 @@ type CheckPluginReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
 	Registry *checker.Registry
-	Recorder record.EventRecorder
+	Recorder events.EventRecorder
 }
 
 // +kubebuilder:rbac:groups=assist.cluster.local,resources=checkplugins,verbs=get;list;watch;create;update;patch;delete
@@ -77,7 +77,7 @@ func (r *CheckPluginReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			log.Info("Unregistering plugin checker on deletion", "plugin", cp.Spec.DisplayName, "registryKey", registryKey)
 			r.Registry.Unregister("plugin:" + registryKey)
 			if r.Recorder != nil {
-				r.Recorder.Eventf(cp, corev1.EventTypeNormal, "PluginUnregistered", "Unregistered plugin checker %q", cp.Spec.DisplayName)
+				r.Recorder.Eventf(cp, nil, corev1.EventTypeNormal, "PluginUnregistered", "PluginUnregistered", "Unregistered plugin checker %q", cp.Spec.DisplayName)
 			}
 
 			controllerutil.RemoveFinalizer(cp, checkPluginFinalizer)
@@ -104,7 +104,7 @@ func (r *CheckPluginReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	if err != nil {
 		log.Error(err, "Failed to compile plugin checker", "plugin", cp.Spec.DisplayName, "registryKey", registryKey)
 		if r.Recorder != nil {
-			r.Recorder.Eventf(cp, corev1.EventTypeWarning, "CompilationFailed", "Failed to compile plugin %q: %s", cp.Spec.DisplayName, err.Error())
+			r.Recorder.Eventf(cp, nil, corev1.EventTypeWarning, "CompilationFailed", "CompilationFailed", "Failed to compile plugin %q: %s", cp.Spec.DisplayName, err.Error())
 		}
 		return r.updateStatus(ctx, cp, original, false, err.Error())
 	}
@@ -112,7 +112,7 @@ func (r *CheckPluginReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	r.Registry.Replace(pc)
 	log.Info("Registered plugin checker", "plugin", cp.Spec.DisplayName, "registryKey", registryKey, "rules", len(cp.Spec.Rules))
 	if r.Recorder != nil {
-		r.Recorder.Eventf(cp, corev1.EventTypeNormal, "PluginRegistered", "Registered plugin checker %q with %d rule(s)", cp.Spec.DisplayName, len(cp.Spec.Rules))
+		r.Recorder.Eventf(cp, nil, corev1.EventTypeNormal, "PluginRegistered", "PluginRegistered", "Registered plugin checker %q with %d rule(s)", cp.Spec.DisplayName, len(cp.Spec.Rules))
 	}
 
 	return r.updateStatus(ctx, cp, original, true, "")
