@@ -112,7 +112,7 @@ helm install kube-assist charts/kube-assist \
   --set dashboard.enabled=true
 
 # Using Kustomize
-make deploy IMG=ghcr.io/osagberg/kube-assist-operator:v1.11.1
+make deploy IMG=ghcr.io/osagberg/kube-assist-operator:v1.11.2
 ```
 
 ---
