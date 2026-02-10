@@ -112,7 +112,7 @@ helm install kube-assist charts/kube-assist \
   --set dashboard.enabled=true
 
 # Using Kustomize
-make deploy IMG=ghcr.io/osagberg/kube-assist-operator:v1.11.0
+make deploy IMG=ghcr.io/osagberg/kube-assist-operator:v1.11.1
 ```
 
 ---
@@ -584,14 +584,16 @@ helm install kube-assist charts/kube-assist \
 | `dashboard.tls.enabled` | `false` | Enable TLS for dashboard HTTPS |
 | `dashboard.tls.secretName` | `""` | Secret with tls.crt and tls.key |
 | `networkPolicy.enabled` | `true` | Enable network policy |
-| `networkPolicy.ingressMode` | `permissive` | Ingress mode: permissive or strict |
+| `networkPolicy.ingressMode` | `strict` | Ingress mode: permissive or strict |
 | `networkPolicy.dnsMode` | `kube-system` | DNS egress: all or kube-system |
 | `networkPolicy.consoleEgress.cidr` | `""` | Console backend egress CIDR (**required** when datasource.type=console; chart fails if empty) |
 | `networkPolicy.consoleEgress.port` | `443` | Console backend egress port |
 | `datasource.type` | `kubernetes` | DataSource backend: kubernetes or console |
 | `datasource.consoleURL` | `""` | Console backend URL (required when type=console) |
 | `datasource.clusterID` | `""` | Cluster identifier for console backend |
-| `datasource.consoleBearerToken` | `""` | Bearer token for console backend auth |
+| `datasource.bearerToken` | `""` | Bearer token for console backend auth (if empty, no Authorization header is sent) |
+| `datasource.bearerTokenSecretRef.name` | `""` | Secret containing the bearer token (takes precedence over bearerToken) |
+| `datasource.bearerTokenSecretRef.key` | `"bearer-token"` | Key within the secret |
 
 ### Console Backend Standalone Flags
 

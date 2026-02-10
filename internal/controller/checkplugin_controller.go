@@ -52,10 +52,9 @@ type CheckPluginReconciler struct {
 // +kubebuilder:rbac:groups=assist.cluster.local,resources=checkplugins/finalizers,verbs=update
 //
 // NOTE: CheckPlugin targets user-defined GVRs (spec.targetResource) and may
-// need read access to arbitrary resource types. For broad access, enable
-// checkPlugin.broadRBAC in the Helm chart — which adds a separate ClusterRole
-// with groups="*",resources="*",verbs=get;list;watch. The default generated
-// RBAC does NOT include wildcard permissions.
+// need read access to arbitrary resource types. CheckPlugin checkers are
+// limited to the resources listed in the manager ClusterRole. Users who need
+// broader access should add custom RBAC rules for the manager ServiceAccount.
 
 func (r *CheckPluginReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)

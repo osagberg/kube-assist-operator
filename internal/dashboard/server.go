@@ -383,7 +383,7 @@ func (s *Server) Start(ctx context.Context) error {
 	} else {
 		fileServer := http.FileServer(http.FS(spaFS))
 
-		// Read index.html once at startup for token injection
+		// Read index.html once at startup for session cookie injection
 		indexHTML, readErr := fs.ReadFile(spaFS, "index.html")
 		if readErr != nil {
 			log.Error(readErr, "Failed to read index.html from embedded assets")
