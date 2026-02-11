@@ -141,6 +141,10 @@ type AnalysisResponse struct {
 	// Summary provides an overall analysis summary
 	Summary string `json:"summary,omitempty"`
 
+	// RawContent is the unprocessed AI response text, preserved for
+	// callers (like explain mode) that need to re-parse with a different schema.
+	RawContent string `json:"-"`
+
 	// TokensUsed tracks token consumption (if available)
 	TokensUsed int `json:"tokensUsed,omitempty"`
 }
@@ -294,7 +298,7 @@ func ParseResponse(content string, tokensUsed int, providerName string) *Analysi
 		Summary        string                        `json:"summary"`
 	}
 
-	cleaned := extractJSON(content)
+	cleaned := fixInvalidJSONEscapes(extractJSON(content))
 	if err := json.Unmarshal([]byte(cleaned), &result); err != nil {
 		preview := content
 		if len(preview) > 200 {
@@ -304,6 +308,7 @@ func ParseResponse(content string, tokensUsed int, providerName string) *Analysi
 		return &AnalysisResponse{
 			EnhancedSuggestions: make(map[string]EnhancedSuggestion),
 			Summary:             content,
+			RawContent:          content,
 			TokensUsed:          tokensUsed,
 		}
 	}
@@ -348,6 +353,7 @@ func ParseResponse(content string, tokensUsed int, providerName string) *Analysi
 		EnhancedSuggestions: result.Suggestions,
 		CausalInsights:      result.CausalInsights,
 		Summary:             result.Summary,
+		RawContent:          content,
 		TokensUsed:          tokensUsed,
 	}
 }
@@ -431,7 +437,7 @@ Respond with a JSON object containing:
 func ParseExplainResponse(content string, tokensUsed int) *ExplainResponse {
 	var result ExplainResponse
 
-	cleaned := extractJSON(content)
+	cleaned := fixInvalidJSONEscapes(extractJSON(content))
 	if err := json.Unmarshal([]byte(cleaned), &result); err != nil {
 		// On parse failure, return a response with just the narrative set to the raw content
 		return &ExplainResponse{

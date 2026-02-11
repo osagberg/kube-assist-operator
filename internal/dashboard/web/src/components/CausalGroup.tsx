@@ -35,6 +35,7 @@ interface Props {
 
 export function CausalGroupCard({ group }: Props) {
   const [expanded, setExpanded] = useState(false)
+  const events = Array.isArray(group.events) ? group.events : []
   const pillClass = severityPills[group.severity] ?? severityPills.Info
   const pillText = severityLabels[group.severity] ?? 'IN'
   const ruleLabel = ruleLabels[group.rule] ?? group.rule
@@ -63,7 +64,7 @@ export function CausalGroupCard({ group }: Props) {
                 {Math.round(group.confidence * 100)}% confidence
               </span>
               <span className="text-xs" style={{ color: 'var(--text-tertiary)' }}>
-                {group.events.length} issues
+                {events.length} issues
               </span>
             </div>
           </div>
@@ -114,7 +115,7 @@ export function CausalGroupCard({ group }: Props) {
               </ol>
             </div>
           )}
-          {group.events.map((event, i) => (
+          {events.map((event, i) => (
             <div
               key={`${event.checker}-${event.issue.resource}-${i}`}
               className="text-xs glass-inset rounded-lg px-3 py-2 flex items-start gap-2"

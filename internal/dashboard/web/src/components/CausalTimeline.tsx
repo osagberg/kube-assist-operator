@@ -5,6 +5,7 @@ import { CausalGroupCard } from './CausalGroup'
 export function CausalTimeline({ clusterId }: { clusterId?: string }) {
   const { data, loading, error } = useCausal(clusterId)
   const [collapsed, setCollapsed] = useState(false)
+  const groups = data?.groups ?? []
 
   if (loading) {
     return (
@@ -26,7 +27,7 @@ export function CausalTimeline({ clusterId }: { clusterId?: string }) {
     )
   }
 
-  if (!data || data.groups.length === 0) {
+  if (!data || groups.length === 0) {
     return (
       <div className="glass-panel rounded-xl p-6">
         <h2 className="text-sm font-semibold mb-4" style={{ color: 'var(--text-secondary)' }}>Causal Analysis</h2>
@@ -37,7 +38,7 @@ export function CausalTimeline({ clusterId }: { clusterId?: string }) {
     )
   }
 
-  const aiGroupCount = data.groups.filter((g) => g.aiEnhanced).length
+  const aiGroupCount = groups.filter((g) => g.aiEnhanced).length
 
   return (
     <div className="glass-panel rounded-xl p-6">
@@ -48,7 +49,7 @@ export function CausalTimeline({ clusterId }: { clusterId?: string }) {
       >
         <h2 className="text-sm font-semibold" style={{ color: 'var(--text-secondary)' }}>Causal Analysis</h2>
         <div className="flex items-center gap-3 text-xs" style={{ color: 'var(--text-tertiary)' }}>
-          <span>{data.groups.length} group{data.groups.length !== 1 ? 's' : ''}</span>
+          <span>{groups.length} group{groups.length !== 1 ? 's' : ''}</span>
           <span>{data.totalIssues} total issues</span>
           {data.uncorrelatedCount > 0 && (
             <span>{data.uncorrelatedCount} uncorrelated</span>
@@ -70,7 +71,7 @@ export function CausalTimeline({ clusterId }: { clusterId?: string }) {
       </button>
       {!collapsed && (
         <div className="space-y-3 mt-4">
-          {data.groups.map((group) => (
+          {groups.map((group) => (
             <CausalGroupCard key={group.id} group={group} />
           ))}
         </div>

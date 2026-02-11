@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -218,6 +219,15 @@ func extractJSON(content string) string {
 		return strings.TrimSpace(content[start:])
 	}
 	return content
+}
+
+// fixInvalidJSONEscapes replaces backslash sequences that are not valid JSON
+// escapes (e.g. \. \' \:) with the literal character, which LLMs sometimes produce.
+// Valid JSON escapes: \" \\ \/ \b \f \n \r \t \uXXXX
+var invalidEscapeRe = regexp.MustCompile(`\\([^"\\/bfnrtu])`)
+
+func fixInvalidJSONEscapes(s string) string {
+	return invalidEscapeRe.ReplaceAllString(s, "$1")
 }
 
 const systemPrompt = `You are a Kubernetes troubleshooting expert. You analyze health check issues from Kubernetes clusters and provide actionable suggestions.

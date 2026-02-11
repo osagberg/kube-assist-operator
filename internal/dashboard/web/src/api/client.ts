@@ -41,6 +41,33 @@ export function normalizeHealth(data: HealthUpdate): HealthUpdate {
   return data
 }
 
+/** Normalize Go nil slices (JSON null) to empty arrays for causal context */
+function normalizeCausal(data: CausalContext): CausalContext {
+  if (!data) {
+    return { groups: [], uncorrelatedCount: 0, totalIssues: 0 }
+  }
+  if (!data.groups) {
+    data.groups = []
+  }
+  for (const group of data.groups) {
+    if (!group.events) {
+      group.events = []
+    }
+  }
+  return data
+}
+
+/** Normalize Go nil slices (JSON null) to empty arrays for fleet summary */
+function normalizeFleet(data: FleetSummary): FleetSummary {
+  if (!data) {
+    return { clusters: [] }
+  }
+  if (!data.clusters) {
+    data.clusters = []
+  }
+  return data
+}
+
 async function json<T>(url: string, init?: RequestInit): Promise<T> {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), 30_000)
@@ -64,7 +91,7 @@ export async function fetchHealth(clusterId?: string): Promise<HealthUpdate> {
 
 /** GET /api/fleet/summary — aggregate fleet health */
 export function fetchFleetSummary(): Promise<FleetSummary> {
-  return json<FleetSummary>(`${BASE}/fleet/summary`)
+  return json<FleetSummary>(`${BASE}/fleet/summary`).then(normalizeFleet)
 }
 
 /** POST /api/check — trigger immediate health check */
@@ -105,7 +132,7 @@ export function fetchHealthHistory(params?: { last?: number; since?: string; clu
   if (params?.last) url.searchParams.set('last', String(params.last))
   if (params?.since) url.searchParams.set('since', params.since)
   if (params?.clusterId) url.searchParams.set('clusterId', params.clusterId)
-  return json<HealthSnapshot[]>(url.toString())
+  return json<HealthSnapshot[]>(url.toString()).then((d) => d ?? [])
 }
 
 /** GET /api/causal/groups — causal correlation analysis */
@@ -113,7 +140,7 @@ export function fetchCausalGroups(clusterId?: string): Promise<CausalContext> {
   const url = clusterId
     ? `${BASE}/causal/groups?clusterId=${encodeURIComponent(clusterId)}`
     : `${BASE}/causal/groups`
-  return json<CausalContext>(url)
+  return json<CausalContext>(url).then(normalizeCausal)
 }
 
 /** GET /api/explain — AI-generated cluster health explanation */

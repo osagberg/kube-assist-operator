@@ -368,6 +368,9 @@ func TestNewServer(t *testing.T) {
 	if server.clients == nil {
 		t.Error("NewServer() clients map is nil")
 	}
+	if server.clusterWorkers != defaultClusterWorkers {
+		t.Errorf("NewServer() clusterWorkers = %d, want %d", server.clusterWorkers, defaultClusterWorkers)
+	}
 }
 
 func TestHealthUpdate_JSON(t *testing.T) {
@@ -1749,6 +1752,9 @@ func newTestServerWithWriter(t *testing.T) *Server {
 
 const testTargetName = "my-app"
 
+// testInvalidKeyBody is a JSON body with a key that doesn't match namespace/resource/type format.
+const testInvalidKeyBody = `{"key":"just-a-string"}`
+
 func TestHandleCreateTroubleshoot_Success(t *testing.T) {
 	server := newTestServerWithWriter(t)
 
@@ -2684,7 +2690,7 @@ func TestServer_HandleIssueAcknowledge_InvalidKeyFormat(t *testing.T) {
 	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
 
 	// Missing namespace/resource/type structure
-	body := `{"key":"just-a-string"}`
+	body := testInvalidKeyBody
 	req := httptest.NewRequest(http.MethodPost, "/api/issues/acknowledge", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
@@ -3203,21 +3209,25 @@ func TestServer_HandlePostAISettings_BodySizeLimit(t *testing.T) {
 	registry := checker.NewRegistry()
 	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
 
-	// Create a body larger than maxSettingsBodySize (1 MB)
-	oversized := make([]byte, 2<<20) // 2 MB
-	for i := range oversized {
-		oversized[i] = 'x'
+	// Build valid JSON that exceeds maxSettingsBodySize (1 MB)
+	var buf bytes.Buffer
+	buf.WriteString(`{"provider":"`)
+	padding := make([]byte, 2<<20) // 2 MB of padding
+	for i := range padding {
+		padding[i] = 'a'
 	}
+	buf.Write(padding)
+	buf.WriteString(`"}`)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/settings/ai", bytes.NewReader(oversized))
+	req := httptest.NewRequest(http.MethodPost, "/api/settings/ai", &buf)
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
 
 	server.handleAISettings(rr, req)
 
-	if rr.Code != http.StatusBadRequest {
+	if rr.Code != http.StatusRequestEntityTooLarge {
 		t.Errorf("POST with oversized body: status = %d, want %d; body = %s",
-			rr.Code, http.StatusBadRequest, rr.Body.String())
+			rr.Code, http.StatusRequestEntityTooLarge, rr.Body.String())
 	}
 }
 
@@ -3555,6 +3565,38 @@ func TestServer_ParseSessionTTL_Negative(t *testing.T) {
 	}
 }
 
+func TestServer_ParseClusterWorkers_Default(t *testing.T) {
+	t.Setenv("DASHBOARD_CLUSTER_WORKERS", "")
+	n := parseClusterWorkers()
+	if n != defaultClusterWorkers {
+		t.Errorf("expected %d, got %d", defaultClusterWorkers, n)
+	}
+}
+
+func TestServer_ParseClusterWorkers_Custom(t *testing.T) {
+	t.Setenv("DASHBOARD_CLUSTER_WORKERS", "8")
+	n := parseClusterWorkers()
+	if n != 8 {
+		t.Errorf("expected 8, got %d", n)
+	}
+}
+
+func TestServer_ParseClusterWorkers_Invalid(t *testing.T) {
+	t.Setenv("DASHBOARD_CLUSTER_WORKERS", "not-a-number")
+	n := parseClusterWorkers()
+	if n != defaultClusterWorkers {
+		t.Errorf("expected default %d for invalid value, got %d", defaultClusterWorkers, n)
+	}
+}
+
+func TestServer_ParseClusterWorkers_Zero(t *testing.T) {
+	t.Setenv("DASHBOARD_CLUSTER_WORKERS", "0")
+	n := parseClusterWorkers()
+	if n != defaultClusterWorkers {
+		t.Errorf("expected default %d for zero, got %d", defaultClusterWorkers, n)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Batch 3: Rate limiter tests
 // ---------------------------------------------------------------------------
@@ -3677,5 +3719,242 @@ func TestServer_Capabilities_RequiresAuth(t *testing.T) {
 
 	if rr.Code != http.StatusUnauthorized {
 		t.Errorf("expected 401 without auth, got %d", rr.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Batch 7: Request-body hardening tests
+// ---------------------------------------------------------------------------
+
+func TestHandlePostTroubleshoot_OversizedBody(t *testing.T) {
+	server := newTestServerWithWriter(t)
+
+	// Build valid JSON that exceeds maxMutatingBodySize (1 MB)
+	var buf bytes.Buffer
+	buf.WriteString(`{"namespace":"`)
+	padding := make([]byte, 2<<20) // 2 MB of padding
+	for i := range padding {
+		padding[i] = 'a'
+	}
+	buf.Write(padding)
+	buf.WriteString(`"}`)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/troubleshoot", &buf)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	server.handleCreateTroubleshoot(rr, req)
+
+	if rr.Code != http.StatusRequestEntityTooLarge {
+		t.Errorf("POST /api/troubleshoot with oversized body: status = %d, want %d; body = %s",
+			rr.Code, http.StatusRequestEntityTooLarge, rr.Body.String())
+	}
+}
+
+func TestHandlePostTroubleshoot_UnknownField(t *testing.T) {
+	server := newTestServerWithWriter(t)
+
+	body := `{"namespace":"default","target":{"kind":"Deployment","name":"my-app"},"actions":["diagnose"],"evil":"injected"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/troubleshoot", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	server.handleCreateTroubleshoot(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("POST /api/troubleshoot with unknown field: status = %d, want %d; body = %s",
+			rr.Code, http.StatusBadRequest, rr.Body.String())
+	}
+}
+
+func TestHandlePostTroubleshoot_TrailingToken(t *testing.T) {
+	server := newTestServerWithWriter(t)
+
+	body := `{"namespace":"default","target":{"kind":"Deployment","name":"my-app"}}{"extra":"data"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/troubleshoot", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	server.handleCreateTroubleshoot(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("POST /api/troubleshoot with trailing token: status = %d, want %d; body = %s",
+			rr.Code, http.StatusBadRequest, rr.Body.String())
+	}
+}
+
+func TestServer_HandleIssueAcknowledge_POST_OversizedBody(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	// Build valid JSON that exceeds maxMutatingBodySize (1 MB)
+	var buf bytes.Buffer
+	buf.WriteString(`{"key":"`)
+	padding := make([]byte, 2<<20)
+	for i := range padding {
+		padding[i] = 'a'
+	}
+	buf.Write(padding)
+	buf.WriteString(`"}`)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/issues/acknowledge", &buf)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	server.handleIssueAcknowledge(rr, req)
+
+	if rr.Code != http.StatusRequestEntityTooLarge {
+		t.Errorf("POST /api/issues/acknowledge with oversized body: status = %d, want %d; body = %s",
+			rr.Code, http.StatusRequestEntityTooLarge, rr.Body.String())
+	}
+}
+
+func TestServer_HandleIssueAcknowledge_POST_UnknownField(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	body := `{"key":"default/my-app/HighRestarts","reason":"investigating","evil":"injected"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/issues/acknowledge", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	server.handleIssueAcknowledge(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("POST /api/issues/acknowledge with unknown field: status = %d, want %d; body = %s",
+			rr.Code, http.StatusBadRequest, rr.Body.String())
+	}
+}
+
+func TestServer_HandleIssueSnooze_POST_OversizedBody(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	// Build valid JSON that exceeds maxMutatingBodySize (1 MB)
+	var buf bytes.Buffer
+	buf.WriteString(`{"key":"`)
+	padding := make([]byte, 2<<20)
+	for i := range padding {
+		padding[i] = 'a'
+	}
+	buf.Write(padding)
+	buf.WriteString(`"}`)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/issues/snooze", &buf)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	server.handleIssueSnooze(rr, req)
+
+	if rr.Code != http.StatusRequestEntityTooLarge {
+		t.Errorf("POST /api/issues/snooze with oversized body: status = %d, want %d; body = %s",
+			rr.Code, http.StatusRequestEntityTooLarge, rr.Body.String())
+	}
+}
+
+func TestServer_HandleIssueSnooze_POST_UnknownField(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	body := `{"key":"default/my-app/HighRestarts","duration":"1h","evil":"injected"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/issues/snooze", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	server.handleIssueSnooze(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("POST /api/issues/snooze with unknown field: status = %d, want %d; body = %s",
+			rr.Code, http.StatusBadRequest, rr.Body.String())
+	}
+}
+
+func TestServer_HandleIssueAcknowledge_DELETE_InvalidKeyFormat(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	body := testInvalidKeyBody
+	req := httptest.NewRequest(http.MethodDelete, "/api/issues/acknowledge", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	server.handleIssueAcknowledge(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("DELETE /api/issues/acknowledge with invalid key format: status = %d, want %d; body = %s",
+			rr.Code, http.StatusBadRequest, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "namespace/resource/type") {
+		t.Errorf("expected error message about key format, got: %s", rr.Body.String())
+	}
+}
+
+func TestServer_HandleIssueSnooze_DELETE_InvalidKeyFormat(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	body := testInvalidKeyBody
+	req := httptest.NewRequest(http.MethodDelete, "/api/issues/snooze", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	server.handleIssueSnooze(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("DELETE /api/issues/snooze with invalid key format: status = %d, want %d; body = %s",
+			rr.Code, http.StatusBadRequest, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "namespace/resource/type") {
+		t.Errorf("expected error message about key format, got: %s", rr.Body.String())
+	}
+}
+
+func TestServer_HandlePostAISettings_UnknownField(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	body := `{"enabled":true,"provider":"noop","evil":"injected"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/settings/ai", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	server.handleAISettings(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("POST /api/settings/ai with unknown field: status = %d, want %d; body = %s",
+			rr.Code, http.StatusBadRequest, rr.Body.String())
+	}
+}
+
+func TestServer_HandlePostAISettings_TrailingToken(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	body := `{"enabled":true,"provider":"noop"}{"extra":"data"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/settings/ai", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	server.handleAISettings(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("POST /api/settings/ai with trailing token: status = %d, want %d; body = %s",
+			rr.Code, http.StatusBadRequest, rr.Body.String())
 	}
 }

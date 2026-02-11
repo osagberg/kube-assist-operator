@@ -23,6 +23,7 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"net/http"
@@ -202,6 +203,7 @@ type Server struct {
 	aiEnabled         bool
 	aiConfig          ai.Config
 	checkTimeout      time.Duration
+	clusterWorkers    int
 	correlator        *causal.Correlator
 	k8sWriter         client.Client // optional: for creating TroubleshootRequest CRs
 	scheme            *runtime.Scheme
@@ -227,6 +229,7 @@ func NewServer(ds datasource.DataSource, registry *checker.Registry, addr string
 		allowInsecureHTTP: parseBoolEnv("DASHBOARD_ALLOW_INSECURE_HTTP"),
 		aiConfig:          ai.DefaultConfig(),
 		checkTimeout:      2 * time.Minute,
+		clusterWorkers:    parseClusterWorkers(),
 		correlator:        causal.NewCorrelator(),
 		clients:           make(map[chan HealthUpdate]string),
 		clusters:          make(map[string]*clusterState),
@@ -276,8 +279,9 @@ func parseSessionTTL() time.Duration {
 }
 
 const (
-	defaultRateLimit = 10 // requests per second
-	defaultRateBurst = 20
+	defaultRateLimit      = 10 // requests per second
+	defaultRateBurst      = 20
+	defaultClusterWorkers = 4
 )
 
 func newMutationLimiter() *rate.Limiter {
@@ -294,6 +298,19 @@ func newMutationLimiter() *rate.Limiter {
 		}
 	}
 	return rate.NewLimiter(rate.Limit(rps), burst)
+}
+
+func parseClusterWorkers() int {
+	v := strings.TrimSpace(os.Getenv("DASHBOARD_CLUSTER_WORKERS"))
+	if v == "" {
+		return defaultClusterWorkers
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n <= 0 {
+		log.Info("Invalid DASHBOARD_CLUSTER_WORKERS, using default", "value", v, "default", defaultClusterWorkers)
+		return defaultClusterWorkers
+	}
+	return n
 }
 
 // rateLimitMiddleware wraps a handler with token-bucket rate limiting on mutating methods.
@@ -785,9 +802,31 @@ func (s *Server) runCheck(ctx context.Context) {
 			log.Error(err, "Failed to get clusters")
 			clusters = []string{cds.ClusterID()}
 		}
-		for _, clusterID := range clusters {
-			s.runCheckForCluster(ctx, clusterID, cds.ForCluster(clusterID))
+		if len(clusters) == 0 {
+			return
 		}
+		workers := s.clusterWorkers
+		if workers <= 0 {
+			workers = 1
+		}
+		if workers > len(clusters) {
+			workers = len(clusters)
+		}
+		// Run per-cluster checks concurrently to reduce end-to-end fleet latency.
+		sem := make(chan struct{}, workers)
+		var wg sync.WaitGroup
+		for _, clusterID := range clusters {
+			wg.Go(func() {
+				select {
+				case sem <- struct{}{}:
+				case <-ctx.Done():
+					return
+				}
+				defer func() { <-sem }()
+				s.runCheckForCluster(ctx, clusterID, cds.ForCluster(clusterID))
+			})
+		}
+		wg.Wait()
 	} else {
 		s.runCheckForCluster(ctx, "", s.client)
 	}
@@ -1301,10 +1340,8 @@ const (
 
 // handlePostAISettings updates AI configuration at runtime
 func (s *Server) handlePostAISettings(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, maxSettingsBodySize)
 	var req AISettingsRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid JSON body", http.StatusBadRequest)
+	if !decodeJSONBody(w, r, maxSettingsBodySize, &req) {
 		return
 	}
 
@@ -1679,7 +1716,7 @@ func (s *Server) handleExplain(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Parse the response
-	explainResp := ai.ParseExplainResponse(analysisResp.Summary, analysisResp.TokensUsed)
+	explainResp := ai.ParseExplainResponse(analysisResp.RawContent, analysisResp.TokensUsed)
 
 	// Cache the result
 	s.mu.Lock()
@@ -1897,8 +1934,7 @@ func (s *Server) handlePostTroubleshoot(w http.ResponseWriter, r *http.Request) 
 	}
 
 	var body CreateTroubleshootBody
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, "Invalid JSON body", http.StatusBadRequest)
+	if !decodeJSONBody(w, r, maxMutatingBodySize, &body) {
 		return
 	}
 
@@ -2048,6 +2084,37 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// maxMutatingBodySize is the default body-size limit for mutating JSON endpoints.
+const maxMutatingBodySize = 1 << 20 // 1 MB
+
+// decodeJSONBody applies MaxBytesReader, strict JSON decoding, and trailing-token
+// rejection. Returns true on success, false if an error response was already written.
+func decodeJSONBody(w http.ResponseWriter, r *http.Request, maxBytes int64, dst any) bool { //nolint:unparam // maxBytes varies by design; callers currently share the same default
+	r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(dst); err != nil {
+		if isMaxBytesError(err) {
+			http.Error(w, "Request body too large", http.StatusRequestEntityTooLarge)
+		} else {
+			http.Error(w, "Invalid JSON body", http.StatusBadRequest)
+		}
+		return false
+	}
+	// Reject trailing tokens (e.g. `{"key":"v"}{"extra":"data"}`)
+	if dec.More() {
+		http.Error(w, "Invalid JSON body", http.StatusBadRequest)
+		return false
+	}
+	return true
+}
+
+// isMaxBytesError checks whether err (or any wrapped error) is a *http.MaxBytesError.
+func isMaxBytesError(err error) bool {
+	var mbe *http.MaxBytesError
+	return errors.As(err, &mbe)
+}
+
 // Input limits for issue state keys.
 const (
 	maxIssueKeyLen    = 512
@@ -2082,8 +2149,7 @@ func (s *Server) handleIssueAcknowledge(w http.ResponseWriter, r *http.Request) 
 			Key    string `json:"key"`
 			Reason string `json:"reason,omitempty"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "Invalid JSON body", http.StatusBadRequest)
+		if !decodeJSONBody(w, r, maxMutatingBodySize, &req) {
 			return
 		}
 		if err := validateIssueKey(req.Key); err != nil {
@@ -2112,12 +2178,11 @@ func (s *Server) handleIssueAcknowledge(w http.ResponseWriter, r *http.Request) 
 		var req struct {
 			Key string `json:"key"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "Invalid JSON body", http.StatusBadRequest)
+		if !decodeJSONBody(w, r, maxMutatingBodySize, &req) {
 			return
 		}
-		if req.Key == "" {
-			http.Error(w, "key is required", http.StatusBadRequest)
+		if err := validateIssueKey(req.Key); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 		s.mu.Lock()
@@ -2145,8 +2210,7 @@ func (s *Server) handleIssueSnooze(w http.ResponseWriter, r *http.Request) {
 			Duration string `json:"duration"`
 			Reason   string `json:"reason,omitempty"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "Invalid JSON body", http.StatusBadRequest)
+		if !decodeJSONBody(w, r, maxMutatingBodySize, &req) {
 			return
 		}
 		if err := validateIssueKey(req.Key); err != nil {
@@ -2194,12 +2258,11 @@ func (s *Server) handleIssueSnooze(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Key string `json:"key"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "Invalid JSON body", http.StatusBadRequest)
+		if !decodeJSONBody(w, r, maxMutatingBodySize, &req) {
 			return
 		}
-		if req.Key == "" {
-			http.Error(w, "key is required", http.StatusBadRequest)
+		if err := validateIssueKey(req.Key); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 		s.mu.Lock()

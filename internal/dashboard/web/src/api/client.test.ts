@@ -175,3 +175,39 @@ describe('unsnoozeIssue', () => {
     expect(url).toBe('/api/issues/snooze?clusterId=staging')
   })
 })
+
+describe('response normalization', () => {
+  let fetchSpy: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    vi.resetModules()
+    fetchSpy = vi.fn()
+    vi.stubGlobal('fetch', fetchSpy)
+    vi.stubGlobal('AbortController', class {
+      signal = {}
+      abort() {}
+    })
+  })
+
+  it('normalizes causal groups null to []', async () => {
+    fetchSpy.mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ groups: null, totalIssues: 0, uncorrelatedCount: 0 }),
+    })
+
+    const { fetchCausalGroups } = await import('./client')
+    const data = await fetchCausalGroups('cluster-a')
+    expect(data.groups).toEqual([])
+  })
+
+  it('normalizes fleet clusters null to []', async () => {
+    fetchSpy.mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ clusters: null }),
+    })
+
+    const { fetchFleetSummary } = await import('./client')
+    const data = await fetchFleetSummary()
+    expect(data.clusters).toEqual([])
+  })
+})

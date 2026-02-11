@@ -5,288 +5,89 @@
 [![Go Version](https://img.shields.io/badge/Go-1.25+-00ADD8?style=flat&logo=go)](https://go.dev/)
 [![Kubernetes](https://img.shields.io/badge/Kubernetes-1.25+-326CE5?style=flat&logo=kubernetes)](https://kubernetes.io/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![gosec](https://img.shields.io/badge/gosec-0_findings-success?style=flat)](https://github.com/securego/gosec)
-[![govulncheck](https://img.shields.io/badge/govulncheck-0_vulnerabilities-success?style=flat)](https://pkg.go.dev/golang.org/x/vuln/cmd/govulncheck)
 
-**Kubernetes diagnostics that tell you *why* things break and *how* to fix them.**
+KubeAssist is a Kubernetes operator and CLI for cluster diagnostics.
 
-Deploy the operator, get instant visibility into workload failures, certificate expiration, resource quotas, Flux GitOps status, and more. Every issue comes with copy-able `kubectl` commands, root cause analysis, and optional AI-enhanced suggestions -- all from a single binary with zero external dependencies.
+It combines health checks, troubleshooting workflows, causal correlation, and optional AI-assisted explanations into one deployable system, with a built-in dashboard.
 
 ![KubeAssist Dashboard](docs/dashboard-overview.png)
-*Full dashboard showing health ring, severity pills, health history chart, collapsible causal analysis with AI-enhanced groups, and pipeline progress indicator.*
 
----
+## What KubeAssist Does
 
-## Why KubeAssist?
-
-Most monitoring tools tell you *what* is broken. KubeAssist tells you *why* and *how to fix it*.
-
-- **Zero-config value** -- deploy the operator and get immediate health insights with no setup required
-- **8 built-in + custom plugin checkers** -- full-stack coverage across workloads, secrets, storage, quotas, network policies, and Flux GitOps, plus user-defined CEL-based checks via `CheckPlugin` CRD
-- **Actionable remediation** -- every issue includes copy-able `kubectl` commands, root causes, and links to upstream documentation
-- **Causal analysis engine** -- 4 cross-checker rules with confidence scoring, temporal correlation, and resource graph ownership chains to surface the *real* root cause
-- **AI-enhanced diagnostics** -- optional Anthropic (Claude) or OpenAI integration for context-aware root cause analysis, configurable at runtime from the dashboard, with "Explain This Cluster" narrative mode
-- **Frosted glass dashboard** -- modern React 19 SPA with dark/light themes, severity pills for colorblind accessibility, collapsible sections, and a pipeline progress indicator
-- **GitOps-native** -- first-class Flux CD integration with graceful degradation when Flux is not installed
-- **Predictive health** -- linear regression trend analysis on health history with projected scores, velocity detection, and risky checker identification
-- **Enterprise patterns** -- DataSource abstraction, pluggable notifiers, webhook validation, TTL cleanup, leader election, bounded concurrency
-- **Single binary** -- dashboard, API, operator, and CLI all compile into one Go binary (~29K lines of code: 27K Go + 2K TypeScript)
-
----
-
-## Screenshots
-
-<table>
-<tr>
-<td width="50%">
-
-**Dashboard Overview**
-
-![Dashboard Overview](docs/dashboard-overview.png)
-
-Health ring at 19%, severity pills (OK 15, CR 6, WR 28, IN 28), health history chart, collapsible causal analysis with AI-enhanced groups, and the pipeline progress indicator showing checker/causal/AI stages.
-
-</td>
-<td width="50%">
-
-**AI Settings**
-
-![AI Settings Modal](docs/dashboard-ai-settings.png)
-
-AI Settings modal with provider selection (Anthropic, OpenAI, NoOp), API key input, model picker, and "Provider ready" indicator. Saving settings immediately triggers a new analysis cycle.
-
-</td>
-</tr>
-<tr>
-<td colspan="2">
-
-**Issue List**
-
-![Issue List](docs/dashboard-issues.png)
-
-Sticky filter bar with severity tabs, workload checker cards with individual issues, severity pills (CR/WR/IN), AI badges, root causes, suggestions, and copy-able kubectl commands. Line-clamped suggestions expand on click.
-
-</td>
-</tr>
-</table>
-
----
+- Runs health checks across workloads, secrets, storage, quotas, network policies, and Flux resources
+- Supports custom CEL-based checks through `CheckPlugin` CRDs
+- Provides actionable issue output with copyable `kubectl` commands
+- Correlates related failures across checkers (causal analysis)
+- Supports optional AI enhancement (Anthropic, OpenAI, NoOp)
+- Exposes a dashboard with live updates over SSE
+- Supports direct Kubernetes mode and console-backed multi-cluster mode
 
 ## Quick Start
 
-### Install the CLI
+### 1. Build the CLI
 
 ```bash
-# Clone and build
 git clone https://github.com/osagberg/kube-assist-operator.git
 cd kube-assist-operator
 make install-cli
-
-# Or build manually
-go build -o /usr/local/bin/kubeassist ./cmd/kubeassist
 ```
 
-### Run Diagnostics
+### 2. Run Diagnostics
 
 ```bash
-# Diagnose all workloads across all namespaces
+# Legacy workload diagnostics (default: all namespaces)
 kubeassist
 
-# Run comprehensive health checks
-kubeassist health
+# Scope workload diagnostics to one namespace
+kubeassist --all-namespaces=false production
 
-# Check specific namespaces
+# Team health checks
+kubeassist health
 kubeassist health -n production,staging
 
-# Output as JSON for CI/CD pipelines
+# JSON output
 kubeassist health -o json
 ```
 
-### Deploy the Operator
+### 3. Deploy the Operator
 
 ```bash
-# Using Helm (recommended)
+# Helm (recommended)
 helm install kube-assist charts/kube-assist \
   --namespace kube-assist-system \
   --create-namespace \
   --set dashboard.enabled=true
 
-# Using Kustomize
+# Kustomize
 make deploy IMG=ghcr.io/osagberg/kube-assist-operator:v1.11.2
 ```
 
----
+## Core Custom Resources
 
-## CLI Reference
+### `TeamHealthRequest`
 
-### `kubeassist` -- Workload Diagnostics
+Runs multi-checker health analysis over a selected scope.
 
-Scans Deployments, StatefulSets, DaemonSets, and Pods for issues.
-
-```bash
-kubeassist [namespace] [flags]
+```yaml
+apiVersion: assist.cluster.local/v1alpha1
+kind: TeamHealthRequest
+metadata:
+  name: platform-health
+spec:
+  scope:
+    namespaces:
+      - frontend
+      - backend
+  checks:
+    - workloads
+    - secrets
+    - helmreleases
+  ttlSecondsAfterFinished: 600
 ```
 
-| Flag | Short | Default | Description |
-|------|-------|---------|-------------|
-| `--all-namespaces` | `-A` | `true` | Scan all namespaces |
-| `--selector` | `-l` | -- | Label selector (e.g., `app=api`) |
-| `--output` | `-o` | `text` | Output format: `text` or `json` |
-| `--watch` | `-w` | `false` | Continuous monitoring mode |
-| `--workers` | -- | `5` | Parallel diagnostic workers |
-| `--timeout` | -- | `60s` | Timeout per diagnostic |
-| `--cleanup` | -- | `true` | Delete CRs after displaying results |
+### `TroubleshootRequest`
 
-**Examples:**
-
-```bash
-# Diagnose a specific namespace
-kubeassist production
-
-# Filter by label
-kubeassist -l app=frontend
-
-# Watch mode -- continuous monitoring
-kubeassist -w
-
-# JSON output for scripting
-kubeassist -o json | jq '.issues[] | select(.severity == "Critical")'
-```
-
-### `kubeassist health` -- Comprehensive Health Checks
-
-Runs all 8 checkers across specified namespaces.
-
-```bash
-kubeassist health [flags]
-```
-
-| Flag | Short | Default | Description |
-|------|-------|---------|-------------|
-| `--namespaces` | `-n` | current | Comma-separated namespace list |
-| `--namespace-selector` | -- | -- | Label selector for namespaces |
-| `--checks` | -- | all | Comma-separated checker names |
-| `--output` | `-o` | `text` | Output format: `text` or `json` |
-| `--timeout` | -- | `120s` | Total check timeout |
-| `--cleanup` | -- | `true` | Delete CR after displaying results |
-
-**Examples:**
-
-```bash
-# Check current namespace
-kubeassist health
-
-# Check multiple namespaces
-kubeassist health -n frontend,backend,database
-
-# Check namespaces by label
-kubeassist health --namespace-selector team=platform
-
-# Run specific checkers only
-kubeassist health --checks workloads,secrets,helmreleases
-
-# JSON output
-kubeassist health -o json > health-report.json
-```
-
----
-
-## Health Checkers
-
-KubeAssist includes 8 built-in checkers that detect common issues:
-
-### Workloads (`workloads`)
-
-Checks Deployments, StatefulSets, DaemonSets, and Pods.
-
-| Issue | Severity | Description |
-|-------|----------|-------------|
-| CrashLoopBackOff | Critical | Container repeatedly crashing |
-| ImagePullBackOff | Critical | Cannot pull container image |
-| OOMKilled | Critical | Container killed due to memory limit |
-| CreateContainerConfigError | Critical | Invalid container configuration |
-| Pending (Unschedulable) | Critical | Pod cannot be scheduled |
-| High Restart Count | Warning | Container restarted >3 times (configurable) |
-| No Resource Limits | Warning | Missing CPU/memory limits |
-| No Liveness Probe | Info | Missing liveness probe |
-| No Readiness Probe | Info | Missing readiness probe |
-
-### Secrets (`secrets`)
-
-Checks TLS certificates in Kubernetes Secrets.
-
-| Issue | Severity | Description |
-|-------|----------|-------------|
-| Certificate Expired | Critical | TLS cert has expired |
-| Certificate Expiring | Warning | Cert expires within 30 days (configurable) |
-| Empty Secret | Warning | Secret has no data |
-
-### PVCs (`pvcs`)
-
-Checks PersistentVolumeClaims.
-
-| Issue | Severity | Description |
-|-------|----------|-------------|
-| PVC Lost | Critical | PVC in Lost state |
-| PVC Pending | Warning | PVC waiting to be bound |
-| High Capacity Usage | Warning | >85% capacity used (configurable) |
-
-### Quotas (`quotas`)
-
-Checks ResourceQuotas.
-
-| Issue | Severity | Description |
-|-------|----------|-------------|
-| Quota Exceeded | Critical | Resource usage over quota |
-| Quota Near Limit | Warning | >80% of quota used (configurable) |
-
-### Network Policies (`networkpolicies`)
-
-Checks NetworkPolicy coverage.
-
-| Issue | Severity | Description |
-|-------|----------|-------------|
-| No NetworkPolicy | Info | Namespace has no network policies |
-| Overly Permissive | Info | Policy allows all ingress/egress |
-
-### HelmReleases (`helmreleases`)
-
-Checks Flux HelmRelease resources.
-
-| Issue | Severity | Description |
-|-------|----------|-------------|
-| Release Failed | Critical | Helm upgrade/install failed |
-| Stale Reconciliation | Warning | Not reconciled in >1 hour |
-| Suspended | Info | Release is suspended |
-
-### Kustomizations (`kustomizations`)
-
-Checks Flux Kustomization resources.
-
-| Issue | Severity | Description |
-|-------|----------|-------------|
-| Build Failed | Critical | Kustomize build failed |
-| Stale Reconciliation | Warning | Not reconciled in >1 hour |
-| Suspended | Info | Kustomization is suspended |
-
-### GitRepositories (`gitrepositories`)
-
-Checks Flux GitRepository resources.
-
-| Issue | Severity | Description |
-|-------|----------|-------------|
-| Clone Failed | Critical | Cannot clone repository |
-| Auth Failed | Critical | Authentication failure |
-| Stale Fetch | Warning | Not fetched in >1 hour |
-| Suspended | Info | Repository is suspended |
-
----
-
-## Custom Resources
-
-### TroubleshootRequest
-
-On-demand diagnostics for a specific workload.
+Runs targeted diagnostics for a workload and captures output.
 
 ```yaml
 apiVersion: assist.cluster.local/v1alpha1
@@ -296,124 +97,60 @@ metadata:
   namespace: production
 spec:
   target:
-    kind: Deployment          # Deployment, StatefulSet, DaemonSet, Pod, ReplicaSet
+    kind: Deployment
     name: my-app
   actions:
-    - diagnose                # Analyze pod status and errors
-    - logs                    # Collect container logs
-    - events                  # Collect related events
-    - all                     # All of the above
-  tailLines: 100              # Log lines to collect (default: 100)
-  ttlSecondsAfterFinished: 300  # Auto-delete after 5 min (optional)
+    - diagnose
+    - logs
+    - events
+  tailLines: 100
+  ttlSecondsAfterFinished: 300
 ```
 
-**Status fields:**
+### `CheckPlugin`
 
-| Field | Description |
-|-------|-------------|
-| `phase` | Pending, Running, Completed, or Failed |
-| `issues` | List of detected issues with severity and suggestions |
-| `logsConfigMap` | ConfigMap containing collected logs |
-| `eventsConfigMap` | ConfigMap containing related events |
-| `completedAt` | Timestamp when the request completed or failed |
-
-### TeamHealthRequest
-
-Comprehensive health check across namespaces.
+Adds runtime-checkable custom health rules using CEL.
 
 ```yaml
 apiVersion: assist.cluster.local/v1alpha1
-kind: TeamHealthRequest
+kind: CheckPlugin
 metadata:
-  name: platform-health
+  name: team-policy
 spec:
-  scope:
-    # Option 1: Explicit namespace list
-    namespaces:
-      - frontend
-      - backend
-      - database
-
-    # Option 2: Label selector
-    # namespaceSelector:
-    #   matchLabels:
-    #     team: platform
-
-    # Option 3: Current namespace only
-    # currentNamespaceOnly: true
-
-  checks:                     # Empty = all checkers
-    - workloads
-    - secrets
-    - helmreleases
-
-  ttlSecondsAfterFinished: 600  # Auto-delete after 10 min (optional)
-
-  config:                     # Per-checker configuration
-    workloads:
-      restartThreshold: 3
-      includeJobs: false
-    secrets:
-      checkCertExpiry: true
-      certExpiryWarningDays: 30
-    quotas:
-      usageWarningPercent: 80
-    pvcs:
-      capacityWarningPercent: 85
+  displayName: Team Policy
+  resource:
+    apiVersion: apps/v1
+    kind: Deployment
+  rule:
+    expression: "has(object.spec.template.spec.securityContext.runAsNonRoot)"
+    severity: Warning
+    message: "runAsNonRoot should be configured"
 ```
 
-**Status fields:**
+## Health Checkers
 
-| Field | Description |
-|-------|-------------|
-| `phase` | Pending, Running, Completed, or Failed |
-| `results` | Per-checker results with healthy count and issues |
-| `namespacesChecked` | List of namespaces that were checked |
-| `lastCheckTime` | Timestamp of last check |
-| `completedAt` | Timestamp when the request completed or failed |
+Built-in checkers:
 
-**Reconciliation pipeline:**
+- `workloads`
+- `secrets`
+- `pvcs`
+- `quotas`
+- `networkpolicies`
+- `helmreleases`
+- `kustomizations`
+- `gitrepositories`
 
-```mermaid
-sequenceDiagram
-    participant R as Reconciler
-    participant S as Scope Resolver
-    participant C as Checker Registry
-    participant CA as Causal Engine
-    participant AI as AI Manager
-
-    R->>S: ResolveNamespaces(scope)
-    R->>C: RunAll (concurrent checkers)
-    R->>CA: Analyze (3 strategies)
-    R->>AI: EnhanceAllWithAI (batch)
-    R->>R: Aggregate → status patch
-```
-
----
+For exact checker logic and thresholds, see the implementations under `internal/checker/`.
 
 ## Dashboard
 
-The operator includes a real-time dashboard built with React 19, Vite, TypeScript, and Tailwind CSS, embedded in the Go binary via `go:embed`. No separate frontend deployment needed.
-
-### Frosted Glass UI
-
-The dashboard uses a frosted glass design language with translucent panels, blur effects, and smooth transitions across dark and light themes.
+The dashboard is embedded in the operator binary (`go:embed`) and served from the same process.
 
 ![Dashboard Overview](docs/dashboard-overview.png)
 
-**Key interface elements:**
+![Issue List](docs/dashboard-issues.png)
 
-- **Health ring** -- animated SVG ring showing overall cluster health percentage
-- **Severity pills** -- color-coded labels (CR/WR/IN/OK) replacing color-only indicators, designed for colorblind accessibility
-- **Health history chart** -- line chart visualization powered by recharts showing health score over time
-- **Pipeline progress indicator** -- visual `[Checkers] -> [Causal] -> [AI]` display showing which stage of analysis is currently running
-- **Collapsible sections** -- Causal Timeline, Causal Groups, and Checker Cards all collapse to keep the view manageable
-- **Sticky filter bar** -- stays pinned below the header during scroll with severity tabs, namespace/checker dropdowns, and text search
-- **Cluster selector** -- multi-cluster switching dropdown (invisible in single-cluster mode), SSE reconnects automatically on cluster change
-- **Connection indicator** -- green/yellow/red dot showing SSE connection status
-- **Mobile hamburger menu** -- responsive layout with collapsed navigation at <768px viewport width
-- **Diagnose button** -- create TroubleshootRequest CRs directly from the dashboard header or contextually from any issue row (hidden in console mode)
-- **Line-clamp suggestions** -- issue suggestions are truncated in list view; click to expand
+![AI Settings](docs/dashboard-ai-settings.png)
 
 ### Enable Dashboard
 
@@ -421,216 +158,58 @@ The dashboard uses a frosted glass design language with translucent panels, blur
 # Local development
 make run ARGS="--enable-dashboard"
 
-# Helm installation
-helm install kube-assist charts/kube-assist \
-  --set dashboard.enabled=true
-
-# Access via port-forward
-kubectl port-forward -n kube-assist-system svc/kube-assist-dashboard 9090:9090
-open http://localhost:9090
-```
-
-If `dashboard.authToken` is configured, TLS must also be configured (`dashboard.tls.enabled=true` + `dashboard.tls.secretName`) unless you explicitly set `dashboard.allowInsecureHttp=true` for local development.
-
-### Endpoints
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/` | GET | Dashboard UI |
-| `/api/health` | GET | Current health data (JSON) |
-| `/api/events` | GET | Real-time SSE stream |
-| `/api/check` | POST | Trigger immediate health check (Bearer token required when configured) |
-| `/api/settings/ai` | GET | Current AI configuration (API key masked) |
-| `/api/settings/ai` | POST | Update AI provider/model/key at runtime (Bearer token required when configured) |
-| `/api/health/history` | GET | Health score history (`?last=N`, `?since=RFC3339`) |
-| `/api/causal/groups` | GET | Causal correlation analysis (correlated issue groups) |
-| `/api/explain` | GET | AI-generated cluster health narrative with risk level and top issues (Bearer token required when configured) |
-| `/api/prediction/trend` | GET | Predictive health trend analysis (direction, velocity, projection) |
-| `/api/clusters` | GET | Available clusters for multi-cluster mode (empty array in single-cluster mode) |
-| `/api/troubleshoot` | POST | Create TroubleshootRequest CR from dashboard (requires kubernetes datasource) |
-| `/api/troubleshoot` | GET | List TroubleshootRequest CRs |
-| `/api/capabilities` | GET | Feature flags for frontend (troubleshootCreate, etc.) |
-
-### Live Updates
-
-The dashboard uses Server-Sent Events (SSE) for real-time updates with automatic reconnection and pause/resume support. Toast notifications provide visual feedback for user actions and background events. Export reports as JSON or CSV at any time.
-
-### Keyboard Shortcuts
-
-| Key | Action |
-|-----|--------|
-| `/` | Focus search |
-| `f` | Focus namespace filter |
-| `t` | Toggle theme |
-| `p` | Pause/resume updates |
-| `r` | Refresh data |
-| `1-4` | Filter by severity (All/Critical/Warning/Info) |
-| `?` | Show keyboard shortcuts |
-| `Esc` | Close modal / blur input |
-
----
-
-## AI Integration
-
-KubeAssist enhances health check results with AI-generated root cause analysis and remediation guidance. Three providers are supported:
-
-| Provider | Default Model | Description |
-|----------|---------------|-------------|
-| **Anthropic** | Claude Haiku 4.5 | Context-aware diagnostics with structured output and prompt caching |
-| **OpenAI** | GPT-4o-mini | Cost-optimized provider (~97% cheaper than GPT-4o) with broad model selection |
-| **NoOp** | -- | Returns empty suggestions; useful for testing and development |
-
-### Quick Setup (Dashboard)
-
-The fastest way to enable AI is through the dashboard:
-
-1. Click the gear icon to open AI Settings
-2. Toggle AI on, select a provider, enter your API key, and pick a model
-3. Click Save -- the operator immediately triggers a new analysis cycle with AI enabled (no waiting for the next scheduled check)
-
-![AI Settings](docs/dashboard-ai-settings.png)
-*AI Settings modal showing Anthropic provider with "Provider ready" indicator.*
-
-### Quick Setup (CLI)
-
-```bash
-make run ARGS="--enable-dashboard --enable-ai --ai-provider=anthropic --ai-api-key=$KUBE_ASSIST_AI_API_KEY"
-```
-
-### Quick Setup (Helm)
-
-```yaml
-ai:
-  enabled: true
-  provider: "anthropic"
-  apiKeySecretRef:
-    name: "kube-assist-ai-secret"
-    key: "api-key"
-```
-
-### How AI Analysis Works
-
-1. **Batched calls** -- Issues are grouped and sent to the AI provider in a single batched call to minimize API overhead
-2. **LRU response cache** -- 100-entry cache with 5-minute TTL keyed by issue signature hash; repeated checks for the same issue pattern cost nothing
-3. **Severity gating** -- Info-level issues are skipped by AI (keep static suggestions), reducing token usage ~30%
-4. **Cross-issue deduplication** -- Identical issue patterns (after normalizing pod hashes) are grouped; only one representative is sent to AI, results fanned out to all duplicates
-5. **Token budget** -- Configurable daily and monthly token limits with automatic window reset; `ErrBudgetExceeded` returned gracefully when caps are hit
-6. **Tiered model routing** -- Separate models for analyze vs explain mode (e.g., fast model for issue analysis, powerful model for cluster explanations)
-7. **Anthropic prompt caching** -- System prompts sent with `cache_control: {type: "ephemeral"}` for ~90% cost reduction on repeated calls
-8. **Data sanitization** -- Sensitive data (secrets, environment variables, API keys) is redacted before being sent to any AI provider
-9. **Thread-safe AI Manager** -- `Reconfigure()` swaps providers at runtime without downtime; the same manager instance is shared across the dashboard and controllers
-10. **Pipeline indicator** -- The dashboard shows a `[Checkers] -> [Causal] -> [AI]` progress bar so you can see exactly when AI analysis is running
-
-For full details on providers, data sanitization, API key management, and cost considerations, see the [AI Integration Guide](docs/ai-integration.md).
-
----
-
-## Causal Analysis
-
-The causal analysis engine correlates issues across checkers to identify root causes that no single checker can detect on its own. It combines temporal correlation, resource graph ownership chains, and predefined cross-checker rules to surface the *real* reason your workloads are failing.
-
-### Cross-Checker Rules
-
-| Rule | Confidence | Description |
-|------|------------|-------------|
-| **OOM + Quota** | 0.85 | An OOMKilled container in a namespace with quota near its limit suggests the quota is the underlying constraint |
-| **Crash + ImagePull** | 0.80 | CrashLoopBackOff alongside ImagePullBackOff often indicates a registry or image configuration issue rather than an application bug |
-| **Flux Chain** | 0.90 | A failed GitRepository causes downstream Kustomization and HelmRelease failures; the engine traces the chain back to the source |
-| **PVC + Workload** | 0.75 | A pending PVC bound to a workload explains why pods are stuck in Pending state |
-
-### How It Works
-
-1. **Temporal correlation** -- Issues that appear within the same time window are grouped as potentially related
-2. **Resource graph** -- Kubernetes owner references are walked to connect pods, deployments, replica sets, and other resources into ownership chains
-3. **Rule matching** -- The 4 cross-checker rules above are evaluated against grouped issues to identify known causal patterns
-4. **AI enhancement** -- When AI is enabled, causal groups are enriched with AI-generated explanations that tie the correlated issues together into a coherent narrative
-5. **Confidence scoring** -- Each causal group carries a confidence score so you can prioritize investigation
-
-Causal groups appear in the dashboard as collapsible cards in the Causal Analysis section, showing the rule that matched, the confidence score, and the root cause. The `/api/causal/groups` endpoint returns the same data as JSON.
-
----
-
-## Helm Installation
-
-### Basic Installation
-
-```bash
-helm install kube-assist charts/kube-assist \
-  --namespace kube-assist-system \
-  --create-namespace
-```
-
-### With Dashboard
-
-```bash
+# Helm
 helm install kube-assist charts/kube-assist \
   --namespace kube-assist-system \
   --create-namespace \
   --set dashboard.enabled=true
+
+# Access
+kubectl port-forward -n kube-assist-system svc/kube-assist-dashboard 9090:9090
+open http://localhost:9090
 ```
 
-### Configuration Values
+If `dashboard.authToken` is set, TLS must also be configured unless `dashboard.allowInsecureHttp=true` is explicitly set for local development.
 
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `replicaCount` | `1` | Number of operator replicas |
-| `image.repository` | `ghcr.io/osagberg/kube-assist-operator` | Image repository |
-| `image.tag` | Chart appVersion | Image tag |
-| `dashboard.enabled` | `false` | Enable web dashboard |
-| `dashboard.bindAddress` | `:9090` | Dashboard listen address |
-| `dashboard.service.type` | `ClusterIP` | Dashboard service type |
-| `dashboard.service.port` | `9090` | Dashboard service port |
-| `operator.leaderElection.enabled` | `true` | Enable leader election |
-| `operator.metricsBindAddress` | `:8080` | Metrics endpoint |
-| `resources.requests.cpu` | `10m` | CPU request |
-| `resources.requests.memory` | `64Mi` | Memory request |
-| `resources.limits.cpu` | `500m` | CPU limit |
-| `resources.limits.memory` | `128Mi` | Memory limit |
-| `ai.enabled` | `false` | Enable AI-powered suggestions |
-| `ai.provider` | `noop` | AI provider: anthropic, openai, noop |
-| `ai.model` | (provider default) | AI model to use |
-| `ai.explainModel` | `""` | Separate model for "Explain This Cluster" mode (uses primary model if empty) |
-| `ai.apiKeySecretRef.name` | -- | Secret containing API key |
-| `ai.budget.dailyTokenLimit` | `0` | Daily token budget (0 = unlimited) |
-| `ai.budget.monthlyTokenLimit` | `0` | Monthly token budget (0 = unlimited) |
-| `dashboard.authToken` | `""` | Bearer token for authenticating mutating API requests |
-| `dashboard.authTokenSecretRef.name` | `""` | Secret containing auth token |
-| `dashboard.allowInsecureHttp` | `false` | Allow auth over HTTP without TLS (local/dev only) |
-| `dashboard.maxSSEClients` | `100` | Maximum concurrent SSE connections (0 = unlimited, rejects with 503 when exceeded) |
-| `notifications.semaphoreCapacity` | `5` | Maximum concurrent notification dispatches |
-| `dashboard.tls.enabled` | `false` | Enable TLS for dashboard HTTPS |
-| `dashboard.tls.secretName` | `""` | Secret with tls.crt and tls.key |
-| `networkPolicy.enabled` | `true` | Enable network policy |
-| `networkPolicy.ingressMode` | `strict` | Ingress mode: permissive or strict |
-| `networkPolicy.dnsMode` | `kube-system` | DNS egress: all or kube-system |
-| `networkPolicy.consoleEgress.cidr` | `""` | Console backend egress CIDR (**required** when datasource.type=console; chart fails if empty) |
-| `networkPolicy.consoleEgress.port` | `443` | Console backend egress port |
-| `datasource.type` | `kubernetes` | DataSource backend: kubernetes or console |
-| `datasource.consoleURL` | `""` | Console backend URL (required when type=console) |
-| `datasource.clusterID` | `""` | Cluster identifier for console backend |
-| `datasource.bearerToken` | `""` | Bearer token for console backend auth (if empty, no Authorization header is sent) |
-| `datasource.bearerTokenSecretRef.name` | `""` | Secret containing the bearer token (takes precedence over bearerToken) |
-| `datasource.bearerTokenSecretRef.key` | `"bearer-token"` | Key within the secret |
+### Dashboard API Endpoints
 
-### Console Backend Standalone Flags
+When `dashboard.authToken` is configured, all `/api/*` endpoints require authentication (cookie or Bearer token).
 
-The `console-backend` binary (`cmd/console-backend/`) supports authentication and TLS:
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/` | GET | Dashboard UI |
+| `/api/health` | GET | Current health data |
+| `/api/health/history` | GET | Health history (`?last=N`, `?since=RFC3339`) |
+| `/api/events` | GET | SSE stream |
+| `/api/check` | POST | Trigger immediate check |
+| `/api/settings/ai` | GET, POST | Read/update AI settings |
+| `/api/settings/ai/catalog` | GET | Model catalog |
+| `/api/causal/groups` | GET | Causal groups |
+| `/api/explain` | GET | AI cluster explanation |
+| `/api/prediction/trend` | GET | Trend projection |
+| `/api/clusters` | GET | Available clusters |
+| `/api/fleet/summary` | GET | Fleet-level summary |
+| `/api/troubleshoot` | GET, POST | List/create TroubleshootRequest |
+| `/api/issues/acknowledge` | POST, DELETE | Acknowledge/unacknowledge issue |
+| `/api/issues/snooze` | POST, DELETE | Snooze/unsnooze issue |
+| `/api/issue-states` | GET | Active issue states |
+| `/api/capabilities` | GET | Frontend feature flags |
 
-| Flag | Env | Default | Description |
-|------|-----|---------|-------------|
-| `--auth-token` | `CONSOLE_AUTH_TOKEN` | `""` | Bearer token for API authentication |
-| `--tls-cert` | -- | `""` | Path to TLS certificate file |
-| `--tls-key` | -- | `""` | Path to TLS key file |
-| `--addr` | -- | `:8085` | HTTP listen address |
-| `--kubeconfigs` | -- | -- | Comma-separated `cluster-id=kubeconfig-path` pairs |
+## AI Integration
 
-When `--auth-token` is set, all API routes (except `/healthz`) require `Authorization: Bearer <token>`. Security headers (CSP, X-Content-Type-Options, X-Frame-Options) are always applied.
+Supported providers:
 
-### Full Configuration
+| Provider | Description |
+|----------|-------------|
+| Anthropic | Structured analysis and explain mode |
+| OpenAI | Alternative provider for analysis and explain mode |
+| NoOp | Disabled behavior for testing/development |
 
-See [charts/kube-assist/values.yaml](charts/kube-assist/values.yaml) for all options.
+AI behavior includes batching, caching, severity gating, deduplication, budget controls, and sanitization before provider calls.
 
----
+Full configuration and operational details:
+
+- [AI Integration Guide](docs/ai-integration.md)
 
 ## Architecture
 
@@ -647,15 +226,15 @@ flowchart TD
         CP["CheckPlugin"]
     end
 
-    subgraph Checkers["Checker Registry (8 + plugins)"]
+    subgraph Checkers["Checker Registry"]
         W["workloads"] ~~~ S["secrets"] ~~~ P["pvcs"] ~~~ Q["quotas"]
-        N["netpol"] ~~~ HR["helmreleases"] ~~~ K["kustomizations"] ~~~ GR["gitrepos"]
+        N["networkpolicies"] ~~~ HR["helmreleases"] ~~~ K["kustomizations"] ~~~ GR["gitrepositories"]
     end
 
-    Causal["Causal Engine · 4 rules · 3 strategies"]
-    AI["AI Manager · Anthropic / OpenAI / NoOp"]
-    Predict["Predictive Health · OLS regression"]
-    DS["DataSource · K8s direct / Console multi-cluster"]
+    Causal["Causal Engine"]
+    AI["AI Manager"]
+    Predict["Predictive Health"]
+    DS["DataSource"]
     K8s["Kubernetes API"]
 
     CLI -->|creates CRs| K8s
@@ -666,204 +245,122 @@ flowchart TD
     DS --> K8s
 ```
 
-> For detailed diagrams, see [docs/architecture/INDEX.md](docs/architecture/INDEX.md).
+Detailed diagrams:
 
----
+- [Architecture Index](docs/architecture/INDEX.md)
+- [System Overview](docs/architecture/00-system-overview.md)
+- [Reconciliation Flows](docs/architecture/01-reconciliation-flows.md)
+- [Checker & Causal Engine](docs/architecture/02-checker-registry.md)
+- [AI, Dashboard & DataSource](docs/architecture/03-ai-dashboard-datasource.md)
 
-## Metrics
+## Helm Configuration
 
-Prometheus metrics available at `:8080/metrics`:
+Common values:
 
-| Metric | Type | Labels | Description |
-|--------|------|--------|-------------|
-| `kubeassist_reconcile_total` | Counter | name, namespace, result | Total reconciliations |
-| `kubeassist_reconcile_duration_seconds` | Histogram | name, namespace | Reconciliation duration |
-| `kubeassist_issues_total` | Gauge | namespace, severity | Issues by severity |
-| `kubeassist_ai_calls_total` | Counter | provider, mode, result | AI API calls |
-| `kubeassist_ai_tokens_used_total` | Counter | provider, mode | Tokens consumed |
-| `kubeassist_ai_call_duration_seconds` | Histogram | provider, mode | AI call latency |
-| `kubeassist_ai_cache_hits_total` | Counter | -- | Response cache hits |
-| `kubeassist_ai_cache_misses_total` | Counter | -- | Response cache misses |
-| `kubeassist_ai_cache_size` | Gauge | -- | Current cache entries |
-| `kubeassist_ai_budget_exceeded_total` | Counter | window | Budget limit rejections |
-| `kubeassist_ai_budget_tokens_used` | Gauge | window | Current token usage per window |
-| `kubeassist_ai_budget_tokens_limit` | Gauge | window | Token limit per window |
-| `kubeassist_ai_issues_filtered_total` | Counter | reason | Issues skipped (severity_info, duplicate) |
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `dashboard.enabled` | `false` | Enable dashboard |
+| `dashboard.authToken` | `""` | Auth token for dashboard API |
+| `dashboard.allowInsecureHttp` | `false` | Permit auth without TLS (dev only) |
+| `dashboard.tls.enabled` | `false` | Enable dashboard TLS |
+| `dashboard.maxSSEClients` | `100` | Max concurrent SSE clients |
+| `ai.enabled` | `false` | Enable AI suggestions |
+| `ai.provider` | `noop` | Provider: anthropic/openai/noop |
+| `ai.apiKeySecretRef.name` | `""` | Secret containing API key |
+| `networkPolicy.enabled` | `true` | Enable network policy |
+| `networkPolicy.ingressMode` | `strict` | Ingress policy mode |
+| `datasource.type` | `kubernetes` | `kubernetes` or `console` |
+| `datasource.consoleURL` | `""` | Console backend URL (required for console mode) |
 
----
+Full values reference:
+
+- [charts/kube-assist/values.yaml](charts/kube-assist/values.yaml)
 
 ## Security
 
-Verify the codebase yourself:
+### Runtime and API
 
-```bash
-# Static analysis (gosec) — 0 findings on production code
-make security
+- Constant-time token comparison for auth
+- Security headers enabled on dashboard responses
+- TLS required when auth token is set (unless explicitly overridden for local dev)
+- Configurable session TTL and request rate limiting
+- NetworkPolicy defaults enabled in chart
 
-# Race condition detection — built into test suite
-make test   # runs with -race flag
+### Supply Chain and Release Artifacts
 
-# 21 linters including gosec, staticcheck, errcheck, govet
-make lint
-```
+- GitHub Actions pinned by SHA
+- Release images built with distroless base
+- Release workflow signs images with cosign keyless and attaches SPDX SBOM attestation
+- Trivy scan runs in release workflow
 
-| Scanner | Result |
-|---------|--------|
-| **gosec** | 0 findings (production code) |
-| **govulncheck** | 0 known vulnerabilities |
-| **golangci-lint** (21 linters) | 0 issues |
-| **go test -race** | 0 race conditions |
-| **Trivy** (container scan) | Run on every release via CI |
-
-**Container security**: Release images use `gcr.io/distroless/static:nonroot` (no shell, no package manager). Dependabot keeps dependencies current.
-
-### Image Verification
-
-All release images are signed with [cosign](https://github.com/sigstore/cosign) keyless (OIDC)
-and include an SPDX SBOM attestation.
-
-**Verify image signature:**
+Verify release artifacts:
 
 ```bash
 cosign verify ghcr.io/osagberg/kube-assist-operator:<tag> \
   --certificate-identity-regexp="https://github.com/osagberg/kube-assist-operator" \
   --certificate-oidc-issuer="https://token.actions.githubusercontent.com"
-```
 
-**Verify SBOM attestation:**
-
-```bash
 cosign verify-attestation ghcr.io/osagberg/kube-assist-operator:<tag> \
   --type spdxjson \
   --certificate-identity-regexp="https://github.com/osagberg/kube-assist-operator" \
   --certificate-oidc-issuer="https://token.actions.githubusercontent.com"
 ```
 
-**Download SBOM:**
+## Metrics
 
-```bash
-cosign download attestation ghcr.io/osagberg/kube-assist-operator:<tag> \
-  | jq -r '.payload' | base64 -d | jq '.predicate'
-```
+Prometheus endpoint: `:8080/metrics`
 
-### Deployment Hardening Checklist
+Key metrics include reconciliation counts/durations, issue counts, and AI pipeline counters/gauges.
 
-When exposing the dashboard (even internally), follow these steps:
+## CI/CD
 
-| Item | Setting | Recommended Value | Notes |
-|------|---------|-------------------|-------|
-| **Auth token** | `DASHBOARD_AUTH_TOKEN` | Random 32+ char string | Required for all mutating + data endpoints |
-| **TLS** | `dashboard.tls.enabled: true` | Always in production | Cookie is `Secure` when TLS enabled; auth refuses to start without TLS unless overridden |
-| **Session TTL** | `DASHBOARD_SESSION_TTL` | `24h` (default) | Go duration format; controls cookie `Max-Age` |
-| **Rate limiting** | `DASHBOARD_RATE_LIMIT` / `DASHBOARD_RATE_BURST` | `10` / `20` (defaults) | Process-global token-bucket on POST/PUT/DELETE only; returns 429 when exceeded. GET/SSE are not rate-limited. Single-replica scoped (not shared across pods). |
-| **nginx body size** | `client_max_body_size` | `1m` | Matches server-side `MaxBytesReader` (1 MB) |
-| **nginx rate limit** | `limit_req_zone` | `10r/s` per IP | Layer defense with app-level limiter |
-| **SSE clients** | `dashboard.maxSSEClients` | `100` (default) | Prevents connection exhaustion; excess gets 503 |
-
-**Recommended nginx snippet** (when fronting the dashboard):
-
-```nginx
-# Rate limiting
-limit_req_zone $binary_remote_addr zone=dashboard:10m rate=10r/s;
-
-server {
-    location / {
-        proxy_pass http://kube-assist-dashboard:9090;
-        limit_req zone=dashboard burst=20 nodelay;
-        client_max_body_size 1m;
-    }
-    location /api/events {
-        proxy_pass http://kube-assist-dashboard:9090;
-        proxy_set_header Connection '';
-        proxy_http_version 1.1;
-        chunked_transfer_encoding off;
-        proxy_buffering off;
-        # No rate limit on SSE (long-lived connections)
-    }
-}
-```
-
-**Public endpoint policy**: All `/api/*` endpoints require authentication (cookie or Bearer token). The model catalog and capabilities endpoints are read-only but still auth-protected to prevent information disclosure about enabled features.
-
----
-
-## CI/CD Pipeline
-
-Four GitHub Actions workflows enforce quality at every stage:
-
-| Workflow | File | Trigger | What It Does |
-|----------|------|---------|--------------|
-| **Lint** | `lint.yml` | Push/PR to `main` | golangci-lint with 21 linters (staticcheck, gosec, errcheck, govet, ineffassign, misspell, and more) |
-| **Tests** | `test.yml` | Push/PR to `main` | Unit and integration tests, govulncheck, build verification |
-| **E2E Tests** | `test-e2e.yml` | Push/PR to `main` | End-to-end tests against a real cluster environment |
-| **Release** | `release.yml` | Tag `v*` | Multi-arch Docker build, GHCR push, cosign keyless signing, SBOM generation + attestation, Trivy container scan, GitHub Release |
-
-**Container security**: Release images are built distroless (`gcr.io/distroless/static:nonroot`), signed with cosign keyless (OIDC), attested with an SPDX SBOM, scanned with Trivy, and published to GHCR with OCI labels. Dependabot keeps Go modules and GitHub Actions dependencies up to date.
-
----
+| Workflow | File | Trigger | Purpose |
+|----------|------|---------|---------|
+| Lint | `.github/workflows/lint.yml` | push/PR | Go + Helm linting |
+| Tests | `.github/workflows/test.yml` | push/PR | unit/integration tests + govulncheck |
+| E2E | `.github/workflows/test-e2e.yml` | push/PR | Kind-based e2e suite |
+| Release | `.github/workflows/release.yml` | tag `v*` | build/push/sign/SBOM/scan/release |
 
 ## Development
 
 ```bash
-# Run tests (400+ test cases)
+# tests
 make test
 
-# Run operator locally
+# lint
+make lint
+
+# run operator locally
 make run
 
-# Run with dashboard
+# run with dashboard enabled
 make run ARGS="--enable-dashboard"
 
-# Build container image
+# build image
 make docker-build IMG=ghcr.io/osagberg/kube-assist-operator:dev
 
-# Generate CRD manifests
+# generate manifests
 make manifests
 
-# Install CRDs
+# install CRDs
 make install
 
-# Build CLI
+# build/install CLI
 make install-cli
 ```
 
----
-
 ## Documentation
 
-- [Architecture Diagrams](docs/architecture/INDEX.md) -- Mermaid diagrams of system overview, reconciliation flows, checker registry, AI pipeline, and dashboard
-- [AI Integration Guide](docs/ai-integration.md) -- Configure AI-powered suggestions (including runtime dashboard config)
-- [Troubleshooting Guide](docs/troubleshooting.md) -- Common issues and solutions
+- [Architecture Diagrams](docs/architecture/INDEX.md)
+- [AI Integration Guide](docs/ai-integration.md)
+- [Troubleshooting Guide](docs/troubleshooting.md)
 
----
+## Roadmap (Selected)
 
-## Roadmap
-
-- [x] AI-powered suggestions (v1.3.0)
-- [x] Runtime AI configuration via dashboard (v1.4.0)
-- [x] Copy-able kubectl remediation commands (v1.4.0)
-- [x] Full E2E test coverage for controllers (v1.4.0)
-- [x] TTL auto-cleanup for completed CRs (v1.5.0)
-- [x] Validating admission webhooks (v1.5.0)
-- [x] Test helper utilities and reduced boilerplate (v1.5.0)
-- [x] DataSource abstraction for pluggable backends (v1.5.0)
-- [x] Webhook notification interface (`spec.notify` on TeamHealthRequest) (v1.5.1)
-- [x] Health score history with ring buffer (`/api/health/history`) (v1.5.1)
-- [x] React dashboard -- React 19 + Vite + TypeScript + Tailwind SPA (v1.6.0)
-- [x] Causal analysis engine -- temporal correlation, resource graph, cross-checker rules, AI-enhanced context (v1.7.0)
-- [x] Frosted glass dashboard redesign -- dark/light themes, severity pills, pipeline indicator, collapsible causal timeline, instant AI trigger (v1.7.1)
-- [x] Custom checker plugins — CRD-driven health checks with CEL expressions (`CheckPlugin` CR, hot-reload registry) (v1.8.0)
-- [x] "Explain this cluster" AI mode — narrative summary of cluster health with risk level, top issues, and trend direction (v1.8.0)
-- [x] Predictive health — trend analysis via linear regression on health history, score projection, risky checker detection (v1.8.0)
-- [x] AI cost optimization — 9 optimizations (severity gating, change-only AI, gpt-4o-mini, prompt caching, token budget, batching, dedup, tiered routing, LRU cache) + 11 Prometheus metrics (v1.8.1-dev)
-- [x] Cross-cluster via ConsoleDataSource — all phases complete: client, server, console backend tests (86.5% coverage), dashboard cluster selector UI with SSE reconnect, Helm datasource sync (v1.9.0)
-- [x] TroubleshootRequest creation from dashboard — DiagnoseModal, contextual diagnose on issues, K8s name validation, capabilities-gated UI for console mode (v1.11.0)
-- [x] Codex audit remediation — console backend auth/TLS, meta-tag auth token delivery, SSE cookie auth, Prometheus TLS default, strict network policies
 - [ ] Multi-cluster e2e tests with Kind clusters
-- [ ] Enterprise readiness + plug-and-play profiles — OIDC/SSO front door, tenant-scoped auth + audit trail, provider-style integrations (Splunk/AKS/Prometheus) without code forks
-
----
+- [ ] Enterprise-ready authn/authz profile (OIDC/SSO front door, tenant scoping, audit trail)
+- [ ] Provider-style integrations for enterprise environments (Splunk/AKS/Prometheus)
 
 ## License
 
-Apache License 2.0 -- see [LICENSE](LICENSE) for details.
+Apache License 2.0 — see [LICENSE](LICENSE).

@@ -26,7 +26,7 @@ const trendArrows: Record<string, string> = {
 
 export function ClusterExplain({ clusterId }: { clusterId?: string }) {
   const { data, loading, error, refresh } = useExplain(clusterId)
-  const [collapsed, setCollapsed] = useState(true)
+  const [collapsed, setCollapsed] = useState(false)
 
   // Don't render until user explicitly opens it
   const hasData = data && data.riskLevel !== 'unknown'
@@ -36,9 +36,6 @@ export function ClusterExplain({ clusterId }: { clusterId?: string }) {
       <button
         className="w-full flex items-center justify-between"
         onClick={() => {
-          if (collapsed && !data && !loading) {
-            refresh()
-          }
           setCollapsed((c) => !c)
         }}
         aria-expanded={!collapsed}
