@@ -372,6 +372,23 @@ spec:
 | `lastCheckTime` | Timestamp of last check |
 | `completedAt` | Timestamp when the request completed or failed |
 
+**Reconciliation pipeline:**
+
+```mermaid
+sequenceDiagram
+    participant R as Reconciler
+    participant S as Scope Resolver
+    participant C as Checker Registry
+    participant CA as Causal Engine
+    participant AI as AI Manager
+
+    R->>S: ResolveNamespaces(scope)
+    R->>C: RunAll (concurrent checkers)
+    R->>CA: Analyze (3 strategies)
+    R->>AI: EnhanceAllWithAI (batch)
+    R->>R: Aggregate → status patch
+```
+
 ---
 
 ## Dashboard
@@ -617,80 +634,39 @@ See [charts/kube-assist/values.yaml](charts/kube-assist/values.yaml) for all opt
 
 ## Architecture
 
+```mermaid
+flowchart TD
+    subgraph UI["User Interface"]
+        CLI["CLI · kubeassist"]
+        Dash["Dashboard :9090"]
+    end
+
+    subgraph Controllers
+        THR["TeamHealthRequest"]
+        TR["TroubleshootRequest"]
+        CP["CheckPlugin"]
+    end
+
+    subgraph Checkers["Checker Registry (8 + plugins)"]
+        W["workloads"] ~~~ S["secrets"] ~~~ P["pvcs"] ~~~ Q["quotas"]
+        N["netpol"] ~~~ HR["helmreleases"] ~~~ K["kustomizations"] ~~~ GR["gitrepos"]
+    end
+
+    Causal["Causal Engine · 4 rules · 3 strategies"]
+    AI["AI Manager · Anthropic / OpenAI / NoOp"]
+    Predict["Predictive Health · OLS regression"]
+    DS["DataSource · K8s direct / Console multi-cluster"]
+    K8s["Kubernetes API"]
+
+    CLI -->|creates CRs| K8s
+    Dash -->|REST + SSE| Controllers
+    THR & TR & CP --> Checkers
+    Checkers --> Causal --> AI
+    Predict --> DS
+    DS --> K8s
 ```
-+---------------------------------------------------------------------------+
-|                              User Interface                               |
-+---------------------------------+-----------------------------------------+
-|         CLI (kubeassist)        |         Dashboard (:9090)               |
-|  - kubeassist [namespace]       |  - Frosted glass UI, dark/light themes  |
-|  - kubeassist health            |  - Real-time SSE updates                |
-|  - JSON/text output             |  - AI settings panel (runtime config)   |
-|                                 |  - Severity pills + pipeline indicator  |
-+---------------------------------+-----------------------------------------+
-                                    |
-                        +-----------+----------+
-                        v                      v
-+------------------------------+ +------------------------------------------+
-|       AI Manager             | |           Custom Resources                |
-|  - Thread-safe Reconfigure() | +--------------------+---------------------+
-|  - Shared across dashboard   | | TroubleshootRequest | TeamHealthRequest   |
-|    and controllers           | | - Target: any kind  | - Scope: ns/sel     |
-|  - POST /api/settings/ai     | | - diagnose/logs/... | - Configurable      |
-+------------------------------+ | - issues+ConfigMaps | - Per-checker cfg   |
-                        |        +--------------------+---------------------+
-                        |                      |
-                        +-----------+----------+
-                                    v
-+---------------------------------------------------------------------------+
-|                            Controllers                                    |
-+------------------+---------------------+---------------------------------+
-| TroubleshootReq  | TeamHealthReq       | CheckPluginReconciler           |
-| - Validates tgt  | - Resolves ns scope | - Watches CheckPlugin CRs       |
-| - Pod diagnostics| - Runs checkers     | - Compiles CEL expressions      |
-| - Stores logs    | - Aggregates results| - Hot-reload registry           |
-+------------------+---------------------+---------------------------------+
-                                    |
-                                    v
-+---------------------------------------------------------------------------+
-|                          Checker Registry                                 |
-+----------+----------+----------+----------+----------+---------+----------+
-|workloads | secrets  |   pvcs   |  quotas  |  netpol  | Flux(3) | Plugins  |
-|          |          |          |          |          | helmrel | CEL CRD  |
-|Deployment| TLS cert | Pending  | Usage %  | Coverage | kustom  | hot-     |
-|StatefulS | expiry   | Lost     | exceeded | rules    | gitrepo | reload   |
-+----------+----------+----------+----------+----------+---------+----------+
-                                    |
-                                    v
-+---------------------------------------------------------------------------+
-|                       Causal Analysis Engine                              |
-|  - Temporal correlation across checker results                            |
-|  - Resource graph ownership chains (owner references)                     |
-|  - 4 cross-checker rules with confidence scoring                          |
-|  - AI-enhanced group explanations when AI is enabled                      |
-+---------------------------------------------------------------------------+
-                                    |
-                                    v
-+---------------------------------------------------------------------------+
-|                       Predictive Health Engine                             |
-|  - OLS linear regression on health score history                          |
-|  - Velocity detection (score change per hour)                             |
-|  - Projected score with 95% confidence interval                           |
-|  - Risky checker + severity trajectory identification                     |
-+---------------------------------------------------------------------------+
-                                    |
-                                    v
-+---------------------------------------------------------------------------+
-|                      DataSource Abstraction                               |
-|  - KubernetesDataSource (default) -- direct K8s API calls                 |
-|  - ConsoleDataSource -- cross-cluster via console-backend HTTP API        |
-|  - Pluggable interface -- swap in enterprise cache or multi-cluster       |
-|  - Scope resolver -- namespace filtering, label selectors, 50-ns cap     |
-+---------------------------------------------------------------------------+
-|                         Kubernetes API                                    |
-|  Deployments - StatefulSets - DaemonSets - Pods - Events - Secrets       |
-|  PVCs - ResourceQuotas - NetworkPolicies - HelmReleases - Kustomizations |
-+---------------------------------------------------------------------------+
-```
+
+> For detailed diagrams, see [docs/architecture/INDEX.md](docs/architecture/INDEX.md).
 
 ---
 
@@ -740,6 +716,35 @@ make lint
 | **Trivy** (container scan) | Run on every release via CI |
 
 **Container security**: Release images use `gcr.io/distroless/static:nonroot` (no shell, no package manager). Dependabot keeps dependencies current.
+
+### Image Verification
+
+All release images are signed with [cosign](https://github.com/sigstore/cosign) keyless (OIDC)
+and include an SPDX SBOM attestation.
+
+**Verify image signature:**
+
+```bash
+cosign verify ghcr.io/osagberg/kube-assist-operator:<tag> \
+  --certificate-identity-regexp="https://github.com/osagberg/kube-assist-operator" \
+  --certificate-oidc-issuer="https://token.actions.githubusercontent.com"
+```
+
+**Verify SBOM attestation:**
+
+```bash
+cosign verify-attestation ghcr.io/osagberg/kube-assist-operator:<tag> \
+  --type spdxjson \
+  --certificate-identity-regexp="https://github.com/osagberg/kube-assist-operator" \
+  --certificate-oidc-issuer="https://token.actions.githubusercontent.com"
+```
+
+**Download SBOM:**
+
+```bash
+cosign download attestation ghcr.io/osagberg/kube-assist-operator:<tag> \
+  | jq -r '.payload' | base64 -d | jq '.predicate'
+```
 
 ### Deployment Hardening Checklist
 
@@ -791,9 +796,9 @@ Four GitHub Actions workflows enforce quality at every stage:
 | **Lint** | `lint.yml` | Push/PR to `main` | golangci-lint with 21 linters (staticcheck, gosec, errcheck, govet, ineffassign, misspell, and more) |
 | **Tests** | `test.yml` | Push/PR to `main` | Unit and integration tests, govulncheck, build verification |
 | **E2E Tests** | `test-e2e.yml` | Push/PR to `main` | End-to-end tests against a real cluster environment |
-| **Release** | `release.yml` | Tag `v*` | Multi-arch Docker build, GHCR push, Trivy container scan, GitHub Release |
+| **Release** | `release.yml` | Tag `v*` | Multi-arch Docker build, GHCR push, cosign keyless signing, SBOM generation + attestation, Trivy container scan, GitHub Release |
 
-**Container security**: Release images are built distroless (`gcr.io/distroless/static:nonroot`), scanned with Trivy, and published to GHCR with OCI labels. Dependabot keeps Go modules and GitHub Actions dependencies up to date.
+**Container security**: Release images are built distroless (`gcr.io/distroless/static:nonroot`), signed with cosign keyless (OIDC), attested with an SPDX SBOM, scanned with Trivy, and published to GHCR with OCI labels. Dependabot keeps Go modules and GitHub Actions dependencies up to date.
 
 ---
 
@@ -826,6 +831,7 @@ make install-cli
 
 ## Documentation
 
+- [Architecture Diagrams](docs/architecture/INDEX.md) -- Mermaid diagrams of system overview, reconciliation flows, checker registry, AI pipeline, and dashboard
 - [AI Integration Guide](docs/ai-integration.md) -- Configure AI-powered suggestions (including runtime dashboard config)
 - [Troubleshooting Guide](docs/troubleshooting.md) -- Common issues and solutions
 
@@ -854,6 +860,7 @@ make install-cli
 - [x] TroubleshootRequest creation from dashboard — DiagnoseModal, contextual diagnose on issues, K8s name validation, capabilities-gated UI for console mode (v1.11.0)
 - [x] Codex audit remediation — console backend auth/TLS, meta-tag auth token delivery, SSE cookie auth, Prometheus TLS default, strict network policies
 - [ ] Multi-cluster e2e tests with Kind clusters
+- [ ] Enterprise readiness + plug-and-play profiles — OIDC/SSO front door, tenant-scoped auth + audit trail, provider-style integrations (Splunk/AKS/Prometheus) without code forks
 
 ---
 
