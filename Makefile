@@ -321,20 +321,40 @@ test-multi-cluster: ## Run multi-cluster integration tests (requires Kind cluste
 cleanup-multi-cluster: ## Tear down Kind clusters used for multi-cluster testing
 	CLUSTER_A=$(CLUSTER_A) CLUSTER_B=$(CLUSTER_B) KUBECONFIG_A=$(KUBECONFIG_A) KUBECONFIG_B=$(KUBECONFIG_B) KIND=$(KIND) hack/multi-cluster-teardown.sh
 
+MULTI_CLUSTER_PIDFILE ?= /tmp/kube-assist-multi-cluster.pids
+
 .PHONY: dev-multi-cluster
-dev-multi-cluster: setup-multi-cluster ## Full multi-cluster dev setup (Kind + seed + instructions)
+dev-multi-cluster: setup-multi-cluster ## One-command fleet dev: Kind clusters + console backend + dashboard
+	@rm -f $(MULTI_CLUSTER_PIDFILE)
+	@echo "==> Starting console backend on :8085..."
+	@go run ./cmd/console-backend/ --allow-insecure \
+		--kubeconfigs=orbstack=$(ORBSTACK_KUBECONFIG),$(CLUSTER_A)=$(KUBECONFIG_A),$(CLUSTER_B)=$(KUBECONFIG_B) \
+		& echo $$! >> $(MULTI_CLUSTER_PIDFILE)
+	@sleep 2
+	@echo "==> Starting dashboard on :9090 (console mode → fleet view)..."
+	@go run ./cmd/main.go --enable-dashboard --dashboard-bind-address=:9090 \
+		--datasource=console --console-url=http://localhost:8085 --cluster-id=orbstack \
+		& echo $$! >> $(MULTI_CLUSTER_PIDFILE)
+	@sleep 2
 	@echo ""
-	@echo "==> Multi-cluster dev environment ready!"
+	@echo "==> Multi-cluster dev environment running!"
 	@echo "    Clusters: orbstack, $(CLUSTER_A), $(CLUSTER_B)"
 	@echo ""
-	@echo "  Start console backend (terminal 1):"
-	@echo "    make run-console-backend"
+	@echo "    Dashboard:       http://localhost:9090"
+	@echo "    Console API:     http://localhost:8085/api/v1/clusters"
 	@echo ""
-	@echo "  Start dashboard (terminal 2):"
-	@echo "    make run"
+	@echo "    Stop everything: make dev-multi-cluster-down"
 	@echo ""
-	@echo "  Verify:"
-	@echo "    curl -s http://localhost:8085/api/v1/clusters"
-	@echo ""
-	@echo "  Teardown:"
-	@echo "    make cleanup-multi-cluster"
+	@echo "==> Tailing logs (Ctrl-C to detach, processes keep running)..."
+	@wait
+
+.PHONY: dev-multi-cluster-down
+dev-multi-cluster-down: ## Stop servers + delete Kind clusters
+	@if [ -f $(MULTI_CLUSTER_PIDFILE) ]; then \
+		echo "==> Stopping background servers..."; \
+		while read -r pid; do \
+			kill "$$pid" 2>/dev/null && echo "    Killed PID $$pid" || true; \
+		done < $(MULTI_CLUSTER_PIDFILE); \
+		rm -f $(MULTI_CLUSTER_PIDFILE); \
+	fi
+	@$(MAKE) cleanup-multi-cluster
