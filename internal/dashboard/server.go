@@ -70,12 +70,13 @@ type AIStatus struct {
 
 // HealthUpdate represents a health check update sent via SSE
 type HealthUpdate struct {
-	Timestamp  time.Time              `json:"timestamp"`
-	ClusterID  string                 `json:"clusterId,omitempty"`
-	Namespaces []string               `json:"namespaces"`
-	Results    map[string]CheckResult `json:"results"`
-	Summary    Summary                `json:"summary"`
-	AIStatus   *AIStatus              `json:"aiStatus,omitempty"`
+	Timestamp   time.Time              `json:"timestamp"`
+	ClusterID   string                 `json:"clusterId,omitempty"`
+	Namespaces  []string               `json:"namespaces"`
+	Results     map[string]CheckResult `json:"results"`
+	Summary     Summary                `json:"summary"`
+	AIStatus    *AIStatus              `json:"aiStatus,omitempty"`
+	IssueStates map[string]*IssueState `json:"issueStates,omitempty"`
 }
 
 // CheckResult is a simplified result for the dashboard
@@ -132,6 +133,7 @@ type clusterState struct {
 	lastCausalInsights []ai.CausalGroupInsight
 	lastExplain        *ExplainCacheEntry
 	checkCounter       uint64
+	issueStates        map[string]*IssueState // per-cluster issue ack/snooze state
 }
 
 // FleetSummary provides an aggregate view of all clusters.
@@ -150,11 +152,27 @@ type FleetClusterEntry struct {
 	LastUpdated   string  `json:"lastUpdated"`
 }
 
+// Issue state action constants.
+const (
+	ActionAcknowledged = "acknowledged"
+	ActionSnoozed      = "snoozed"
+)
+
+// IssueState represents a user action on an issue (acknowledge or snooze).
+type IssueState struct {
+	Key          string     `json:"key"`
+	Action       string     `json:"action"` // ActionAcknowledged or ActionSnoozed
+	Reason       string     `json:"reason,omitempty"`
+	SnoozedUntil *time.Time `json:"snoozedUntil,omitempty"`
+	CreatedAt    time.Time  `json:"createdAt"`
+}
+
 // AISettingsRequest is the JSON body for POST /api/settings/ai
 type AISettingsRequest struct {
 	Enabled      bool   `json:"enabled"`
 	Provider     string `json:"provider"`
 	APIKey       string `json:"apiKey,omitempty"`
+	ClearAPIKey  bool   `json:"clearApiKey,omitempty"`
 	Model        string `json:"model,omitempty"`
 	ExplainModel string `json:"explainModel,omitempty"`
 }
@@ -219,7 +237,8 @@ func (s *Server) getOrCreateClusterState(clusterID string) *clusterState {
 	cs, ok := s.clusters[clusterID]
 	if !ok {
 		cs = &clusterState{
-			history: history.New(100),
+			history:     history.New(100),
+			issueStates: make(map[string]*IssueState),
 		}
 		s.clusters[clusterID] = cs
 	}
@@ -375,6 +394,9 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/api/fleet/summary", s.authMiddleware(s.handleFleetSummary))
 	mux.HandleFunc("/api/settings/ai/catalog", s.handleAICatalog)
 	mux.HandleFunc("/api/troubleshoot", s.authMiddleware(s.handleCreateTroubleshoot))
+	mux.HandleFunc("/api/issues/acknowledge", s.authMiddleware(s.handleIssueAcknowledge))
+	mux.HandleFunc("/api/issues/snooze", s.authMiddleware(s.handleIssueSnooze))
+	mux.HandleFunc("/api/issue-states", s.authMiddleware(s.handleIssueStates))
 	mux.HandleFunc("/api/capabilities", s.handleCapabilities)
 	// React SPA dashboard
 	spaFS, err := fs.Sub(webAssets, "web/dist")
@@ -777,6 +799,18 @@ func (s *Server) runCheckForCluster(ctx context.Context, clusterID string, ds da
 		update.ClusterID = clusterID
 	}
 
+	// Snapshot active issue states for summary exclusion
+	s.mu.RLock()
+	activeStates := make(map[string]*IssueState, len(cs.issueStates))
+	now2 := time.Now()
+	for k, st := range cs.issueStates {
+		if st.Action == ActionSnoozed && st.SnoozedUntil != nil && st.SnoozedUntil.Before(now2) {
+			continue // expired snooze
+		}
+		activeStates[k] = st
+	}
+	s.mu.RUnlock()
+
 	var summary Summary
 	for name, result := range results {
 		cr := CheckResult{
@@ -815,6 +849,12 @@ func (s *Server) runCheckForCluster(ctx context.Context, clusterID string, ds da
 				}
 				cr.Issues = append(cr.Issues, di)
 
+				// Exclude muted issues from severity counts
+				issueKey := issue.Namespace + "/" + issue.Resource + "/" + issue.Type
+				if _, muted := activeStates[issueKey]; muted {
+					continue
+				}
+
 				switch issue.Severity {
 				case checker.SeverityCritical:
 					summary.CriticalCount++
@@ -832,6 +872,18 @@ func (s *Server) runCheckForCluster(ctx context.Context, clusterID string, ds da
 
 	// Store latest and broadcast
 	s.mu.Lock()
+	// Merge non-expired issue states into the update and clean up expired entries
+	nowBroadcast := time.Now()
+	for k, st := range cs.issueStates {
+		if st.Action == ActionSnoozed && st.SnoozedUntil != nil && st.SnoozedUntil.Before(nowBroadcast) {
+			delete(cs.issueStates, k)
+			continue
+		}
+		if update.IssueStates == nil {
+			update.IssueStates = make(map[string]*IssueState)
+		}
+		update.IssueStates[k] = st
+	}
 	cs.latest = update
 	cs.latestCausal = causalCtx
 	for clientCh, subscribedID := range s.clients {
@@ -1004,8 +1056,24 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	s.mu.RLock()
 	cs, ok := s.clusters[clusterID]
 	var latest *HealthUpdate
-	if ok {
-		latest = cs.latest
+	if ok && cs.latest != nil {
+		// Deep-copy to avoid mutating cached state (IssueStates map is shared)
+		cp := *cs.latest
+		latest = &cp
+		// Merge non-expired per-cluster issue states into a fresh map
+		nowHealth := time.Now()
+		states := make(map[string]*IssueState, len(cs.issueStates))
+		for k, st := range cs.issueStates {
+			if st.Action == ActionSnoozed && st.SnoozedUntil != nil && st.SnoozedUntil.Before(nowHealth) {
+				continue
+			}
+			states[k] = st
+		}
+		if len(states) > 0 {
+			latest.IssueStates = states
+		} else {
+			latest.IssueStates = nil
+		}
 	}
 	s.mu.RUnlock()
 
@@ -1163,12 +1231,14 @@ func (s *Server) handleGetAISettings(w http.ResponseWriter, _ *http.Request) {
 
 // Input length limits for AI settings fields.
 const (
-	maxAPIKeyLen = 256
-	maxModelLen  = 128
+	maxAPIKeyLen        = 256
+	maxModelLen         = 128
+	maxSettingsBodySize = 1 << 20 // 1 MB
 )
 
 // handlePostAISettings updates AI configuration at runtime
 func (s *Server) handlePostAISettings(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxSettingsBodySize)
 	var req AISettingsRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid JSON body", http.StatusBadRequest)
@@ -1204,7 +1274,9 @@ func (s *Server) handlePostAISettings(w http.ResponseWriter, r *http.Request) {
 	if providerName != "" {
 		stagedConfig.Provider = providerName
 	}
-	if req.APIKey != "" {
+	if req.ClearAPIKey {
+		stagedConfig.APIKey = ""
+	} else if req.APIKey != "" {
 		stagedConfig.APIKey = req.APIKey
 	}
 	if req.Model != "" {
@@ -1219,7 +1291,7 @@ func (s *Server) handlePostAISettings(w http.ResponseWriter, r *http.Request) {
 	s.mu.RUnlock()
 
 	if isManager {
-		if providerName != "" {
+		if providerName != "" || req.ClearAPIKey {
 			if err := mgr.Reconfigure(stagedConfig.Provider, stagedConfig.APIKey, stagedConfig.Model, stagedConfig.ExplainModel); err != nil {
 				log.Error(err, "Failed to reconfigure AI provider", "provider", stagedConfig.Provider)
 				http.Error(w, "Failed to reconfigure AI provider", http.StatusInternalServerError)
@@ -1910,6 +1982,201 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
 		log.Error(err, "Failed to encode capabilities response")
+	}
+}
+
+// Input limits for issue state keys.
+const (
+	maxIssueKeyLen    = 512
+	maxIssueReasonLen = 1024
+	maxSnoozeDuration = 24 * time.Hour
+)
+
+// issueKeyRe validates the expected format: namespace/resource/type.
+var issueKeyRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9\-]{0,61}[a-z0-9])?/.+/.+$`)
+
+// validateIssueKey checks key format and length.
+func validateIssueKey(key string) error {
+	if key == "" {
+		return fmt.Errorf("key is required")
+	}
+	if len(key) > maxIssueKeyLen {
+		return fmt.Errorf("key exceeds maximum length of %d", maxIssueKeyLen)
+	}
+	if !issueKeyRe.MatchString(key) {
+		return fmt.Errorf("key must match format namespace/resource/type")
+	}
+	return nil
+}
+
+// handleIssueAcknowledge handles POST and DELETE for /api/issues/acknowledge.
+func (s *Server) handleIssueAcknowledge(w http.ResponseWriter, r *http.Request) {
+	clusterID := r.URL.Query().Get("clusterId")
+
+	switch r.Method {
+	case http.MethodPost:
+		var req struct {
+			Key    string `json:"key"`
+			Reason string `json:"reason,omitempty"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid JSON body", http.StatusBadRequest)
+			return
+		}
+		if err := validateIssueKey(req.Key); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if len(req.Reason) > maxIssueReasonLen {
+			http.Error(w, fmt.Sprintf("reason exceeds maximum length of %d", maxIssueReasonLen), http.StatusBadRequest)
+			return
+		}
+		state := &IssueState{
+			Key:       req.Key,
+			Action:    ActionAcknowledged,
+			Reason:    req.Reason,
+			CreatedAt: time.Now(),
+		}
+		s.mu.Lock()
+		cs := s.getOrCreateClusterState(clusterID)
+		cs.issueStates[req.Key] = state
+		s.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(state); err != nil {
+			log.Error(err, "Failed to encode response", "handler", "handleIssueAcknowledge")
+		}
+	case http.MethodDelete:
+		var req struct {
+			Key string `json:"key"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid JSON body", http.StatusBadRequest)
+			return
+		}
+		if req.Key == "" {
+			http.Error(w, "key is required", http.StatusBadRequest)
+			return
+		}
+		s.mu.Lock()
+		if cs, ok := s.clusters[clusterID]; ok {
+			delete(cs.issueStates, req.Key)
+		}
+		s.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(map[string]string{"status": "removed"}); err != nil {
+			log.Error(err, "Failed to encode response", "handler", "handleIssueAcknowledge")
+		}
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// handleIssueSnooze handles POST and DELETE for /api/issues/snooze.
+func (s *Server) handleIssueSnooze(w http.ResponseWriter, r *http.Request) {
+	clusterID := r.URL.Query().Get("clusterId")
+
+	switch r.Method {
+	case http.MethodPost:
+		var req struct {
+			Key      string `json:"key"`
+			Duration string `json:"duration"`
+			Reason   string `json:"reason,omitempty"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid JSON body", http.StatusBadRequest)
+			return
+		}
+		if err := validateIssueKey(req.Key); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if len(req.Reason) > maxIssueReasonLen {
+			http.Error(w, fmt.Sprintf("reason exceeds maximum length of %d", maxIssueReasonLen), http.StatusBadRequest)
+			return
+		}
+		if req.Duration == "" {
+			http.Error(w, "duration is required", http.StatusBadRequest)
+			return
+		}
+		dur, err := time.ParseDuration(req.Duration)
+		if err != nil {
+			http.Error(w, "invalid duration: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		if dur <= 0 {
+			http.Error(w, "duration must be positive", http.StatusBadRequest)
+			return
+		}
+		if dur > maxSnoozeDuration {
+			http.Error(w, fmt.Sprintf("duration must be <= %s", maxSnoozeDuration), http.StatusBadRequest)
+			return
+		}
+		snoozedUntil := time.Now().Add(dur)
+		state := &IssueState{
+			Key:          req.Key,
+			Action:       ActionSnoozed,
+			Reason:       req.Reason,
+			SnoozedUntil: &snoozedUntil,
+			CreatedAt:    time.Now(),
+		}
+		s.mu.Lock()
+		cs := s.getOrCreateClusterState(clusterID)
+		cs.issueStates[req.Key] = state
+		s.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(state); err != nil {
+			log.Error(err, "Failed to encode response", "handler", "handleIssueSnooze")
+		}
+	case http.MethodDelete:
+		var req struct {
+			Key string `json:"key"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid JSON body", http.StatusBadRequest)
+			return
+		}
+		if req.Key == "" {
+			http.Error(w, "key is required", http.StatusBadRequest)
+			return
+		}
+		s.mu.Lock()
+		if cs, ok := s.clusters[clusterID]; ok {
+			delete(cs.issueStates, req.Key)
+		}
+		s.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(map[string]string{"status": "removed"}); err != nil {
+			log.Error(err, "Failed to encode response", "handler", "handleIssueSnooze")
+		}
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// handleIssueStates handles GET for /api/issue-states.
+func (s *Server) handleIssueStates(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	clusterID := r.URL.Query().Get("clusterId")
+
+	s.mu.RLock()
+	active := make(map[string]*IssueState)
+	if cs, ok := s.clusters[clusterID]; ok {
+		nowStates := time.Now()
+		for k, st := range cs.issueStates {
+			if st.Action == ActionSnoozed && st.SnoozedUntil != nil && st.SnoozedUntil.Before(nowStates) {
+				continue
+			}
+			active[k] = st
+		}
+	}
+	s.mu.RUnlock()
+
+	if err := json.NewEncoder(w).Encode(active); err != nil {
+		log.Error(err, "Failed to encode response", "handler", "handleIssueStates")
 	}
 }
 

@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import type { CheckResult, TargetKind } from '../types'
+import type { CheckResult, IssueState, TargetKind } from '../types'
 import { IssueRow } from './IssueRow'
 import type { Severity } from './SeverityTabs'
 
@@ -9,11 +9,29 @@ interface Props {
   search: string
   severity: Severity
   namespace: string
+  issueStates?: Record<string, IssueState>
+  onAcknowledge?: (key: string) => void
+  onSnooze?: (key: string, duration: string) => void
+  onDismissState?: (key: string) => void
   onDiagnose?: (prefill?: { namespace?: string; targetKind?: TargetKind; targetName?: string }) => void
 }
 
-export function CheckerCard({ name, result, search, severity, namespace, onDiagnose }: Props) {
+function makeIssueKey(issue: { namespace: string; resource: string; type: string }): string {
+  return `${issue.namespace}/${issue.resource}/${issue.type}`
+}
+
+function isStateMuted(state: IssueState | undefined): boolean {
+  if (!state) return false
+  if (state.action === 'acknowledged') return true
+  if (state.action === 'snoozed' && state.snoozedUntil) {
+    return new Date(state.snoozedUntil) > new Date()
+  }
+  return true
+}
+
+export function CheckerCard({ name, result, search, severity, namespace, issueStates, onAcknowledge, onSnooze, onDismissState, onDiagnose }: Props) {
   const [collapsed, setCollapsed] = useState(false)
+  const [showMuted, setShowMuted] = useState(false)
 
   const filteredIssues = result.issues.filter((issue) => {
     if (severity !== 'all' && issue.severity !== severity) return false
@@ -29,8 +47,11 @@ export function CheckerCard({ name, result, search, severity, namespace, onDiagn
     return true
   })
 
-  const hasCritical = result.issues.some((i) => i.severity === 'Critical')
-  const hasWarning = result.issues.some((i) => i.severity === 'Warning')
+  const activeIssues = filteredIssues.filter((issue) => !isStateMuted(issueStates?.[makeIssueKey(issue)]))
+  const mutedIssues = filteredIssues.filter((issue) => isStateMuted(issueStates?.[makeIssueKey(issue)]))
+
+  const hasCritical = activeIssues.some((i) => i.severity === 'Critical')
+  const hasWarning = activeIssues.some((i) => i.severity === 'Warning')
   const aiCount = result.issues.filter((i) => i.aiEnhanced).length
 
   return (
@@ -50,13 +71,18 @@ export function CheckerCard({ name, result, search, severity, namespace, onDiagn
           <span className="text-sm px-2.5 py-0.5 rounded-lg bg-severity-healthy-bg text-severity-healthy">
             {result.healthy} healthy
           </span>
-          {result.issues.length > 0 && (
+          {activeIssues.length > 0 && (
             <span className={`text-sm px-2.5 py-0.5 rounded-lg ${
               hasCritical ? 'bg-severity-critical-bg text-severity-critical' :
               hasWarning ? 'bg-severity-warning-bg text-severity-warning' :
               'bg-severity-info-bg text-severity-info'
             }`}>
-              {result.issues.length} issues
+              {activeIssues.length} issue{activeIssues.length !== 1 ? 's' : ''}
+            </span>
+          )}
+          {mutedIssues.length > 0 && (
+            <span className="text-sm px-2.5 py-0.5 rounded-lg glass-inset" style={{ color: 'var(--text-tertiary)' }}>
+              {mutedIssues.length} muted
             </span>
           )}
           {aiCount > 0 && (
@@ -71,15 +97,57 @@ export function CheckerCard({ name, result, search, severity, namespace, onDiagn
         <div className="px-4 pb-2 text-severity-critical text-sm">{result.error}</div>
       )}
 
-      {!collapsed && filteredIssues.length > 0 && (
+      {!collapsed && activeIssues.length > 0 && (
         <div className="border-t border-edge">
-          {filteredIssues.map((issue) => (
-            <IssueRow key={`${issue.namespace}-${issue.resource}-${issue.type}`} issue={issue} onDiagnose={onDiagnose} />
-          ))}
+          {activeIssues.map((issue) => {
+            const key = makeIssueKey(issue)
+            return (
+              <IssueRow
+                key={key}
+                issue={issue}
+                issueKey={key}
+                issueState={issueStates?.[key]}
+                onAcknowledge={onAcknowledge}
+                onSnooze={onSnooze}
+                onDismissState={onDismissState}
+                onDiagnose={onDiagnose}
+              />
+            )
+          })}
         </div>
       )}
 
-      {!collapsed && filteredIssues.length === 0 && result.issues.length > 0 && (
+      {!collapsed && mutedIssues.length > 0 && (
+        <div className="border-t border-edge">
+          <button
+            onClick={() => setShowMuted(!showMuted)}
+            className="w-full px-4 py-2 text-xs text-left transition-all duration-200 hover:bg-glass-200 flex items-center gap-1.5"
+            style={{ color: 'var(--text-tertiary)' }}
+          >
+            <svg className="w-3 h-3 transition-transform duration-200" style={{ transform: showMuted ? '' : 'rotate(-90deg)' }} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+            </svg>
+            {mutedIssues.length} acknowledged/snoozed
+          </button>
+          {showMuted && mutedIssues.map((issue) => {
+            const key = makeIssueKey(issue)
+            return (
+              <IssueRow
+                key={key}
+                issue={issue}
+                issueKey={key}
+                issueState={issueStates?.[key]}
+                onAcknowledge={onAcknowledge}
+                onSnooze={onSnooze}
+                onDismissState={onDismissState}
+                onDiagnose={onDiagnose}
+              />
+            )
+          })}
+        </div>
+      )}
+
+      {!collapsed && activeIssues.length === 0 && mutedIssues.length === 0 && result.issues.length > 0 && (
         <div className="px-4 py-3 text-sm border-t border-edge" style={{ color: 'var(--text-tertiary)' }}>
           No issues match filters
         </div>

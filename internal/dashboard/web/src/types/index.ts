@@ -21,6 +21,7 @@ export interface HealthUpdate {
   summary: Summary
   aiStatus?: AIStatus
   clusterId?: string
+  issueStates?: Record<string, IssueState>
 }
 
 export interface CheckResult {
@@ -64,6 +65,7 @@ export interface AISettingsRequest {
   enabled: boolean
   provider: string
   apiKey?: string
+  clearApiKey?: boolean
   model?: string
   explainModel?: string
 }
@@ -155,6 +157,15 @@ export interface PredictionResult {
 export interface PredictionResponse {
   status?: string
   message?: string
+}
+
+// Issue state types matching internal/dashboard/issuestate.go
+export interface IssueState {
+  key: string
+  action: 'acknowledged' | 'snoozed'
+  reason?: string
+  snoozedUntil?: string
+  createdAt: string
 }
 
 // TroubleshootRequest types matching internal/dashboard/server.go

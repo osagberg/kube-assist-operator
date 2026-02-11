@@ -1,8 +1,13 @@
 import { useState } from 'react'
-import type { Issue, TargetKind } from '../types'
+import type { Issue, IssueState, TargetKind } from '../types'
 
 interface Props {
   issue: Issue
+  issueKey: string
+  issueState?: IssueState
+  onAcknowledge?: (key: string) => void
+  onSnooze?: (key: string, duration: string) => void
+  onDismissState?: (key: string) => void
   onDiagnose?: (prefill?: { namespace?: string; targetKind?: TargetKind; targetName?: string }) => void
 }
 
@@ -46,9 +51,17 @@ function parseResourceKindAndName(resource: string): { kind?: TargetKind; name: 
   return { kind: RESOURCE_KIND_MAP[rawKind], name }
 }
 
-export function IssueRow({ issue, onDiagnose }: Props) {
+const SNOOZE_OPTIONS = [
+  { label: '30m', value: '30m' },
+  { label: '1h', value: '1h' },
+  { label: '4h', value: '4h' },
+  { label: '24h', value: '24h' },
+]
+
+export function IssueRow({ issue, issueKey, issueState, onAcknowledge, onSnooze, onDismissState, onDiagnose }: Props) {
   const [copied, setCopied] = useState(false)
   const [showFull, setShowFull] = useState(false)
+  const [showSnooze, setShowSnooze] = useState(false)
   const pillClass = severityPills[issue.severity] ?? severityPills.Info
   const pillText = severityLabels[issue.severity] ?? 'IN'
 
@@ -64,8 +77,10 @@ export function IssueRow({ issue, onDiagnose }: Props) {
 
   const cmd = extractCommand(issue.suggestion)
 
+  const isMuted = !!issueState
+
   return (
-    <div className="px-4 py-2 transition-all duration-200 hover:bg-glass-200">
+    <div className={`px-4 py-2 transition-all duration-200 hover:bg-glass-200 ${isMuted ? 'opacity-50' : ''}`}>
       <div className="flex items-start justify-between gap-2">
         <div className="flex items-start gap-2.5 min-w-0 flex-1">
           <span className={`${pillClass} mt-0.5`}>{pillText}</span>
@@ -112,22 +127,79 @@ export function IssueRow({ issue, onDiagnose }: Props) {
             )}
           </div>
         </div>
-        {onDiagnose && (
-          <button
-            onClick={() => {
-              const parsed = parseResourceKindAndName(issue.resource)
-              onDiagnose({
-                namespace: issue.namespace,
-                targetKind: parsed.kind,
-                targetName: parsed.name,
-              })
-            }}
-            className="text-xs text-accent hover:underline flex-shrink-0 mt-0.5 transition-all duration-200"
-            aria-label={`Diagnose ${issue.resource}`}
-          >
-            Diagnose
-          </button>
-        )}
+        <div className="flex items-center gap-2 flex-shrink-0 mt-0.5">
+          {isMuted ? (
+            <div className="flex items-center gap-1.5">
+              <span className="text-[10px] px-1.5 py-0.5 rounded-full glass-inset font-medium" style={{ color: 'var(--text-tertiary)' }}>
+                {issueState.action === 'acknowledged' ? 'Acked' : `Snoozed${issueState.snoozedUntil ? ` until ${new Date(issueState.snoozedUntil).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : ''}`}
+              </span>
+              {onDismissState && (
+                <button
+                  onClick={() => onDismissState(issueKey)}
+                  className="text-[10px] text-accent hover:underline transition-all duration-200"
+                >
+                  {issueState.action === 'acknowledged' ? 'Undo' : 'Wake'}
+                </button>
+              )}
+            </div>
+          ) : (
+            <>
+              {onAcknowledge && (
+                <button
+                  onClick={() => onAcknowledge(issueKey)}
+                  className="text-xs text-accent hover:underline transition-all duration-200"
+                  aria-label={`Acknowledge ${issue.resource}`}
+                >
+                  Ack
+                </button>
+              )}
+              {onSnooze && (
+                <div className="relative">
+                  <button
+                    onClick={() => setShowSnooze(!showSnooze)}
+                    className="text-xs text-accent hover:underline transition-all duration-200"
+                    aria-label={`Snooze ${issue.resource}`}
+                  >
+                    Snooze
+                  </button>
+                  {showSnooze && (
+                    <div className="absolute right-0 top-6 z-50 glass-elevated rounded-lg p-1 flex flex-col gap-0.5 min-w-[80px]">
+                      {SNOOZE_OPTIONS.map((opt) => (
+                        <button
+                          key={opt.value}
+                          onClick={() => {
+                            onSnooze(issueKey, opt.value)
+                            setShowSnooze(false)
+                          }}
+                          className="text-xs px-3 py-1.5 rounded-md text-left transition-all duration-200 hover:bg-glass-200"
+                          style={{ color: 'var(--text-secondary)' }}
+                        >
+                          {opt.label}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </>
+          )}
+          {onDiagnose && (
+            <button
+              onClick={() => {
+                const parsed = parseResourceKindAndName(issue.resource)
+                onDiagnose({
+                  namespace: issue.namespace,
+                  targetKind: parsed.kind,
+                  targetName: parsed.name,
+                })
+              }}
+              className="text-xs text-accent hover:underline flex-shrink-0 transition-all duration-200"
+              aria-label={`Diagnose ${issue.resource}`}
+            >
+              Diagnose
+            </button>
+          )}
+        </div>
       </div>
     </div>
   )

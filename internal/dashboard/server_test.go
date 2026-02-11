@@ -1537,6 +1537,9 @@ func TestAuthMiddleware_ProtectsReadEndpoints(t *testing.T) {
 		{"/api/check", http.MethodPost},
 		{"/api/settings/ai", http.MethodGet},
 		{"/api/explain", http.MethodGet},
+		{"/api/issues/acknowledge", http.MethodPost},
+		{"/api/issues/snooze", http.MethodPost},
+		{"/api/issue-states", http.MethodGet},
 	}
 
 	for _, ep := range endpoints {
@@ -1568,6 +1571,7 @@ func TestAuthMiddleware_AllowsWithValidToken(t *testing.T) {
 		"/api/prediction/trend",
 		"/api/clusters",
 		"/api/fleet/summary",
+		"/api/issue-states",
 	}
 
 	for _, path := range endpoints {
@@ -2286,5 +2290,1225 @@ func TestHandleCreateTroubleshoot_ActionsNormalizesAll(t *testing.T) {
 
 	if rr.Code != http.StatusCreated {
 		t.Errorf("all-normalization status = %d, want %d; body = %s", rr.Code, http.StatusCreated, rr.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// IssueState management tests
+// ---------------------------------------------------------------------------
+
+func TestServer_HandleIssueAcknowledge_POST(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	body := `{"key":"default/deployment-test/CrashLoopBackOff","reason":"known issue"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/issues/acknowledge", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	server.handleIssueAcknowledge(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("POST /api/issues/acknowledge status = %d, want %d; body = %s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+
+	var state IssueState
+	if err := json.Unmarshal(rr.Body.Bytes(), &state); err != nil {
+		t.Fatalf("returned invalid JSON: %v", err)
+	}
+	if state.Action != ActionAcknowledged {
+		t.Errorf("action = %q, want %q", state.Action, ActionAcknowledged)
+	}
+	if state.Key != "default/deployment-test/CrashLoopBackOff" {
+		t.Errorf("key = %q, want %q", state.Key, "default/deployment-test/CrashLoopBackOff")
+	}
+	if state.Reason != "known issue" {
+		t.Errorf("reason = %q, want %q", state.Reason, "known issue")
+	}
+
+	// Verify stored in per-cluster map
+	server.mu.RLock()
+	stored, ok := server.clusters[""].issueStates["default/deployment-test/CrashLoopBackOff"]
+	server.mu.RUnlock()
+	if !ok || stored == nil {
+		t.Fatal("expected issue state to be stored in map")
+	}
+	if stored.Action != ActionAcknowledged {
+		t.Errorf("stored action = %q, want %q", stored.Action, ActionAcknowledged)
+	}
+}
+
+func TestServer_HandleIssueAcknowledge_DELETE(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	// Pre-populate an acknowledged state
+	server.mu.Lock()
+	cs := server.getOrCreateClusterState("")
+	cs.issueStates["default/deploy/CrashLoop"] = &IssueState{
+		Key:       "default/deploy/CrashLoop",
+		Action:    ActionAcknowledged,
+		CreatedAt: time.Now(),
+	}
+	server.mu.Unlock()
+
+	body := `{"key":"default/deploy/CrashLoop"}`
+	req := httptest.NewRequest(http.MethodDelete, "/api/issues/acknowledge", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	server.handleIssueAcknowledge(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("DELETE /api/issues/acknowledge status = %d, want %d", rr.Code, http.StatusOK)
+	}
+
+	// Verify removed from per-cluster map
+	server.mu.RLock()
+	_, ok := server.clusters[""].issueStates["default/deploy/CrashLoop"]
+	server.mu.RUnlock()
+	if ok {
+		t.Error("expected issue state to be removed from map after DELETE")
+	}
+}
+
+func TestServer_HandleIssueSnooze_POST(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	body := `{"key":"ns1/pod-x/OOMKilled","duration":"1h","reason":"will fix later"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/issues/snooze", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	server.handleIssueSnooze(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("POST /api/issues/snooze status = %d, want %d; body = %s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+
+	var state IssueState
+	if err := json.Unmarshal(rr.Body.Bytes(), &state); err != nil {
+		t.Fatalf("returned invalid JSON: %v", err)
+	}
+	if state.Action != ActionSnoozed {
+		t.Errorf("action = %q, want %q", state.Action, ActionSnoozed)
+	}
+	if state.SnoozedUntil == nil {
+		t.Fatal("expected SnoozedUntil to be set")
+	}
+	// Should be roughly 1h from now
+	diff := time.Until(*state.SnoozedUntil)
+	if diff < 59*time.Minute || diff > 61*time.Minute {
+		t.Errorf("SnoozedUntil is %v from now, expected ~1h", diff)
+	}
+}
+
+func TestServer_HandleIssueSnooze_InvalidDuration(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	body := `{"key":"ns1/pod-x/OOMKilled","duration":"not-a-duration"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/issues/snooze", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	server.handleIssueSnooze(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("POST /api/issues/snooze with invalid duration status = %d, want %d", rr.Code, http.StatusBadRequest)
+	}
+}
+
+func TestServer_HandleIssueStates_GET(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	// Pre-populate states
+	future := time.Now().Add(1 * time.Hour)
+	server.mu.Lock()
+	cs := server.getOrCreateClusterState("")
+	cs.issueStates["ns1/deploy-a/CrashLoop"] = &IssueState{
+		Key:       "ns1/deploy-a/CrashLoop",
+		Action:    ActionAcknowledged,
+		CreatedAt: time.Now(),
+	}
+	cs.issueStates["ns2/pod-b/OOMKilled"] = &IssueState{
+		Key:          "ns2/pod-b/OOMKilled",
+		Action:       ActionSnoozed,
+		SnoozedUntil: &future,
+		CreatedAt:    time.Now(),
+	}
+	server.mu.Unlock()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/issue-states", nil)
+	rr := httptest.NewRecorder()
+
+	server.handleIssueStates(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("GET /api/issue-states status = %d, want %d", rr.Code, http.StatusOK)
+	}
+
+	var states map[string]*IssueState
+	if err := json.Unmarshal(rr.Body.Bytes(), &states); err != nil {
+		t.Fatalf("returned invalid JSON: %v", err)
+	}
+	if len(states) != 2 {
+		t.Errorf("expected 2 states, got %d", len(states))
+	}
+	if states["ns1/deploy-a/CrashLoop"] == nil {
+		t.Error("expected acknowledged state for ns1/deploy-a/CrashLoop")
+	}
+	if states["ns2/pod-b/OOMKilled"] == nil {
+		t.Error("expected snoozed state for ns2/pod-b/OOMKilled")
+	}
+}
+
+func TestServer_HandleIssueStates_ExcludesExpired(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	// One expired, one active
+	expired := time.Now().Add(-1 * time.Hour)
+	future := time.Now().Add(1 * time.Hour)
+	server.mu.Lock()
+	cs := server.getOrCreateClusterState("")
+	cs.issueStates["ns1/deploy-a/CrashLoop"] = &IssueState{
+		Key:          "ns1/deploy-a/CrashLoop",
+		Action:       ActionSnoozed,
+		SnoozedUntil: &expired,
+		CreatedAt:    time.Now().Add(-2 * time.Hour),
+	}
+	cs.issueStates["ns2/pod-b/OOMKilled"] = &IssueState{
+		Key:          "ns2/pod-b/OOMKilled",
+		Action:       ActionSnoozed,
+		SnoozedUntil: &future,
+		CreatedAt:    time.Now(),
+	}
+	server.mu.Unlock()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/issue-states", nil)
+	rr := httptest.NewRecorder()
+
+	server.handleIssueStates(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("GET /api/issue-states status = %d, want %d", rr.Code, http.StatusOK)
+	}
+
+	var states map[string]*IssueState
+	if err := json.Unmarshal(rr.Body.Bytes(), &states); err != nil {
+		t.Fatalf("returned invalid JSON: %v", err)
+	}
+	if len(states) != 1 {
+		t.Errorf("expected 1 active state (expired excluded), got %d", len(states))
+	}
+	if states["ns2/pod-b/OOMKilled"] == nil {
+		t.Error("expected active snoozed state for ns2/pod-b/OOMKilled")
+	}
+}
+
+func TestServer_IssueStates_InHealthUpdate(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	// Set up cluster state
+	server.mu.Lock()
+	cs := server.getOrCreateClusterState("")
+	cs.latest = &HealthUpdate{
+		Timestamp:  time.Now(),
+		Namespaces: []string{"default"},
+		Results:    map[string]CheckResult{},
+		Summary:    Summary{TotalHealthy: 5},
+	}
+	// Add an acknowledged issue state
+	cs.issueStates["default/deploy-a/CrashLoop"] = &IssueState{
+		Key:       "default/deploy-a/CrashLoop",
+		Action:    ActionAcknowledged,
+		CreatedAt: time.Now(),
+	}
+	server.mu.Unlock()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/health", nil)
+	rr := httptest.NewRecorder()
+	server.handleHealth(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("handleHealth status = %d, want %d", rr.Code, http.StatusOK)
+	}
+
+	var update HealthUpdate
+	if err := json.Unmarshal(rr.Body.Bytes(), &update); err != nil {
+		t.Fatalf("returned invalid JSON: %v", err)
+	}
+	if update.IssueStates == nil {
+		t.Fatal("expected IssueStates to be present in HealthUpdate")
+	}
+	if update.IssueStates["default/deploy-a/CrashLoop"] == nil {
+		t.Error("expected acknowledged state in HealthUpdate IssueStates")
+	}
+	if update.IssueStates["default/deploy-a/CrashLoop"].Action != ActionAcknowledged {
+		t.Errorf("expected action 'acknowledged', got %q", update.IssueStates["default/deploy-a/CrashLoop"].Action)
+	}
+}
+
+func TestServer_Summary_ExcludesAcknowledged(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	// Acknowledge one issue before running check
+	server.mu.Lock()
+	cs := server.getOrCreateClusterState("")
+	cs.issueStates["default/deployment/test/CrashLoopBackOff"] = &IssueState{
+		Key:       "default/deployment/test/CrashLoopBackOff",
+		Action:    ActionAcknowledged,
+		CreatedAt: time.Now(),
+	}
+	server.mu.Unlock()
+
+	// Simulate runCheckForCluster logic by constructing a HealthUpdate manually
+	// using the same summary computation path
+	results := map[string]*checker.CheckResult{
+		"workloads": {
+			Healthy: 3,
+			Issues: []checker.Issue{
+				{
+					Type:      "CrashLoopBackOff",
+					Severity:  checker.SeverityCritical,
+					Resource:  "deployment/test",
+					Namespace: "default",
+					Message:   "Container crashing",
+				},
+				{
+					Type:      "HighMemory",
+					Severity:  checker.SeverityWarning,
+					Resource:  "deployment/other",
+					Namespace: "default",
+					Message:   "Memory usage high",
+				},
+			},
+		},
+	}
+
+	// Read active states (same logic as in runCheckForCluster)
+	server.mu.RLock()
+	activeStates := make(map[string]*IssueState)
+	now := time.Now()
+	for k, st := range server.clusters[""].issueStates {
+		if st.Action == ActionSnoozed && st.SnoozedUntil != nil && st.SnoozedUntil.Before(now) {
+			continue
+		}
+		activeStates[k] = st
+	}
+	server.mu.RUnlock()
+
+	var summary Summary
+	for _, result := range results {
+		if result.Error != nil {
+			continue
+		}
+		summary.TotalHealthy += result.Healthy
+		summary.TotalIssues += len(result.Issues)
+		for _, issue := range result.Issues {
+			issueKey := issue.Namespace + "/" + issue.Resource + "/" + issue.Type
+			if _, muted := activeStates[issueKey]; muted {
+				continue
+			}
+			switch issue.Severity {
+			case checker.SeverityCritical:
+				summary.CriticalCount++
+			case checker.SeverityWarning:
+				summary.WarningCount++
+			case checker.SeverityInfo:
+				summary.InfoCount++
+			}
+		}
+	}
+
+	// TotalIssues still counts all issues (2), but severity counts exclude acknowledged
+	if summary.TotalIssues != 2 {
+		t.Errorf("TotalIssues = %d, want 2", summary.TotalIssues)
+	}
+	// CrashLoopBackOff is acknowledged, so CriticalCount should be 0
+	if summary.CriticalCount != 0 {
+		t.Errorf("CriticalCount = %d, want 0 (acknowledged issue excluded)", summary.CriticalCount)
+	}
+	// HighMemory is not acknowledged, so WarningCount should be 1
+	if summary.WarningCount != 1 {
+		t.Errorf("WarningCount = %d, want 1", summary.WarningCount)
+	}
+}
+
+func TestServer_HandleIssueAcknowledge_MethodNotAllowed(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/issues/acknowledge", nil)
+	rr := httptest.NewRecorder()
+	server.handleIssueAcknowledge(rr, req)
+
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Errorf("GET /api/issues/acknowledge status = %d, want %d", rr.Code, http.StatusMethodNotAllowed)
+	}
+}
+
+func TestServer_HandleIssueSnooze_MethodNotAllowed(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/issues/snooze", nil)
+	rr := httptest.NewRecorder()
+	server.handleIssueSnooze(rr, req)
+
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Errorf("GET /api/issues/snooze status = %d, want %d", rr.Code, http.StatusMethodNotAllowed)
+	}
+}
+
+func TestServer_HandleIssueStates_MethodNotAllowed(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	req := httptest.NewRequest(http.MethodPost, "/api/issue-states", nil)
+	rr := httptest.NewRecorder()
+	server.handleIssueStates(rr, req)
+
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Errorf("POST /api/issue-states status = %d, want %d", rr.Code, http.StatusMethodNotAllowed)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Input hardening tests
+// ---------------------------------------------------------------------------
+
+func TestServer_HandleIssueAcknowledge_EmptyKey(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	body := `{"key":""}`
+	req := httptest.NewRequest(http.MethodPost, "/api/issues/acknowledge", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	server.handleIssueAcknowledge(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("empty key status = %d, want %d; body = %s", rr.Code, http.StatusBadRequest, rr.Body.String())
+	}
+}
+
+func TestServer_HandleIssueAcknowledge_InvalidKeyFormat(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	// Missing namespace/resource/type structure
+	body := `{"key":"just-a-string"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/issues/acknowledge", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	server.handleIssueAcknowledge(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("invalid key format status = %d, want %d; body = %s", rr.Code, http.StatusBadRequest, rr.Body.String())
+	}
+}
+
+func TestServer_HandleIssueAcknowledge_OversizedKey(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	longKey := "ns/" + strings.Repeat("a", 510) + "/type"
+	body := `{"key":"` + longKey + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/issues/acknowledge", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	server.handleIssueAcknowledge(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("oversized key status = %d, want %d", rr.Code, http.StatusBadRequest)
+	}
+}
+
+func TestServer_HandleIssueAcknowledge_OversizedReason(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	longReason := strings.Repeat("x", 1025)
+	body := `{"key":"default/deploy/CrashLoop","reason":"` + longReason + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/issues/acknowledge", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	server.handleIssueAcknowledge(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("oversized reason status = %d, want %d", rr.Code, http.StatusBadRequest)
+	}
+}
+
+func TestServer_HandleIssueSnooze_NegativeDuration(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	body := `{"key":"default/deploy/CrashLoop","duration":"-1h"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/issues/snooze", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	server.handleIssueSnooze(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("negative duration status = %d, want %d; body = %s", rr.Code, http.StatusBadRequest, rr.Body.String())
+	}
+}
+
+func TestServer_HandleIssueSnooze_ZeroDuration(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	body := `{"key":"default/deploy/CrashLoop","duration":"0s"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/issues/snooze", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	server.handleIssueSnooze(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("zero duration status = %d, want %d; body = %s", rr.Code, http.StatusBadRequest, rr.Body.String())
+	}
+}
+
+func TestServer_HandleIssueSnooze_ExceedsMaxDuration(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	body := `{"key":"default/deploy/CrashLoop","duration":"25h"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/issues/snooze", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	server.handleIssueSnooze(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("duration > 24h status = %d, want %d; body = %s", rr.Code, http.StatusBadRequest, rr.Body.String())
+	}
+}
+
+func TestServer_HandleIssueSnooze_MissingDuration(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	body := `{"key":"default/deploy/CrashLoop"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/issues/snooze", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	server.handleIssueSnooze(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("missing duration status = %d, want %d; body = %s", rr.Code, http.StatusBadRequest, rr.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Per-cluster isolation test
+// ---------------------------------------------------------------------------
+
+func TestServer_IssueStates_PerClusterIsolation(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	key := "default/deploy/CrashLoop"
+
+	// Acknowledge on cluster-a
+	body := `{"key":"` + key + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/issues/acknowledge?clusterId=cluster-a", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	server.handleIssueAcknowledge(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("POST cluster-a ack status = %d, want %d", rr.Code, http.StatusOK)
+	}
+
+	// Verify cluster-a has the state
+	server.mu.RLock()
+	csA := server.clusters["cluster-a"]
+	server.mu.RUnlock()
+	if csA == nil {
+		t.Fatal("expected cluster-a state to exist")
+	}
+	if csA.issueStates[key] == nil {
+		t.Fatal("expected issue state on cluster-a")
+	}
+
+	// Verify cluster-b does NOT have the state
+	server.mu.RLock()
+	csB := server.clusters["cluster-b"]
+	server.mu.RUnlock()
+	if csB != nil && csB.issueStates[key] != nil {
+		t.Error("cluster-b should NOT have cluster-a's issue state")
+	}
+
+	// Verify default cluster does NOT have the state
+	server.mu.RLock()
+	csDefault := server.clusters[""]
+	server.mu.RUnlock()
+	if csDefault != nil && csDefault.issueStates[key] != nil {
+		t.Error("default cluster should NOT have cluster-a's issue state")
+	}
+
+	// GET issue-states for cluster-a should return it
+	req = httptest.NewRequest(http.MethodGet, "/api/issue-states?clusterId=cluster-a", nil)
+	rr = httptest.NewRecorder()
+	server.handleIssueStates(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("GET issue-states cluster-a status = %d", rr.Code)
+	}
+	var statesA map[string]*IssueState
+	if err := json.Unmarshal(rr.Body.Bytes(), &statesA); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if statesA[key] == nil {
+		t.Error("expected issue state in cluster-a response")
+	}
+
+	// GET issue-states for cluster-b should be empty
+	req = httptest.NewRequest(http.MethodGet, "/api/issue-states?clusterId=cluster-b", nil)
+	rr = httptest.NewRecorder()
+	server.handleIssueStates(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("GET issue-states cluster-b status = %d", rr.Code)
+	}
+	var statesB map[string]*IssueState
+	if err := json.Unmarshal(rr.Body.Bytes(), &statesB); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if len(statesB) != 0 {
+		t.Errorf("expected 0 states for cluster-b, got %d", len(statesB))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Route + middleware integration: verify new endpoints go through authMiddleware
+// ---------------------------------------------------------------------------
+
+func TestAuthMiddleware_IssueEndpoints_RejectWithoutToken(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+	server.authToken = testAuthToken
+
+	endpoints := []struct {
+		path   string
+		method string
+	}{
+		{"/api/issues/acknowledge", http.MethodPost},
+		{"/api/issues/acknowledge", http.MethodDelete},
+		{"/api/issues/snooze", http.MethodPost},
+		{"/api/issues/snooze", http.MethodDelete},
+		{"/api/issue-states", http.MethodGet},
+	}
+
+	for _, ep := range endpoints {
+		t.Run(ep.method+" "+ep.path, func(t *testing.T) {
+			handler := server.authMiddleware(server.handleIssueAcknowledge)
+			switch ep.path {
+			case "/api/issues/snooze":
+				handler = server.authMiddleware(server.handleIssueSnooze)
+			case "/api/issue-states":
+				handler = server.authMiddleware(server.handleIssueStates)
+			}
+			req := httptest.NewRequest(ep.method, ep.path, nil)
+			rr := httptest.NewRecorder()
+			handler(rr, req)
+			if rr.Code != http.StatusUnauthorized {
+				t.Errorf("%s %s without token: status = %d, want %d", ep.method, ep.path, rr.Code, http.StatusUnauthorized)
+			}
+		})
+	}
+}
+
+func TestAuthMiddleware_IssueEndpoints_AllowWithToken(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+	server.authToken = testAuthToken
+
+	// GET /api/issue-states with valid token should reach the handler
+	handler := server.authMiddleware(server.handleIssueStates)
+	req := httptest.NewRequest(http.MethodGet, "/api/issue-states", nil)
+	req.Header.Set("Authorization", "Bearer "+testAuthToken)
+	rr := httptest.NewRecorder()
+	handler(rr, req)
+
+	// Should get 200 (empty states), NOT 401/403
+	if rr.Code != http.StatusOK {
+		t.Errorf("GET /api/issue-states with valid token: status = %d, want %d; body = %s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+}
+
+func TestServer_HandlePostAISettings_ClearAPIKey(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	// First, set an API key
+	setBody, _ := json.Marshal(AISettingsRequest{
+		Enabled:  true,
+		Provider: providerNoop,
+		APIKey:   "sk-test-key-to-clear",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/settings/ai", bytes.NewReader(setBody))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	server.handleAISettings(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("setup POST status = %d, want %d", rr.Code, http.StatusOK)
+	}
+
+	// Now clear it with clearApiKey: true
+	clearBody, _ := json.Marshal(AISettingsRequest{
+		Enabled:     true,
+		Provider:    providerNoop,
+		ClearAPIKey: true,
+	})
+	req2 := httptest.NewRequest(http.MethodPost, "/api/settings/ai", bytes.NewReader(clearBody))
+	req2.Header.Set("Content-Type", "application/json")
+	rr2 := httptest.NewRecorder()
+	server.handleAISettings(rr2, req2)
+
+	if rr2.Code != http.StatusOK {
+		t.Fatalf("clear POST status = %d, want %d", rr2.Code, http.StatusOK)
+	}
+
+	var resp AISettingsResponse
+	if err := json.Unmarshal(rr2.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("returned invalid JSON: %v", err)
+	}
+	if resp.HasAPIKey {
+		t.Error("expected hasApiKey to be false after clearing key")
+	}
+
+	// Verify internal state
+	server.mu.RLock()
+	key := server.aiConfig.APIKey
+	server.mu.RUnlock()
+	if key != "" {
+		t.Errorf("expected empty APIKey in server state, got %q", key)
+	}
+}
+
+func TestServer_HandlePostAISettings_ClearAPIKeyIgnoresValue(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	// Set an initial key
+	setBody, _ := json.Marshal(AISettingsRequest{
+		Enabled:  true,
+		Provider: providerNoop,
+		APIKey:   "sk-initial-key",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/settings/ai", bytes.NewReader(setBody))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	server.handleAISettings(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("setup POST status = %d, want %d", rr.Code, http.StatusOK)
+	}
+
+	// Send clearApiKey: true AND apiKey: "new-key" — clear should win
+	clearBody, _ := json.Marshal(AISettingsRequest{
+		Enabled:     true,
+		Provider:    providerNoop,
+		ClearAPIKey: true,
+		APIKey:      "sk-should-be-ignored",
+	})
+	req2 := httptest.NewRequest(http.MethodPost, "/api/settings/ai", bytes.NewReader(clearBody))
+	req2.Header.Set("Content-Type", "application/json")
+	rr2 := httptest.NewRecorder()
+	server.handleAISettings(rr2, req2)
+
+	if rr2.Code != http.StatusOK {
+		t.Fatalf("clear POST status = %d, want %d", rr2.Code, http.StatusOK)
+	}
+
+	var resp AISettingsResponse
+	if err := json.Unmarshal(rr2.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("returned invalid JSON: %v", err)
+	}
+	if resp.HasAPIKey {
+		t.Error("expected hasApiKey to be false when clearApiKey is true, even with apiKey set")
+	}
+}
+
+func TestServer_HandlePostAISettings_OmittedKeyPreserved(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	// Set an initial key
+	setBody, _ := json.Marshal(AISettingsRequest{
+		Enabled:  true,
+		Provider: providerNoop,
+		APIKey:   "sk-preserve-me",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/settings/ai", bytes.NewReader(setBody))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	server.handleAISettings(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("setup POST status = %d, want %d", rr.Code, http.StatusOK)
+	}
+
+	// POST without apiKey or clearApiKey — key should be preserved
+	updateBody, _ := json.Marshal(AISettingsRequest{
+		Enabled:  true,
+		Provider: providerNoop,
+		Model:    "gpt-4o",
+	})
+	req2 := httptest.NewRequest(http.MethodPost, "/api/settings/ai", bytes.NewReader(updateBody))
+	req2.Header.Set("Content-Type", "application/json")
+	rr2 := httptest.NewRecorder()
+	server.handleAISettings(rr2, req2)
+
+	if rr2.Code != http.StatusOK {
+		t.Fatalf("update POST status = %d, want %d", rr2.Code, http.StatusOK)
+	}
+
+	var resp AISettingsResponse
+	if err := json.Unmarshal(rr2.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("returned invalid JSON: %v", err)
+	}
+	if !resp.HasAPIKey {
+		t.Error("expected hasApiKey to be true — omitting apiKey should preserve existing key")
+	}
+
+	// Verify internal state
+	server.mu.RLock()
+	key := server.aiConfig.APIKey
+	server.mu.RUnlock()
+	if key != "sk-preserve-me" {
+		t.Errorf("expected APIKey 'sk-preserve-me', got %q", key)
+	}
+}
+
+func TestServer_HandlePostAISettings_UpdateKey(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	// Set initial key
+	setBody, _ := json.Marshal(AISettingsRequest{
+		Enabled:  true,
+		Provider: providerNoop,
+		APIKey:   "sk-old-key",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/settings/ai", bytes.NewReader(setBody))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	server.handleAISettings(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("setup POST status = %d, want %d", rr.Code, http.StatusOK)
+	}
+
+	// Update key without clearApiKey
+	updateBody, _ := json.Marshal(AISettingsRequest{
+		Enabled:  true,
+		Provider: providerNoop,
+		APIKey:   "sk-new-key",
+	})
+	req2 := httptest.NewRequest(http.MethodPost, "/api/settings/ai", bytes.NewReader(updateBody))
+	req2.Header.Set("Content-Type", "application/json")
+	rr2 := httptest.NewRecorder()
+	server.handleAISettings(rr2, req2)
+
+	if rr2.Code != http.StatusOK {
+		t.Fatalf("update POST status = %d, want %d", rr2.Code, http.StatusOK)
+	}
+
+	var resp AISettingsResponse
+	if err := json.Unmarshal(rr2.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("returned invalid JSON: %v", err)
+	}
+	if !resp.HasAPIKey {
+		t.Error("expected hasApiKey to be true after updating key")
+	}
+
+	// Verify internal state has the new key
+	server.mu.RLock()
+	key := server.aiConfig.APIKey
+	server.mu.RUnlock()
+	if key != "sk-new-key" {
+		t.Errorf("expected APIKey 'sk-new-key', got %q", key)
+	}
+}
+
+func TestServer_HandleGetAISettings_NoKeyLeakage(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	// Set a key
+	setBody, _ := json.Marshal(AISettingsRequest{
+		Enabled:  true,
+		Provider: providerNoop,
+		APIKey:   "sk-secret-key-do-not-leak",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/settings/ai", bytes.NewReader(setBody))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	server.handleAISettings(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("setup POST status = %d, want %d", rr.Code, http.StatusOK)
+	}
+
+	// GET the settings
+	req2 := httptest.NewRequest(http.MethodGet, "/api/settings/ai", nil)
+	rr2 := httptest.NewRecorder()
+	server.handleAISettings(rr2, req2)
+
+	if rr2.Code != http.StatusOK {
+		t.Fatalf("GET status = %d, want %d", rr2.Code, http.StatusOK)
+	}
+
+	rawBody := rr2.Body.String()
+
+	// The raw JSON must not contain the key value
+	if strings.Contains(rawBody, "sk-secret-key-do-not-leak") {
+		t.Error("GET response contains raw API key — key leakage detected")
+	}
+
+	// But it should have hasApiKey: true
+	var resp AISettingsResponse
+	if err := json.Unmarshal([]byte(rawBody), &resp); err != nil {
+		t.Fatalf("returned invalid JSON: %v", err)
+	}
+	if !resp.HasAPIKey {
+		t.Error("expected hasApiKey to be true")
+	}
+
+	// Verify no "apiKey" field in the JSON at all
+	var raw map[string]any
+	if err := json.Unmarshal([]byte(rawBody), &raw); err != nil {
+		t.Fatalf("failed to unmarshal raw JSON: %v", err)
+	}
+	if _, exists := raw["apiKey"]; exists {
+		t.Error("GET response contains 'apiKey' field — should only have 'hasApiKey'")
+	}
+}
+
+func TestServer_HandlePostAISettings_BodySizeLimit(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	// Create a body larger than maxSettingsBodySize (1 MB)
+	oversized := make([]byte, 2<<20) // 2 MB
+	for i := range oversized {
+		oversized[i] = 'x'
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/settings/ai", bytes.NewReader(oversized))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	server.handleAISettings(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("POST with oversized body: status = %d, want %d; body = %s",
+			rr.Code, http.StatusBadRequest, rr.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Batch 2: Cross-cluster isolation for snooze + default-path tests
+// ---------------------------------------------------------------------------
+
+func TestServer_IssueSnooze_PerClusterIsolation(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	key := "default/deploy/HighRestarts"
+
+	// Snooze on cluster-a
+	body := `{"key":"` + key + `","duration":"1h"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/issues/snooze?clusterId=cluster-a", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	server.handleIssueSnooze(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("POST snooze cluster-a status = %d, want %d", rr.Code, http.StatusOK)
+	}
+
+	// Verify cluster-a has the snoozed state
+	server.mu.RLock()
+	csA := server.clusters["cluster-a"]
+	server.mu.RUnlock()
+	if csA == nil || csA.issueStates[key] == nil {
+		t.Fatal("expected snooze state on cluster-a")
+	}
+	if csA.issueStates[key].Action != ActionSnoozed {
+		t.Errorf("expected action 'snoozed', got %q", csA.issueStates[key].Action)
+	}
+
+	// Verify cluster-b does NOT have the state
+	server.mu.RLock()
+	csB := server.clusters["cluster-b"]
+	server.mu.RUnlock()
+	if csB != nil && csB.issueStates[key] != nil {
+		t.Error("cluster-b should NOT have cluster-a's snooze state")
+	}
+
+	// Verify default cluster does NOT have the state
+	server.mu.RLock()
+	csDefault := server.clusters[""]
+	server.mu.RUnlock()
+	if csDefault != nil && csDefault.issueStates[key] != nil {
+		t.Error("default cluster should NOT have cluster-a's snooze state")
+	}
+
+	// GET issue-states for cluster-a should return it
+	req2 := httptest.NewRequest(http.MethodGet, "/api/issue-states?clusterId=cluster-a", nil)
+	rr2 := httptest.NewRecorder()
+	server.handleIssueStates(rr2, req2)
+	if rr2.Code != http.StatusOK {
+		t.Fatalf("GET issue-states cluster-a status = %d", rr2.Code)
+	}
+	var statesA map[string]*IssueState
+	if err := json.Unmarshal(rr2.Body.Bytes(), &statesA); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if statesA[key] == nil {
+		t.Error("expected snooze state in cluster-a response")
+	}
+
+	// GET issue-states for cluster-b should be empty
+	req3 := httptest.NewRequest(http.MethodGet, "/api/issue-states?clusterId=cluster-b", nil)
+	rr3 := httptest.NewRecorder()
+	server.handleIssueStates(rr3, req3)
+	var statesB map[string]*IssueState
+	if err := json.Unmarshal(rr3.Body.Bytes(), &statesB); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if len(statesB) != 0 {
+		t.Errorf("expected 0 states for cluster-b, got %d", len(statesB))
+	}
+}
+
+func TestServer_IssueAcknowledge_DefaultClusterPath(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	key := "kube-system/deploy/CoreDNSDown"
+
+	// POST acknowledge WITHOUT clusterId — should target default cluster ("")
+	body := `{"key":"` + key + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/issues/acknowledge", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	server.handleIssueAcknowledge(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("POST ack default status = %d, want %d", rr.Code, http.StatusOK)
+	}
+
+	// Verify default cluster ("") has the state
+	server.mu.RLock()
+	csDefault := server.clusters[""]
+	server.mu.RUnlock()
+	if csDefault == nil || csDefault.issueStates[key] == nil {
+		t.Fatal("expected issue state on default cluster")
+	}
+
+	// GET issue-states without clusterId should return it
+	req2 := httptest.NewRequest(http.MethodGet, "/api/issue-states", nil)
+	rr2 := httptest.NewRecorder()
+	server.handleIssueStates(rr2, req2)
+	var states map[string]*IssueState
+	if err := json.Unmarshal(rr2.Body.Bytes(), &states); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if states[key] == nil {
+		t.Error("expected issue state in default cluster response")
+	}
+}
+
+func TestServer_IssueSnooze_DefaultClusterPath(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	key := "monitoring/deploy/PrometheusOOM"
+
+	// POST snooze WITHOUT clusterId
+	body := `{"key":"` + key + `","duration":"30m"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/issues/snooze", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	server.handleIssueSnooze(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("POST snooze default status = %d, want %d", rr.Code, http.StatusOK)
+	}
+
+	// Verify default cluster ("") has the snoozed state
+	server.mu.RLock()
+	csDefault := server.clusters[""]
+	server.mu.RUnlock()
+	if csDefault == nil || csDefault.issueStates[key] == nil {
+		t.Fatal("expected snooze state on default cluster")
+	}
+	if csDefault.issueStates[key].Action != ActionSnoozed {
+		t.Errorf("expected action 'snoozed', got %q", csDefault.issueStates[key].Action)
+	}
+}
+
+func TestServer_IssueSnooze_DeletePerCluster(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	key := "default/deploy/Flapping"
+
+	// Snooze on cluster-a AND default cluster
+	for _, cid := range []string{"cluster-a", ""} {
+		url := "/api/issues/snooze"
+		if cid != "" {
+			url += "?clusterId=" + cid
+		}
+		body := `{"key":"` + key + `","duration":"1h"}`
+		req := httptest.NewRequest(http.MethodPost, url, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rr := httptest.NewRecorder()
+		server.handleIssueSnooze(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("POST snooze %q status = %d", cid, rr.Code)
+		}
+	}
+
+	// DELETE snooze on cluster-a only
+	delBody := `{"key":"` + key + `"}`
+	req := httptest.NewRequest(http.MethodDelete, "/api/issues/snooze?clusterId=cluster-a", strings.NewReader(delBody))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	server.handleIssueSnooze(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("DELETE snooze cluster-a status = %d", rr.Code)
+	}
+
+	// cluster-a should no longer have the state
+	server.mu.RLock()
+	csA := server.clusters["cluster-a"]
+	server.mu.RUnlock()
+	if csA != nil && csA.issueStates[key] != nil {
+		t.Error("cluster-a should NOT have snooze state after DELETE")
+	}
+
+	// default cluster should still have it
+	server.mu.RLock()
+	csDefault := server.clusters[""]
+	server.mu.RUnlock()
+	if csDefault == nil || csDefault.issueStates[key] == nil {
+		t.Error("default cluster should still have snooze state after cluster-a DELETE")
+	}
+}
+
+func TestServer_HandlePostAISettings_ClearAPIKeyTriggersReconfigure(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	// First, set a key with noop provider
+	setBody, _ := json.Marshal(AISettingsRequest{
+		Enabled:  true,
+		Provider: providerNoop,
+		APIKey:   "sk-initial-key",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/settings/ai", bytes.NewReader(setBody))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	server.handleAISettings(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("setup POST status = %d, want %d", rr.Code, http.StatusOK)
+	}
+
+	// Now clear key WITHOUT changing provider (provider field empty)
+	clearBody, _ := json.Marshal(AISettingsRequest{
+		Enabled:     true,
+		ClearAPIKey: true,
+	})
+	req2 := httptest.NewRequest(http.MethodPost, "/api/settings/ai", bytes.NewReader(clearBody))
+	req2.Header.Set("Content-Type", "application/json")
+	rr2 := httptest.NewRecorder()
+	server.handleAISettings(rr2, req2)
+
+	if rr2.Code != http.StatusOK {
+		t.Fatalf("clear POST status = %d, want %d; body = %s", rr2.Code, http.StatusOK, rr2.Body.String())
+	}
+
+	var resp AISettingsResponse
+	if err := json.Unmarshal(rr2.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("returned invalid JSON: %v", err)
+	}
+	if resp.HasAPIKey {
+		t.Error("expected hasApiKey to be false after clearing key without provider change")
+	}
+
+	// Verify internal state
+	server.mu.RLock()
+	key := server.aiConfig.APIKey
+	server.mu.RUnlock()
+	if key != "" {
+		t.Errorf("expected empty APIKey in server state, got %q", key)
 	}
 }

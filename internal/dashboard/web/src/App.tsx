@@ -4,7 +4,7 @@ import { useSSE } from './hooks/useSSE'
 import { useClusters } from './hooks/useClusters'
 import { useFleet } from './hooks/useFleet'
 import { useSettings } from './hooks/useSettings'
-import { triggerCheck, fetchCapabilities } from './api/client'
+import { triggerCheck, fetchCapabilities, acknowledgeIssue, snoozeIssue, unacknowledgeIssue, unsnoozeIssue } from './api/client'
 import { HealthScoreRing } from './components/HealthScoreRing'
 import { CheckerCard } from './components/CheckerCard'
 import { SeverityTabs } from './components/SeverityTabs'
@@ -23,7 +23,7 @@ import { useKeyboardShortcuts, KeyboardShortcutsHelp } from './components/Keyboa
 import { ToastContainer, showToast } from './components/Toast'
 import { ErrorBoundary } from './components/ErrorBoundary'
 
-import type { TargetKind } from './types'
+import type { IssueState, TargetKind } from './types'
 
 const severityKeys: Severity[] = ['all', 'Critical', 'Warning', 'Info']
 
@@ -41,6 +41,7 @@ function App() {
   const [diagnosePrefill, setDiagnosePrefill] = useState<{ namespace?: string; targetKind?: TargetKind; targetName?: string } | undefined>()
   const [showHelp, setShowHelp] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
+  const [issueStates, setIssueStates] = useState<Record<string, IssueState>>({})
   const searchRef = useRef<HTMLInputElement>(null)
   const nsRef = useRef<HTMLSelectElement>(null)
 
@@ -56,9 +57,21 @@ function App() {
   const { fleet } = useFleet(showFleet)
   const { data: sseData, connected } = useSSE(paused || showFleet, effectiveCluster)
 
+  // Seed issueStates from initial health fetch
+  useEffect(() => {
+    if (health?.issueStates) {
+      setIssueStates(health.issueStates)
+    }
+  }, [health?.issueStates])
+
   // Update health from SSE
   useEffect(() => {
-    if (sseData) setHealth(sseData)
+    if (sseData) {
+      setHealth(sseData)
+      if (sseData.issueStates) {
+        setIssueStates(sseData.issueStates)
+      }
+    }
   }, [sseData, setHealth])
 
   // Auto-select first cluster when clusters load (only when uninitialized)
@@ -98,6 +111,44 @@ function App() {
     setDiagnosePrefill(prefill)
     setShowDiagnose(true)
   }, [])
+
+  const handleAcknowledge = useCallback(async (key: string) => {
+    try {
+      await acknowledgeIssue(key, undefined, effectiveCluster)
+      setIssueStates(prev => ({
+        ...prev,
+        [key]: { key, action: 'acknowledged', createdAt: new Date().toISOString() }
+      }))
+      showToast('Issue acknowledged', 'success')
+    } catch { showToast('Failed to acknowledge issue', 'error') }
+  }, [effectiveCluster])
+
+  const handleSnooze = useCallback(async (key: string, duration: string) => {
+    try {
+      await snoozeIssue(key, duration, undefined, effectiveCluster)
+      const ms = parseDuration(duration)
+      const until = new Date(Date.now() + ms).toISOString()
+      setIssueStates(prev => ({
+        ...prev,
+        [key]: { key, action: 'snoozed', snoozedUntil: until, createdAt: new Date().toISOString() }
+      }))
+      showToast(`Issue snoozed for ${duration}`, 'success')
+    } catch { showToast('Failed to snooze issue', 'error') }
+  }, [effectiveCluster])
+
+  const handleDismissState = useCallback(async (key: string) => {
+    try {
+      const state = issueStates[key]
+      if (state?.action === 'acknowledged') await unacknowledgeIssue(key, effectiveCluster)
+      else await unsnoozeIssue(key, effectiveCluster)
+      setIssueStates(prev => {
+        const next = { ...prev }
+        delete next[key]
+        return next
+      })
+      showToast('Issue state cleared', 'success')
+    } catch { showToast('Failed to dismiss state', 'error') }
+  }, [issueStates, effectiveCluster])
 
   const toggleTheme = useCallback(() => setDark((d) => !d), [])
   const togglePause = useCallback(() => {
@@ -290,6 +341,10 @@ function App() {
                     search={search}
                     severity={severity}
                     namespace={namespace}
+                    issueStates={issueStates}
+                    onAcknowledge={handleAcknowledge}
+                    onSnooze={handleSnooze}
+                    onDismissState={handleDismissState}
                     onDiagnose={canDiagnose ? handleDiagnose : undefined}
                   />
                 ))}
@@ -325,6 +380,13 @@ function App() {
     </div>
     </ErrorBoundary>
   )
+}
+
+function parseDuration(d: string): number {
+  const match = d.match(/^(\d+)(m|h)$/)
+  if (!match) return 0
+  const val = parseInt(match[1], 10)
+  return match[2] === 'h' ? val * 3600000 : val * 60000
 }
 
 const pipelineStages = ['checkers', 'causal', 'ai'] as const

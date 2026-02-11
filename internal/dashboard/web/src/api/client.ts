@@ -35,6 +35,9 @@ export function normalizeHealth(data: HealthUpdate): HealthUpdate {
   if (!data.summary) {
     data.summary = { totalHealthy: 0, totalIssues: 0, criticalCount: 0, warningCount: 0, infoCount: 0 }
   }
+  if (!data.issueStates) {
+    data.issueStates = {}
+  }
   return data
 }
 
@@ -161,6 +164,54 @@ export interface Capabilities {
 }
 export function fetchCapabilities(): Promise<Capabilities> {
   return json<Capabilities>(`${BASE}/capabilities`)
+}
+
+/** POST /api/issues/acknowledge — mark an issue as acknowledged */
+export function acknowledgeIssue(key: string, reason?: string, clusterId?: string): Promise<void> {
+  const url = clusterId
+    ? `${BASE}/issues/acknowledge?clusterId=${encodeURIComponent(clusterId)}`
+    : `${BASE}/issues/acknowledge`
+  return json(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ key, reason }),
+  })
+}
+
+/** DELETE /api/issues/acknowledge — remove acknowledgement from an issue */
+export function unacknowledgeIssue(key: string, clusterId?: string): Promise<void> {
+  const url = clusterId
+    ? `${BASE}/issues/acknowledge?clusterId=${encodeURIComponent(clusterId)}`
+    : `${BASE}/issues/acknowledge`
+  return json(url, {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ key }),
+  })
+}
+
+/** POST /api/issues/snooze — snooze an issue for a duration */
+export function snoozeIssue(key: string, duration: string, reason?: string, clusterId?: string): Promise<void> {
+  const url = clusterId
+    ? `${BASE}/issues/snooze?clusterId=${encodeURIComponent(clusterId)}`
+    : `${BASE}/issues/snooze`
+  return json(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ key, duration, reason }),
+  })
+}
+
+/** DELETE /api/issues/snooze — unsnooze an issue */
+export function unsnoozeIssue(key: string, clusterId?: string): Promise<void> {
+  const url = clusterId
+    ? `${BASE}/issues/snooze?clusterId=${encodeURIComponent(clusterId)}`
+    : `${BASE}/issues/snooze`
+  return json(url, {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ key }),
+  })
 }
 
 /** GET /api/events — SSE stream (returns EventSource, caller manages lifecycle) */
