@@ -358,3 +358,9 @@ dev-multi-cluster-down: ## Stop servers + delete Kind clusters
 		rm -f $(MULTI_CLUSTER_PIDFILE); \
 	fi
 	@$(MAKE) cleanup-multi-cluster
+
+.PHONY: start
+start: dev-multi-cluster ## Alias for dev-multi-cluster
+
+.PHONY: stop
+stop: dev-multi-cluster-down ## Alias for dev-multi-cluster-down
