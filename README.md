@@ -750,7 +750,7 @@ When exposing the dashboard (even internally), follow these steps:
 | **Auth token** | `DASHBOARD_AUTH_TOKEN` | Random 32+ char string | Required for all mutating + data endpoints |
 | **TLS** | `dashboard.tls.enabled: true` | Always in production | Cookie is `Secure` when TLS enabled; auth refuses to start without TLS unless overridden |
 | **Session TTL** | `DASHBOARD_SESSION_TTL` | `24h` (default) | Go duration format; controls cookie `Max-Age` |
-| **Rate limiting** | `DASHBOARD_RATE_LIMIT` / `DASHBOARD_RATE_BURST` | `10` / `20` (defaults) | Token-bucket on POST/PUT/DELETE; returns 429 when exceeded |
+| **Rate limiting** | `DASHBOARD_RATE_LIMIT` / `DASHBOARD_RATE_BURST` | `10` / `20` (defaults) | Process-global token-bucket on POST/PUT/DELETE only; returns 429 when exceeded. GET/SSE are not rate-limited. Single-replica scoped (not shared across pods). |
 | **nginx body size** | `client_max_body_size` | `1m` | Matches server-side `MaxBytesReader` (1 MB) |
 | **nginx rate limit** | `limit_req_zone` | `10r/s` per IP | Layer defense with app-level limiter |
 | **SSE clients** | `dashboard.maxSSEClients` | `100` (default) | Prevents connection exhaustion; excess gets 503 |

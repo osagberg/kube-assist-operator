@@ -1,63 +1,15 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
-// We test URL construction by intercepting fetch calls.
-// The client module uses global fetch, so we mock it.
+// ---------------------------------------------------------------------------
+// Real API function tests — verify actual client functions send correct
+// HTTP method, URL (with/without clusterId), headers, and body.
+// ---------------------------------------------------------------------------
 
-const BASE = '/api'
-
-// Helper: build URL the same way client.ts does for issue-state endpoints
-function buildIssueUrl(path: string, clusterId?: string): string {
-  return clusterId
-    ? `${BASE}${path}?clusterId=${encodeURIComponent(clusterId)}`
-    : `${BASE}${path}`
-}
-
-describe('issue-state API URL construction', () => {
-  it('acknowledgeIssue URL includes clusterId when provided', () => {
-    const url = buildIssueUrl('/issues/acknowledge', 'cluster-a')
-    expect(url).toBe('/api/issues/acknowledge?clusterId=cluster-a')
-  })
-
-  it('acknowledgeIssue URL has no query param when clusterId omitted', () => {
-    const url = buildIssueUrl('/issues/acknowledge')
-    expect(url).toBe('/api/issues/acknowledge')
-  })
-
-  it('acknowledgeIssue URL has no query param when clusterId undefined', () => {
-    const url = buildIssueUrl('/issues/acknowledge', undefined)
-    expect(url).toBe('/api/issues/acknowledge')
-  })
-
-  it('snoozeIssue URL includes clusterId when provided', () => {
-    const url = buildIssueUrl('/issues/snooze', 'prod-us-east')
-    expect(url).toBe('/api/issues/snooze?clusterId=prod-us-east')
-  })
-
-  it('snoozeIssue URL has no query param when clusterId omitted', () => {
-    const url = buildIssueUrl('/issues/snooze')
-    expect(url).toBe('/api/issues/snooze')
-  })
-
-  it('unacknowledgeIssue URL includes clusterId', () => {
-    const url = buildIssueUrl('/issues/acknowledge', 'cluster-b')
-    expect(url).toBe('/api/issues/acknowledge?clusterId=cluster-b')
-  })
-
-  it('unsnoozeIssue URL includes clusterId', () => {
-    const url = buildIssueUrl('/issues/snooze', 'cluster-b')
-    expect(url).toBe('/api/issues/snooze?clusterId=cluster-b')
-  })
-
-  it('encodes special characters in clusterId', () => {
-    const url = buildIssueUrl('/issues/acknowledge', 'cluster with spaces')
-    expect(url).toBe('/api/issues/acknowledge?clusterId=cluster%20with%20spaces')
-  })
-})
-
-describe('issue-state API calls via fetch mock', () => {
+describe('acknowledgeIssue', () => {
   let fetchSpy: ReturnType<typeof vi.fn>
 
   beforeEach(() => {
+    vi.resetModules()
     fetchSpy = vi.fn().mockResolvedValue({
       ok: true,
       json: () => Promise.resolve({}),
@@ -69,49 +21,157 @@ describe('issue-state API calls via fetch mock', () => {
     })
   })
 
-  it('acknowledgeIssue sends clusterId as query param', async () => {
+  it('sends POST to /api/issues/acknowledge with key and reason in body', async () => {
+    const { acknowledgeIssue } = await import('./client')
+    await acknowledgeIssue('ns/deploy/CrashLoop', 'known issue')
+
+    expect(fetchSpy).toHaveBeenCalledOnce()
+    const [url, init] = fetchSpy.mock.calls[0]
+    expect(url).toBe('/api/issues/acknowledge')
+    expect(init.method).toBe('POST')
+    expect(JSON.parse(init.body)).toEqual({ key: 'ns/deploy/CrashLoop', reason: 'known issue' })
+    expect(init.headers['Content-Type']).toBe('application/json')
+  })
+
+  it('appends clusterId as query param when provided', async () => {
     const { acknowledgeIssue } = await import('./client')
     await acknowledgeIssue('ns/deploy/CrashLoop', undefined, 'cluster-x')
 
-    expect(fetchSpy).toHaveBeenCalledOnce()
     const [url] = fetchSpy.mock.calls[0]
-    expect(url).toContain('clusterId=cluster-x')
-    expect(url).toContain('/api/issues/acknowledge')
+    expect(url).toBe('/api/issues/acknowledge?clusterId=cluster-x')
   })
 
-  it('acknowledgeIssue omits clusterId when not provided', async () => {
-    // Re-import with fresh module for clean fetch spy state
-    vi.resetModules()
-    fetchSpy.mockResolvedValue({ ok: true, json: () => Promise.resolve({}) })
-    const mod = await import('./client')
-    await mod.acknowledgeIssue('ns/deploy/CrashLoop')
+  it('omits clusterId query param when not provided', async () => {
+    const { acknowledgeIssue } = await import('./client')
+    await acknowledgeIssue('ns/deploy/CrashLoop')
 
-    expect(fetchSpy).toHaveBeenCalledOnce()
     const [url] = fetchSpy.mock.calls[0]
     expect(url).toBe('/api/issues/acknowledge')
+    expect(url).not.toContain('clusterId')
   })
 
-  it('snoozeIssue sends clusterId as query param', async () => {
-    vi.resetModules()
-    fetchSpy.mockResolvedValue({ ok: true, json: () => Promise.resolve({}) })
-    const mod = await import('./client')
-    await mod.snoozeIssue('ns/deploy/OOM', '1h', undefined, 'prod-cluster')
+  it('encodes special characters in clusterId', async () => {
+    const { acknowledgeIssue } = await import('./client')
+    await acknowledgeIssue('key', undefined, 'cluster with spaces')
 
-    expect(fetchSpy).toHaveBeenCalledOnce()
     const [url] = fetchSpy.mock.calls[0]
-    expect(url).toContain('clusterId=prod-cluster')
-    expect(url).toContain('/api/issues/snooze')
+    expect(url).toContain('clusterId=cluster%20with%20spaces')
+  })
+})
+
+describe('unacknowledgeIssue', () => {
+  let fetchSpy: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    vi.resetModules()
+    fetchSpy = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({}),
+    })
+    vi.stubGlobal('fetch', fetchSpy)
+    vi.stubGlobal('AbortController', class {
+      signal = {}
+      abort() {}
+    })
   })
 
-  it('unsnoozeIssue sends clusterId as query param', async () => {
-    vi.resetModules()
-    fetchSpy.mockResolvedValue({ ok: true, json: () => Promise.resolve({}) })
-    const mod = await import('./client')
-    await mod.unsnoozeIssue('ns/deploy/OOM', 'staging')
+  it('sends DELETE to /api/issues/acknowledge with key in body', async () => {
+    const { unacknowledgeIssue } = await import('./client')
+    await unacknowledgeIssue('ns/deploy/CrashLoop')
 
     expect(fetchSpy).toHaveBeenCalledOnce()
+    const [url, init] = fetchSpy.mock.calls[0]
+    expect(url).toBe('/api/issues/acknowledge')
+    expect(init.method).toBe('DELETE')
+    expect(JSON.parse(init.body)).toEqual({ key: 'ns/deploy/CrashLoop' })
+  })
+
+  it('appends clusterId when provided', async () => {
+    const { unacknowledgeIssue } = await import('./client')
+    await unacknowledgeIssue('key', 'cluster-b')
+
     const [url] = fetchSpy.mock.calls[0]
-    expect(url).toContain('clusterId=staging')
-    expect(url).toContain('/api/issues/snooze')
+    expect(url).toBe('/api/issues/acknowledge?clusterId=cluster-b')
+  })
+})
+
+describe('snoozeIssue', () => {
+  let fetchSpy: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    vi.resetModules()
+    fetchSpy = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({}),
+    })
+    vi.stubGlobal('fetch', fetchSpy)
+    vi.stubGlobal('AbortController', class {
+      signal = {}
+      abort() {}
+    })
+  })
+
+  it('sends POST to /api/issues/snooze with key, duration, and reason', async () => {
+    const { snoozeIssue } = await import('./client')
+    await snoozeIssue('ns/deploy/OOM', '1h', 'investigating')
+
+    expect(fetchSpy).toHaveBeenCalledOnce()
+    const [url, init] = fetchSpy.mock.calls[0]
+    expect(url).toBe('/api/issues/snooze')
+    expect(init.method).toBe('POST')
+    expect(JSON.parse(init.body)).toEqual({ key: 'ns/deploy/OOM', duration: '1h', reason: 'investigating' })
+  })
+
+  it('appends clusterId when provided', async () => {
+    const { snoozeIssue } = await import('./client')
+    await snoozeIssue('ns/deploy/OOM', '1h', undefined, 'prod-cluster')
+
+    const [url] = fetchSpy.mock.calls[0]
+    expect(url).toBe('/api/issues/snooze?clusterId=prod-cluster')
+  })
+
+  it('omits clusterId when not provided', async () => {
+    const { snoozeIssue } = await import('./client')
+    await snoozeIssue('ns/deploy/OOM', '1h')
+
+    const [url] = fetchSpy.mock.calls[0]
+    expect(url).toBe('/api/issues/snooze')
+    expect(url).not.toContain('clusterId')
+  })
+})
+
+describe('unsnoozeIssue', () => {
+  let fetchSpy: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    vi.resetModules()
+    fetchSpy = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({}),
+    })
+    vi.stubGlobal('fetch', fetchSpy)
+    vi.stubGlobal('AbortController', class {
+      signal = {}
+      abort() {}
+    })
+  })
+
+  it('sends DELETE to /api/issues/snooze with key in body', async () => {
+    const { unsnoozeIssue } = await import('./client')
+    await unsnoozeIssue('ns/deploy/OOM')
+
+    expect(fetchSpy).toHaveBeenCalledOnce()
+    const [url, init] = fetchSpy.mock.calls[0]
+    expect(url).toBe('/api/issues/snooze')
+    expect(init.method).toBe('DELETE')
+    expect(JSON.parse(init.body)).toEqual({ key: 'ns/deploy/OOM' })
+  })
+
+  it('appends clusterId when provided', async () => {
+    const { unsnoozeIssue } = await import('./client')
+    await unsnoozeIssue('ns/deploy/OOM', 'staging')
+
+    const [url] = fetchSpy.mock.calls[0]
+    expect(url).toBe('/api/issues/snooze?clusterId=staging')
   })
 })

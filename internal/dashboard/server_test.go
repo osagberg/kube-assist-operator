@@ -2047,6 +2047,7 @@ func TestServeIndex_NoTokenInHTML(t *testing.T) {
 				Name: "__dashboard_session", Value: server.authToken,
 				Path: "/", HttpOnly: true, Secure: server.tlsConfigured(),
 				SameSite: http.SameSiteStrictMode,
+				MaxAge:   int(server.sessionTTL.Seconds()),
 			})
 			w.Header().Set("Cache-Control", "no-store")
 		}
@@ -2091,6 +2092,7 @@ func TestServeIndex_SetsCookieWithoutMetaTag(t *testing.T) {
 				Name: "__dashboard_session", Value: server.authToken,
 				Path: "/", HttpOnly: true, Secure: server.tlsConfigured(),
 				SameSite: http.SameSiteStrictMode,
+				MaxAge:   int(server.sessionTTL.Seconds()),
 			})
 			w.Header().Set("Cache-Control", "no-store")
 		}
@@ -3529,6 +3531,69 @@ func TestServer_SessionCookie_DefaultTTL(t *testing.T) {
 	// Default TTL should be 24h = 86400 seconds
 	if server.sessionTTL != 24*time.Hour {
 		t.Errorf("expected default sessionTTL = 24h, got %v", server.sessionTTL)
+	}
+}
+
+func TestServer_SessionCookie_MaxAgeHeader(t *testing.T) {
+	scheme := runtime.NewScheme()
+	cl := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(cl), registry, ":8080")
+	server.authToken = testAuthToken
+
+	// Replicate the serveIndex closure from Start() — must mirror actual code
+	spaFS, err := fs.Sub(webAssets, "web/dist")
+	if err != nil {
+		t.Fatalf("failed to create sub filesystem: %v", err)
+	}
+	indexHTML, err := fs.ReadFile(spaFS, "index.html")
+	if err != nil {
+		t.Fatalf("failed to read index.html: %v", err)
+	}
+
+	serveIndex := func(w http.ResponseWriter, _ *http.Request) {
+		if server.authToken != "" {
+			http.SetCookie(w, &http.Cookie{
+				Name:     "__dashboard_session",
+				Value:    server.authToken,
+				Path:     "/",
+				HttpOnly: true,
+				Secure:   server.tlsConfigured(),
+				SameSite: http.SameSiteStrictMode,
+				MaxAge:   int(server.sessionTTL.Seconds()),
+			})
+			w.Header().Set("Cache-Control", "no-store")
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(indexHTML)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rr := httptest.NewRecorder()
+	serveIndex(rr, req)
+
+	cookies := rr.Result().Cookies()
+	var sessionCookie *http.Cookie
+	for _, c := range cookies {
+		if c.Name == "__dashboard_session" {
+			sessionCookie = c
+			break
+		}
+	}
+	if sessionCookie == nil {
+		t.Fatal("expected __dashboard_session cookie in response")
+		return
+	}
+	// Default TTL is 24h = 86400 seconds
+	if sessionCookie.MaxAge != 86400 {
+		t.Errorf("expected Max-Age=86400, got %d", sessionCookie.MaxAge)
+	}
+	if !sessionCookie.HttpOnly {
+		t.Error("expected HttpOnly flag on session cookie")
+	}
+	if sessionCookie.SameSite != http.SameSiteStrictMode {
+		t.Errorf("expected SameSite=Strict, got %v", sessionCookie.SameSite)
 	}
 }
 
