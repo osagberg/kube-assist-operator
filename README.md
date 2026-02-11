@@ -741,6 +741,45 @@ make lint
 
 **Container security**: Release images use `gcr.io/distroless/static:nonroot` (no shell, no package manager). Dependabot keeps dependencies current.
 
+### Deployment Hardening Checklist
+
+When exposing the dashboard (even internally), follow these steps:
+
+| Item | Setting | Recommended Value | Notes |
+|------|---------|-------------------|-------|
+| **Auth token** | `DASHBOARD_AUTH_TOKEN` | Random 32+ char string | Required for all mutating + data endpoints |
+| **TLS** | `dashboard.tls.enabled: true` | Always in production | Cookie is `Secure` when TLS enabled; auth refuses to start without TLS unless overridden |
+| **Session TTL** | `DASHBOARD_SESSION_TTL` | `24h` (default) | Go duration format; controls cookie `Max-Age` |
+| **Rate limiting** | `DASHBOARD_RATE_LIMIT` / `DASHBOARD_RATE_BURST` | `10` / `20` (defaults) | Token-bucket on POST/PUT/DELETE; returns 429 when exceeded |
+| **nginx body size** | `client_max_body_size` | `1m` | Matches server-side `MaxBytesReader` (1 MB) |
+| **nginx rate limit** | `limit_req_zone` | `10r/s` per IP | Layer defense with app-level limiter |
+| **SSE clients** | `dashboard.maxSSEClients` | `100` (default) | Prevents connection exhaustion; excess gets 503 |
+
+**Recommended nginx snippet** (when fronting the dashboard):
+
+```nginx
+# Rate limiting
+limit_req_zone $binary_remote_addr zone=dashboard:10m rate=10r/s;
+
+server {
+    location / {
+        proxy_pass http://kube-assist-dashboard:9090;
+        limit_req zone=dashboard burst=20 nodelay;
+        client_max_body_size 1m;
+    }
+    location /api/events {
+        proxy_pass http://kube-assist-dashboard:9090;
+        proxy_set_header Connection '';
+        proxy_http_version 1.1;
+        chunked_transfer_encoding off;
+        proxy_buffering off;
+        # No rate limit on SSE (long-lived connections)
+    }
+}
+```
+
+**Public endpoint policy**: All `/api/*` endpoints require authentication (cookie or Bearer token). The model catalog and capabilities endpoints are read-only but still auth-protected to prevent information disclosure about enabled features.
+
 ---
 
 ## CI/CD Pipeline

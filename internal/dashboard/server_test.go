@@ -27,6 +27,7 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/time/rate"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -3510,5 +3511,179 @@ func TestServer_HandlePostAISettings_ClearAPIKeyTriggersReconfigure(t *testing.T
 	server.mu.RUnlock()
 	if key != "" {
 		t.Errorf("expected empty APIKey in server state, got %q", key)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Batch 3: Session cookie TTL tests
+// ---------------------------------------------------------------------------
+
+func TestServer_SessionCookie_DefaultTTL(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+	server.authToken = "test-session-token"
+
+	// Default TTL should be 24h = 86400 seconds
+	if server.sessionTTL != 24*time.Hour {
+		t.Errorf("expected default sessionTTL = 24h, got %v", server.sessionTTL)
+	}
+}
+
+func TestServer_ParseSessionTTL_Default(t *testing.T) {
+	t.Setenv("DASHBOARD_SESSION_TTL", "")
+	ttl := parseSessionTTL()
+	if ttl != 24*time.Hour {
+		t.Errorf("expected 24h, got %v", ttl)
+	}
+}
+
+func TestServer_ParseSessionTTL_Custom(t *testing.T) {
+	t.Setenv("DASHBOARD_SESSION_TTL", "8h")
+	ttl := parseSessionTTL()
+	if ttl != 8*time.Hour {
+		t.Errorf("expected 8h, got %v", ttl)
+	}
+}
+
+func TestServer_ParseSessionTTL_Invalid(t *testing.T) {
+	t.Setenv("DASHBOARD_SESSION_TTL", "not-a-duration")
+	ttl := parseSessionTTL()
+	if ttl != 24*time.Hour {
+		t.Errorf("expected default 24h for invalid value, got %v", ttl)
+	}
+}
+
+func TestServer_ParseSessionTTL_Negative(t *testing.T) {
+	t.Setenv("DASHBOARD_SESSION_TTL", "-1h")
+	ttl := parseSessionTTL()
+	if ttl != 24*time.Hour {
+		t.Errorf("expected default 24h for negative value, got %v", ttl)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Batch 3: Rate limiter tests
+// ---------------------------------------------------------------------------
+
+func TestServer_RateLimiter_AllowsNormalUse(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	handler := server.rateLimitMiddleware(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/test", nil)
+	rr := httptest.NewRecorder()
+	handler(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", rr.Code)
+	}
+}
+
+func TestServer_RateLimiter_RejectsExcessBurst(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	// Override with a very small limiter for testing
+	server.mutationLimiter = rate.NewLimiter(1, 2) // 1 req/s, burst of 2
+
+	handler := server.rateLimitMiddleware(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	// First 2 requests should succeed (burst)
+	for i := range 2 {
+		req := httptest.NewRequest(http.MethodPost, "/api/test", nil)
+		rr := httptest.NewRecorder()
+		handler(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Errorf("request %d: expected 200, got %d", i, rr.Code)
+		}
+	}
+
+	// Third request should be rate-limited
+	req := httptest.NewRequest(http.MethodPost, "/api/test", nil)
+	rr := httptest.NewRecorder()
+	handler(rr, req)
+	if rr.Code != http.StatusTooManyRequests {
+		t.Errorf("expected 429, got %d", rr.Code)
+	}
+}
+
+func TestServer_RateLimiter_AllowsGETRequests(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	// Override with a very small limiter
+	server.mutationLimiter = rate.NewLimiter(1, 1) // 1 req/s, burst of 1
+
+	handler := server.rateLimitMiddleware(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	// Exhaust the burst with a POST
+	req := httptest.NewRequest(http.MethodPost, "/api/test", nil)
+	rr := httptest.NewRecorder()
+	handler(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("first POST should succeed, got %d", rr.Code)
+	}
+
+	// GET requests should NOT be rate-limited even after burst exhausted
+	for range 5 {
+		req := httptest.NewRequest(http.MethodGet, "/api/test", nil)
+		rr := httptest.NewRecorder()
+		handler(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Errorf("GET should not be rate-limited, got %d", rr.Code)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Batch 3: Auth-protected endpoints (catalog + capabilities)
+// ---------------------------------------------------------------------------
+
+func TestServer_AICatalog_RequiresAuth(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+	server.authToken = testAuthToken
+
+	handler := server.authMiddleware(server.handleAICatalog)
+	req := httptest.NewRequest(http.MethodGet, "/api/settings/ai/catalog", nil)
+	rr := httptest.NewRecorder()
+	handler(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 without auth, got %d", rr.Code)
+	}
+}
+
+func TestServer_Capabilities_RequiresAuth(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+	server.authToken = testAuthToken
+
+	handler := server.authMiddleware(server.handleCapabilities)
+	req := httptest.NewRequest(http.MethodGet, "/api/capabilities", nil)
+	rr := httptest.NewRecorder()
+	handler(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 without auth, got %d", rr.Code)
 	}
 }

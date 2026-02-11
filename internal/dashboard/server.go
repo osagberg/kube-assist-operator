@@ -42,6 +42,8 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	assistv1alpha1 "github.com/osagberg/kube-assist-operator/api/v1alpha1"
+	"golang.org/x/time/rate"
+
 	"github.com/osagberg/kube-assist-operator/internal/ai"
 	"github.com/osagberg/kube-assist-operator/internal/causal"
 	"github.com/osagberg/kube-assist-operator/internal/checker"
@@ -207,6 +209,8 @@ type Server struct {
 	clients           map[chan HealthUpdate]string // chan -> subscribed clusterId ("" = all)
 	clusters          map[string]*clusterState     // clusterID -> state ("" key for single-cluster)
 	maxSSEClients     int
+	sessionTTL        time.Duration
+	mutationLimiter   *rate.Limiter
 	running           bool
 	checkInFlight     atomic.Bool
 	stopCh            chan struct{}
@@ -227,6 +231,8 @@ func NewServer(ds datasource.DataSource, registry *checker.Registry, addr string
 		clients:           make(map[chan HealthUpdate]string),
 		clusters:          make(map[string]*clusterState),
 		maxSSEClients:     100,
+		sessionTTL:        parseSessionTTL(),
+		mutationLimiter:   newMutationLimiter(),
 		stopCh:            make(chan struct{}),
 	}
 }
@@ -252,6 +258,55 @@ func parseBoolEnv(name string) bool {
 	}
 	parsed, err := strconv.ParseBool(v)
 	return err == nil && parsed
+}
+
+const defaultSessionTTL = 24 * time.Hour
+
+func parseSessionTTL() time.Duration {
+	v := strings.TrimSpace(os.Getenv("DASHBOARD_SESSION_TTL"))
+	if v == "" {
+		return defaultSessionTTL
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d <= 0 {
+		log.Info("Invalid DASHBOARD_SESSION_TTL, using default", "value", v, "default", defaultSessionTTL)
+		return defaultSessionTTL
+	}
+	return d
+}
+
+const (
+	defaultRateLimit = 10 // requests per second
+	defaultRateBurst = 20
+)
+
+func newMutationLimiter() *rate.Limiter {
+	rps := defaultRateLimit
+	burst := defaultRateBurst
+	if v := os.Getenv("DASHBOARD_RATE_LIMIT"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			rps = n
+		}
+	}
+	if v := os.Getenv("DASHBOARD_RATE_BURST"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			burst = n
+		}
+	}
+	return rate.NewLimiter(rate.Limit(rps), burst)
+}
+
+// rateLimitMiddleware wraps a handler with token-bucket rate limiting on mutating methods.
+func (s *Server) rateLimitMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodDelete {
+			if !s.mutationLimiter.Allow() {
+				http.Error(w, "Too many requests", http.StatusTooManyRequests)
+				return
+			}
+		}
+		next(w, r)
+	}
 }
 
 func (s *Server) tlsConfigured() bool {
@@ -385,19 +440,19 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/api/health", s.authMiddleware(s.handleHealth))
 	mux.HandleFunc("/api/health/history", s.authMiddleware(s.handleHealthHistory))
 	mux.HandleFunc("/api/events", s.sseAuthMiddleware(s.handleSSE))
-	mux.HandleFunc("/api/check", s.authMiddleware(s.handleTriggerCheck))
-	mux.HandleFunc("/api/settings/ai", s.authMiddleware(s.handleAISettings))
+	mux.HandleFunc("/api/check", s.authMiddleware(s.rateLimitMiddleware(s.handleTriggerCheck)))
+	mux.HandleFunc("/api/settings/ai", s.authMiddleware(s.rateLimitMiddleware(s.handleAISettings)))
 	mux.HandleFunc("/api/causal/groups", s.authMiddleware(s.handleCausalGroups))
 	mux.HandleFunc("/api/explain", s.authMiddleware(s.handleExplain))
 	mux.HandleFunc("/api/prediction/trend", s.authMiddleware(s.handlePrediction))
 	mux.HandleFunc("/api/clusters", s.authMiddleware(s.handleClusters))
 	mux.HandleFunc("/api/fleet/summary", s.authMiddleware(s.handleFleetSummary))
-	mux.HandleFunc("/api/settings/ai/catalog", s.handleAICatalog)
-	mux.HandleFunc("/api/troubleshoot", s.authMiddleware(s.handleCreateTroubleshoot))
-	mux.HandleFunc("/api/issues/acknowledge", s.authMiddleware(s.handleIssueAcknowledge))
-	mux.HandleFunc("/api/issues/snooze", s.authMiddleware(s.handleIssueSnooze))
+	mux.HandleFunc("/api/settings/ai/catalog", s.authMiddleware(s.handleAICatalog))
+	mux.HandleFunc("/api/troubleshoot", s.authMiddleware(s.rateLimitMiddleware(s.handleCreateTroubleshoot)))
+	mux.HandleFunc("/api/issues/acknowledge", s.authMiddleware(s.rateLimitMiddleware(s.handleIssueAcknowledge)))
+	mux.HandleFunc("/api/issues/snooze", s.authMiddleware(s.rateLimitMiddleware(s.handleIssueSnooze)))
 	mux.HandleFunc("/api/issue-states", s.authMiddleware(s.handleIssueStates))
-	mux.HandleFunc("/api/capabilities", s.handleCapabilities)
+	mux.HandleFunc("/api/capabilities", s.authMiddleware(s.handleCapabilities))
 	// React SPA dashboard
 	spaFS, err := fs.Sub(webAssets, "web/dist")
 	if err != nil {
@@ -423,6 +478,7 @@ func (s *Server) Start(ctx context.Context) error {
 					HttpOnly: true,
 					Secure:   s.tlsConfigured(),
 					SameSite: http.SameSiteStrictMode,
+					MaxAge:   int(s.sessionTTL.Seconds()),
 				})
 				w.Header().Set("Cache-Control", "no-store")
 			}
