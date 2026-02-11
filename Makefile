@@ -321,46 +321,94 @@ test-multi-cluster: ## Run multi-cluster integration tests (requires Kind cluste
 cleanup-multi-cluster: ## Tear down Kind clusters used for multi-cluster testing
 	CLUSTER_A=$(CLUSTER_A) CLUSTER_B=$(CLUSTER_B) KUBECONFIG_A=$(KUBECONFIG_A) KUBECONFIG_B=$(KUBECONFIG_B) KIND=$(KIND) hack/multi-cluster-teardown.sh
 
-MULTI_CLUSTER_PIDFILE ?= /tmp/kube-assist-multi-cluster.pids
+DEMO_PIDFILE ?= /tmp/kube-assist-demo.pids
+DEMO_OPEN_BROWSER ?= 1
+DEMO_CLEAN_ORBSTACK ?= 0
 
-.PHONY: dev-multi-cluster
-dev-multi-cluster: setup-multi-cluster ## One-command fleet dev: Kind clusters + console backend + dashboard
-	@rm -f $(MULTI_CLUSTER_PIDFILE)
+# _demo-kill-stale removes only kube-assist-related port-forwards and pidfile processes.
+_demo-kill-stale:
+	@if [ -f $(DEMO_PIDFILE) ]; then \
+		echo "==> Killing previous demo PIDs..."; \
+		while read -r pid; do \
+			kill "$$pid" 2>/dev/null && echo "    Killed PID $$pid" || true; \
+		done < $(DEMO_PIDFILE); \
+		rm -f $(DEMO_PIDFILE); \
+	fi
+	@echo "==> Killing stale kube-assist port-forwards..."
+	@pkill -f 'kubectl port-forward.*kube-assist.*(9090|8085)' 2>/dev/null && echo "    Killed stale port-forwards" || true
+
+# _demo-wait-ready polls the console backend health endpoint until it responds.
+_demo-wait-ready:
+	@printf "==> Waiting for console backend..."
+	@for i in $$(seq 1 30); do \
+		if curl -sf http://localhost:8085/healthz >/dev/null 2>&1; then \
+			echo " ready"; \
+			exit 0; \
+		fi; \
+		printf "."; \
+		sleep 1; \
+	done; \
+	echo " timeout (console backend may still be compiling, check logs)"
+
+.PHONY: demo-fleet
+demo-fleet: _demo-kill-stale setup-multi-cluster ## Fleet demo: Kind + OrbStack, console backend + dashboard
+	@rm -f $(DEMO_PIDFILE)
 	@echo "==> Starting console backend on :8085..."
 	@go run ./cmd/console-backend/ --allow-insecure \
 		--kubeconfigs=orbstack=$(ORBSTACK_KUBECONFIG),$(CLUSTER_A)=$(KUBECONFIG_A),$(CLUSTER_B)=$(KUBECONFIG_B) \
-		& echo $$! >> $(MULTI_CLUSTER_PIDFILE)
-	@sleep 2
-	@echo "==> Starting dashboard on :9090 (console mode → fleet view)..."
+		>> /tmp/kube-assist-console.log 2>&1 & echo $$! >> $(DEMO_PIDFILE)
+	@$(MAKE) _demo-wait-ready
+	@echo "==> Starting dashboard on :9090 (fleet mode)..."
 	@go run ./cmd/main.go --enable-dashboard --dashboard-bind-address=:9090 \
 		--datasource=console --console-url=http://localhost:8085 --cluster-id=orbstack \
-		& echo $$! >> $(MULTI_CLUSTER_PIDFILE)
-	@sleep 2
+		>> /tmp/kube-assist-dashboard.log 2>&1 & echo $$! >> $(DEMO_PIDFILE)
+	@sleep 3
 	@echo ""
-	@echo "==> Multi-cluster dev environment running!"
-	@echo "    Clusters: orbstack, $(CLUSTER_A), $(CLUSTER_B)"
-	@echo ""
-	@echo "    Dashboard:       http://localhost:9090"
-	@echo "    Console API:     http://localhost:8085/api/v1/clusters"
-	@echo ""
-	@echo "    Stop everything: make dev-multi-cluster-down"
-	@echo ""
-	@echo "==> Tailing logs (Ctrl-C to detach, processes keep running)..."
-	@wait
-
-.PHONY: dev-multi-cluster-down
-dev-multi-cluster-down: ## Stop servers + delete Kind clusters
-	@if [ -f $(MULTI_CLUSTER_PIDFILE) ]; then \
-		echo "==> Stopping background servers..."; \
-		while read -r pid; do \
-			kill "$$pid" 2>/dev/null && echo "    Killed PID $$pid" || true; \
-		done < $(MULTI_CLUSTER_PIDFILE); \
-		rm -f $(MULTI_CLUSTER_PIDFILE); \
+	@echo "==> Fleet demo running!"
+	@echo "    Clusters:   orbstack, $(CLUSTER_A), $(CLUSTER_B)"
+	@echo "    Dashboard:  http://localhost:9090"
+	@echo "    Console:    http://localhost:8085/api/v1/clusters"
+	@echo "    Logs:       /tmp/kube-assist-{console,dashboard}.log"
+	@echo "    Stop:       make demo-fleet-down"
+	@if [ "$(DEMO_OPEN_BROWSER)" = "1" ] && command -v open >/dev/null 2>&1; then \
+		open http://localhost:9090; \
 	fi
+
+.PHONY: demo-fleet-down
+demo-fleet-down: _demo-kill-stale ## Stop fleet demo + delete Kind clusters
 	@$(MAKE) cleanup-multi-cluster
+	@if [ "$(DEMO_CLEAN_ORBSTACK)" = "1" ]; then \
+		echo "==> Cleaning demo-app namespace from OrbStack..."; \
+		kubectl delete namespace demo-app --ignore-not-found; \
+	fi
+	@rm -f /tmp/kube-assist-console.log /tmp/kube-assist-dashboard.log
+	@echo "==> Fleet demo torn down."
+
+.PHONY: demo-single
+demo-single: _demo-kill-stale ## Single-cluster demo: OrbStack only, kubernetes datasource (TroubleshootRequest enabled)
+	@rm -f $(DEMO_PIDFILE)
+	@echo "==> Starting dashboard on :9090 (single-cluster mode)..."
+	@go run ./cmd/main.go --enable-dashboard --dashboard-bind-address=:9090 \
+		>> /tmp/kube-assist-dashboard.log 2>&1 & echo $$! >> $(DEMO_PIDFILE)
+	@sleep 3
+	@echo ""
+	@echo "==> Single-cluster demo running!"
+	@echo "    Cluster:    orbstack (default kubeconfig)"
+	@echo "    Dashboard:  http://localhost:9090"
+	@echo "    Features:   TroubleshootRequest create enabled"
+	@echo "    Logs:       /tmp/kube-assist-dashboard.log"
+	@echo "    Stop:       make demo-single-down"
+	@if [ "$(DEMO_OPEN_BROWSER)" = "1" ] && command -v open >/dev/null 2>&1; then \
+		open http://localhost:9090; \
+	fi
+
+.PHONY: demo-single-down
+demo-single-down: _demo-kill-stale ## Stop single-cluster demo
+	@rm -f /tmp/kube-assist-dashboard.log
+	@echo "==> Single-cluster demo torn down."
 
 .PHONY: start
-start: dev-multi-cluster ## Alias for dev-multi-cluster
+start: demo-fleet ## Alias for demo-fleet
 
 .PHONY: stop
-stop: dev-multi-cluster-down ## Alias for dev-multi-cluster-down
+stop: demo-fleet-down ## Alias for demo-fleet-down
