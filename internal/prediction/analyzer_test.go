@@ -82,6 +82,7 @@ func TestAnalyze(t *testing.T) {
 			}
 			if result == nil {
 				t.Fatal("expected non-nil result")
+				return
 			}
 			if result.TrendDirection != tt.wantDir {
 				t.Errorf("expected direction %q, got %q (velocity=%.2f)", tt.wantDir, result.TrendDirection, result.Velocity)
@@ -213,6 +214,7 @@ func TestAnalyze_CIWidensForExtrapolation(t *testing.T) {
 	resultWide := Analyze(wide)
 	if resultTight == nil || resultWide == nil {
 		t.Fatal("expected non-nil results")
+		return
 	}
 
 	ciWidthTight := resultTight.ConfidenceInterval[1] - resultTight.ConfidenceInterval[0]
