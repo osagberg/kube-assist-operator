@@ -23,10 +23,19 @@ else
     ${KIND} create cluster --name "${CLUSTER_B}" --kubeconfig "${KUBECONFIG_B}" --wait 60s
 fi
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+echo ""
+echo "==> Seeding CRDs and workloads into Kind clusters..."
+KUBECONFIG_A="${KUBECONFIG_A}" KUBECONFIG_B="${KUBECONFIG_B}" "${SCRIPT_DIR}/multi-cluster-seed.sh"
+
 echo ""
 echo "==> Multi-cluster environment ready."
 echo "    Cluster A: ${CLUSTER_A}  kubeconfig=${KUBECONFIG_A}"
 echo "    Cluster B: ${CLUSTER_B}  kubeconfig=${KUBECONFIG_B}"
+echo "    OrbStack:  orbstack      kubeconfig=~/.kube/config"
 echo ""
-echo "    Start console backend:"
-echo "      go run ./cmd/console-backend/ --kubeconfigs=${CLUSTER_A}=${KUBECONFIG_A},${CLUSTER_B}=${KUBECONFIG_B}"
+echo "  Next steps:"
+echo "    make run-console-backend   # start console backend (OrbStack + Kind)"
+echo "    make run                   # start dashboard"
+echo "    curl -s http://localhost:8085/api/v1/clusters  # verify"

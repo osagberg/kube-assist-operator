@@ -302,14 +302,16 @@ CLUSTER_A ?= kube-assist-a
 CLUSTER_B ?= kube-assist-b
 KUBECONFIG_A ?= /tmp/kind-$(CLUSTER_A).yaml
 KUBECONFIG_B ?= /tmp/kind-$(CLUSTER_B).yaml
+ORBSTACK_KUBECONFIG ?= $(HOME)/.kube/config
 
 .PHONY: setup-multi-cluster
 setup-multi-cluster: ## Create two Kind clusters for console backend integration testing
 	CLUSTER_A=$(CLUSTER_A) CLUSTER_B=$(CLUSTER_B) KUBECONFIG_A=$(KUBECONFIG_A) KUBECONFIG_B=$(KUBECONFIG_B) KIND=$(KIND) hack/multi-cluster-setup.sh
 
 .PHONY: run-console-backend
-run-console-backend: ## Run console backend against Kind clusters
-	go run ./cmd/console-backend/ --kubeconfigs=$(CLUSTER_A)=$(KUBECONFIG_A),$(CLUSTER_B)=$(KUBECONFIG_B)
+run-console-backend: ## Run console backend with OrbStack + Kind clusters (dev mode)
+	go run ./cmd/console-backend/ --allow-insecure \
+		--kubeconfigs=orbstack=$(ORBSTACK_KUBECONFIG),$(CLUSTER_A)=$(KUBECONFIG_A),$(CLUSTER_B)=$(KUBECONFIG_B)
 
 .PHONY: test-multi-cluster
 test-multi-cluster: ## Run multi-cluster integration tests (requires Kind clusters)
@@ -318,3 +320,21 @@ test-multi-cluster: ## Run multi-cluster integration tests (requires Kind cluste
 .PHONY: cleanup-multi-cluster
 cleanup-multi-cluster: ## Tear down Kind clusters used for multi-cluster testing
 	CLUSTER_A=$(CLUSTER_A) CLUSTER_B=$(CLUSTER_B) KUBECONFIG_A=$(KUBECONFIG_A) KUBECONFIG_B=$(KUBECONFIG_B) KIND=$(KIND) hack/multi-cluster-teardown.sh
+
+.PHONY: dev-multi-cluster
+dev-multi-cluster: setup-multi-cluster ## Full multi-cluster dev setup (Kind + seed + instructions)
+	@echo ""
+	@echo "==> Multi-cluster dev environment ready!"
+	@echo "    Clusters: orbstack, $(CLUSTER_A), $(CLUSTER_B)"
+	@echo ""
+	@echo "  Start console backend (terminal 1):"
+	@echo "    make run-console-backend"
+	@echo ""
+	@echo "  Start dashboard (terminal 2):"
+	@echo "    make run"
+	@echo ""
+	@echo "  Verify:"
+	@echo "    curl -s http://localhost:8085/api/v1/clusters"
+	@echo ""
+	@echo "  Teardown:"
+	@echo "    make cleanup-multi-cluster"
