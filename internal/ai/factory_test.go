@@ -124,6 +124,7 @@ func TestNewProvider_BudgetWindows(t *testing.T) {
 		}
 		if budget == nil {
 			t.Fatal("budget should not be nil with daily limit")
+			return
 		}
 		usage := budget.GetUsage()
 		if len(usage) != 1 {
@@ -144,6 +145,7 @@ func TestNewProvider_BudgetWindows(t *testing.T) {
 		}
 		if budget == nil {
 			t.Fatal("budget should not be nil with monthly limit")
+			return
 		}
 		usage := budget.GetUsage()
 		if len(usage) != 1 {
@@ -165,6 +167,7 @@ func TestNewProvider_BudgetWindows(t *testing.T) {
 		}
 		if budget == nil {
 			t.Fatal("budget should not be nil")
+			return
 		}
 		usage := budget.GetUsage()
 		if len(usage) != 2 {
@@ -189,6 +192,7 @@ func TestMustNewProvider_Success(t *testing.T) {
 	provider := MustNewProvider(Config{Provider: ProviderNameNoop})
 	if provider == nil {
 		t.Fatal("MustNewProvider(noop) returned nil")
+		return
 	}
 	if provider.Name() != ProviderNameNoop {
 		t.Errorf("Name() = %q, want %q", provider.Name(), ProviderNameNoop)

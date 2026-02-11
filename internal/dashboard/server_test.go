@@ -2873,6 +2873,7 @@ func TestServer_IssueStates_PerClusterIsolation(t *testing.T) {
 	server.mu.RUnlock()
 	if csA == nil {
 		t.Fatal("expected cluster-a state to exist")
+		return
 	}
 	if csA.issueStates[key] == nil {
 		t.Fatal("expected issue state on cluster-a")

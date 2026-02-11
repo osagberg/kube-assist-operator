@@ -102,6 +102,7 @@ func TestAnalyze_RSquared(t *testing.T) {
 	result := Analyze(snapshots)
 	if result == nil {
 		t.Fatal("expected non-nil result")
+		return
 	}
 	if result.RSquared < 0.99 {
 		t.Errorf("expected R-squared close to 1 for linear data, got %.4f", result.RSquared)
@@ -113,6 +114,7 @@ func TestAnalyze_ConfidenceInterval(t *testing.T) {
 	result := Analyze(snapshots)
 	if result == nil {
 		t.Fatal("expected non-nil result")
+		return
 	}
 	if result.ConfidenceInterval[0] > result.ProjectedScore {
 		t.Errorf("lower CI bound (%.1f) should be <= projected score (%.1f)",
@@ -129,6 +131,7 @@ func TestAnalyze_IdenticalScores(t *testing.T) {
 	result := Analyze(snapshots)
 	if result == nil {
 		t.Fatal("expected non-nil result")
+		return
 	}
 	if result.TrendDirection != trendStable {
 		t.Errorf("expected stable, got %q", result.TrendDirection)
@@ -160,6 +163,7 @@ func TestAnalyze_IdenticalTimestamps(t *testing.T) {
 	result := Analyze(snapshots)
 	if result == nil {
 		t.Fatal("expected non-nil result")
+		return
 	}
 	if result.TrendDirection != trendStable {
 		t.Errorf("expected stable, got %q", result.TrendDirection)
@@ -185,6 +189,7 @@ func TestAnalyze_CIInvariant(t *testing.T) {
 			result := Analyze(ds.snaps)
 			if result == nil {
 				t.Fatal("expected non-nil result")
+				return
 			}
 			if result.ConfidenceInterval[0] > result.ProjectedScore {
 				t.Errorf("CI lower (%.2f) > projected (%.2f)",

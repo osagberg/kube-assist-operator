@@ -79,6 +79,7 @@ func TestCatalog_ForProvider(t *testing.T) {
 	models := catalog.ForProvider(ProviderNameAnthropic)
 	if models == nil {
 		t.Fatal("ForProvider(anthropic) returned nil")
+		return
 	}
 	if len(models) == 0 {
 		t.Error("ForProvider(anthropic) returned empty")
