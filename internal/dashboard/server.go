@@ -432,8 +432,10 @@ func (s *Server) WithK8sWriter(c client.Client, scheme *runtime.Scheme) *Server 
 	return s
 }
 
-// Start starts the dashboard server
-func (s *Server) Start(ctx context.Context) error {
+// buildHandler constructs the full HTTP handler tree (API routes + SPA serving +
+// security headers). Extracted from Start() to enable black-box testing of the
+// live handler without starting a real server.
+func (s *Server) buildHandler() http.Handler {
 	mux := http.NewServeMux()
 
 	// API endpoints
@@ -503,9 +505,14 @@ func (s *Server) Start(ctx context.Context) error {
 		})
 	}
 
+	return s.securityHeaders(mux)
+}
+
+// Start starts the dashboard server
+func (s *Server) Start(ctx context.Context) error {
 	server := &http.Server{
 		Addr:         s.addr,
-		Handler:      s.securityHeaders(mux),
+		Handler:      s.buildHandler(),
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 30 * time.Second,
 	}

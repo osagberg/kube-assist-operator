@@ -116,9 +116,6 @@ func (r *TeamHealthRequestReconciler) Reconcile(ctx context.Context, req ctrl.Re
 
 	// Initialize status
 	healthReq.Status.Phase = assistv1alpha1.TeamHealthPhaseRunning
-	if healthReq.Status.Results == nil {
-		healthReq.Status.Results = make(map[string]assistv1alpha1.CheckerResult)
-	}
 
 	log.Info("Processing TeamHealthRequest", "name", healthReq.Name)
 
@@ -194,60 +191,19 @@ func (r *TeamHealthRequestReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		}
 	}
 
-	// Convert results to API format
-	totalHealthy := 0
-	totalIssues := 0
-	criticalCount := 0
-	warningCount := 0
+	// Convert results to API format and tally counts
+	agg := r.aggregateResults(results)
+	healthReq.Status.Results = agg.apiResults
 
+	// Log checker errors (kept in Reconcile for access to the structured logger)
 	for name, result := range results {
-		healthy := min(result.Healthy, math.MaxInt32)
-		apiResult := assistv1alpha1.CheckerResult{
-			Healthy: int32(healthy), // #nosec G115 -- bounded by min()
-		}
-
-		// Track resources checked per checker
-		teamHealthResourcesChecked.With(prometheus.Labels{
-			"checker": name,
-		}).Set(float64(result.Healthy + len(result.Issues)))
-
 		if result.Error != nil {
-			apiResult.Error = result.Error.Error()
 			log.Error(result.Error, "Checker failed", "checker", name)
-		} else {
-			apiResult.Issues = checker.ToAPIIssues(result.Issues)
-			totalHealthy += result.Healthy
-			totalIssues += len(result.Issues)
-
-			// Track issues by checker and severity
-			checkerCritical := 0
-			checkerWarning := 0
-			for _, issue := range result.Issues {
-				switch issue.Severity {
-				case checker.SeverityCritical:
-					criticalCount++
-					checkerCritical++
-				case checker.SeverityWarning:
-					warningCount++
-					checkerWarning++
-				}
-			}
-
-			teamHealthIssues.With(prometheus.Labels{
-				"checker":  name,
-				"severity": "critical",
-			}).Set(float64(checkerCritical))
-			teamHealthIssues.With(prometheus.Labels{
-				"checker":  name,
-				"severity": "warning",
-			}).Set(float64(checkerWarning))
 		}
-
-		healthReq.Status.Results[name] = apiResult
 	}
 
 	// Generate summary
-	healthReq.Status.Summary = r.generateSummary(totalHealthy, totalIssues, criticalCount, warningCount)
+	healthReq.Status.Summary = r.generateSummary(agg.totalHealthy, agg.totalIssues, agg.criticalCount, agg.warningCount)
 	if originalCount > MaxNamespaces {
 		healthReq.Status.Summary += fmt.Sprintf(" (evaluated %d of %d namespaces)", MaxNamespaces, originalCount)
 	}
@@ -272,17 +228,17 @@ func (r *TeamHealthRequestReconciler) Reconcile(ctx context.Context, req ctrl.Re
 
 	// Send notifications if configured
 	if len(healthReq.Spec.Notify) > 0 && r.NotifierRegistry != nil {
-		r.launchNotifications(ctx, healthReq, totalHealthy, totalIssues, criticalCount, warningCount)
+		r.launchNotifications(ctx, healthReq, agg.totalHealthy, agg.totalIssues, agg.criticalCount, agg.warningCount)
 	}
 
 	if r.Recorder != nil {
-		r.Recorder.Eventf(healthReq, nil, corev1.EventTypeNormal, "HealthCheckCompleted", "HealthCheckCompleted", "Checked %d namespace(s): %d healthy, %d issue(s)", len(namespaces), totalHealthy, totalIssues)
+		r.Recorder.Eventf(healthReq, nil, corev1.EventTypeNormal, "HealthCheckCompleted", "HealthCheckCompleted", "Checked %d namespace(s): %d healthy, %d issue(s)", len(namespaces), agg.totalHealthy, agg.totalIssues)
 	}
 
 	log.Info("TeamHealthRequest completed",
 		"namespaces", len(namespaces),
-		"healthy", totalHealthy,
-		"issues", totalIssues)
+		"healthy", agg.totalHealthy,
+		"issues", agg.totalIssues)
 
 	return ctrl.Result{}, nil
 }
@@ -316,6 +272,71 @@ func (r *TeamHealthRequestReconciler) buildCheckerConfig(cfg assistv1alpha1.Chec
 	// if cfg.Quotas != nil { ... }
 
 	return config
+}
+
+// aggregationResult holds the output of aggregateResults.
+type aggregationResult struct {
+	apiResults    map[string]assistv1alpha1.CheckerResult
+	totalHealthy  int
+	totalIssues   int
+	criticalCount int
+	warningCount  int
+}
+
+// aggregateResults converts raw checker results into the API format, records
+// Prometheus metrics, and tallies healthy/issue/severity counts. It is
+// extracted from Reconcile to keep the main loop focused on orchestration.
+func (r *TeamHealthRequestReconciler) aggregateResults(results map[string]*checker.CheckResult) aggregationResult {
+	agg := aggregationResult{
+		apiResults: make(map[string]assistv1alpha1.CheckerResult, len(results)),
+	}
+
+	for name, result := range results {
+		healthy := min(result.Healthy, math.MaxInt32)
+		apiResult := assistv1alpha1.CheckerResult{
+			Healthy: int32(healthy), // #nosec G115 -- bounded by min()
+		}
+
+		// Track resources checked per checker
+		teamHealthResourcesChecked.With(prometheus.Labels{
+			"checker": name,
+		}).Set(float64(result.Healthy + len(result.Issues)))
+
+		if result.Error != nil {
+			apiResult.Error = result.Error.Error()
+		} else {
+			apiResult.Issues = checker.ToAPIIssues(result.Issues)
+			agg.totalHealthy += result.Healthy
+			agg.totalIssues += len(result.Issues)
+
+			// Track issues by checker and severity
+			checkerCritical := 0
+			checkerWarning := 0
+			for _, issue := range result.Issues {
+				switch issue.Severity {
+				case checker.SeverityCritical:
+					agg.criticalCount++
+					checkerCritical++
+				case checker.SeverityWarning:
+					agg.warningCount++
+					checkerWarning++
+				}
+			}
+
+			teamHealthIssues.With(prometheus.Labels{
+				"checker":  name,
+				"severity": "critical",
+			}).Set(float64(checkerCritical))
+			teamHealthIssues.With(prometheus.Labels{
+				"checker":  name,
+				"severity": "warning",
+			}).Set(float64(checkerWarning))
+		}
+
+		agg.apiResults[name] = apiResult
+	}
+
+	return agg
 }
 
 // generateSummary creates a human-readable summary

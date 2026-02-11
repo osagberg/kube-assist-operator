@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -1155,6 +1156,138 @@ var _ = Describe("TeamHealthRequest Controller", func() {
 		})
 	})
 
+	Context("aggregateResults helper", func() {
+		It("should count all-healthy checkers correctly", func() {
+			r := &TeamHealthRequestReconciler{}
+			results := map[string]*checker.CheckResult{
+				"workloads": {Healthy: 5, Issues: nil},
+				"secrets":   {Healthy: 3, Issues: nil},
+			}
+			agg := r.aggregateResults(results)
+
+			Expect(agg.totalHealthy).To(Equal(8))
+			Expect(agg.totalIssues).To(Equal(0))
+			Expect(agg.criticalCount).To(Equal(0))
+			Expect(agg.warningCount).To(Equal(0))
+			Expect(agg.apiResults).To(HaveLen(2))
+			Expect(agg.apiResults["workloads"].Healthy).To(Equal(int32(5)))
+			Expect(agg.apiResults["secrets"].Healthy).To(Equal(int32(3)))
+		})
+
+		It("should exclude errored checker from healthy/issue counts", func() {
+			r := &TeamHealthRequestReconciler{}
+			results := map[string]*checker.CheckResult{
+				"workloads": {Healthy: 5, Issues: nil},
+				"pvcs":      {Healthy: 0, Error: errors.New("list PVCs: forbidden")},
+			}
+			agg := r.aggregateResults(results)
+
+			Expect(agg.totalHealthy).To(Equal(5))
+			Expect(agg.totalIssues).To(Equal(0))
+			Expect(agg.apiResults["pvcs"].Error).To(Equal("list PVCs: forbidden"))
+			Expect(agg.apiResults["pvcs"].Healthy).To(Equal(int32(0)))
+		})
+
+		It("should tally critical and warning severities", func() {
+			r := &TeamHealthRequestReconciler{}
+			results := map[string]*checker.CheckResult{
+				"workloads": {
+					Healthy: 3,
+					Issues: []checker.Issue{
+						{Severity: checker.SeverityCritical, Type: "CrashLoop", Message: "pod crash"},
+						{Severity: checker.SeverityWarning, Type: "HighRestart", Message: "restarts"},
+						{Severity: checker.SeverityWarning, Type: "HighRestart", Message: "restarts2"},
+					},
+				},
+			}
+			agg := r.aggregateResults(results)
+
+			Expect(agg.totalHealthy).To(Equal(3))
+			Expect(agg.totalIssues).To(Equal(3))
+			Expect(agg.criticalCount).To(Equal(1))
+			Expect(agg.warningCount).To(Equal(2))
+			Expect(agg.apiResults["workloads"].Issues).To(HaveLen(3))
+		})
+
+		It("should handle empty results map", func() {
+			r := &TeamHealthRequestReconciler{}
+			agg := r.aggregateResults(map[string]*checker.CheckResult{})
+
+			Expect(agg.totalHealthy).To(Equal(0))
+			Expect(agg.totalIssues).To(Equal(0))
+			Expect(agg.criticalCount).To(Equal(0))
+			Expect(agg.warningCount).To(Equal(0))
+			Expect(agg.apiResults).To(BeEmpty())
+		})
+
+		It("should handle mixed error and healthy results from different checkers", func() {
+			r := &TeamHealthRequestReconciler{}
+			results := map[string]*checker.CheckResult{
+				"workloads": {Healthy: 10, Issues: []checker.Issue{
+					{Severity: checker.SeverityCritical, Type: "CrashLoop", Message: "crash"},
+				}},
+				"pvcs":    {Healthy: 0, Error: errors.New("forbidden")},
+				"secrets": {Healthy: 7, Issues: nil},
+			}
+			agg := r.aggregateResults(results)
+
+			Expect(agg.totalHealthy).To(Equal(17)) // 10 + 7 (pvcs excluded)
+			Expect(agg.totalIssues).To(Equal(1))
+			Expect(agg.criticalCount).To(Equal(1))
+			Expect(agg.apiResults["pvcs"].Error).To(Equal("forbidden"))
+			Expect(agg.apiResults).To(HaveLen(3))
+		})
+	})
+
+	Context("reconcile with checker error", func() {
+		const resourceName = "checker-error-health"
+		ctx := context.Background()
+		nn := types.NamespacedName{Name: resourceName, Namespace: "default"}
+
+		AfterEach(func() {
+			hr := &assistv1alpha1.TeamHealthRequest{}
+			if err := k8sClient.Get(ctx, nn, hr); err == nil {
+				_ = k8sClient.Delete(ctx, hr)
+			}
+		})
+
+		It("should complete with error string in results when a checker fails", func() {
+			// Register a checker under the "workloads" name that always errors
+			registry := checker.NewRegistry()
+			Expect(registry.Register(&errorChecker{
+				name: "workloads",
+				err:  errors.New("simulated failure"),
+			})).To(Succeed())
+
+			hr := &assistv1alpha1.TeamHealthRequest{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      resourceName,
+					Namespace: "default",
+				},
+				Spec: assistv1alpha1.TeamHealthRequestSpec{
+					Checks: []assistv1alpha1.CheckerName{assistv1alpha1.CheckerWorkloads},
+				},
+			}
+			Expect(k8sClient.Create(ctx, hr)).To(Succeed())
+
+			reconciler := &TeamHealthRequestReconciler{
+				Client:     k8sClient,
+				Scheme:     k8sClient.Scheme(),
+				Registry:   registry,
+				DataSource: datasource.NewKubernetes(k8sClient),
+			}
+
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := &assistv1alpha1.TeamHealthRequest{}
+			Expect(k8sClient.Get(ctx, nn, fetched)).To(Succeed())
+			Expect(fetched.Status.Phase).To(Equal(assistv1alpha1.TeamHealthPhaseCompleted))
+			Expect(fetched.Status.Results).To(HaveKey("workloads"))
+			Expect(fetched.Status.Results["workloads"].Error).To(Equal("simulated failure"))
+		})
+	})
+
 	Context("setFailed helper", func() {
 		const resourceName = "set-failed-health"
 		ctx := context.Background()
@@ -1200,3 +1333,18 @@ var _ = Describe("TeamHealthRequest Controller", func() {
 		})
 	})
 })
+
+// errorChecker is a test helper that always returns an error in its result.
+type errorChecker struct {
+	name string
+	err  error
+}
+
+func (e *errorChecker) Name() string { return e.name }
+func (e *errorChecker) Check(_ context.Context, _ *checker.CheckContext) (*checker.CheckResult, error) {
+	return &checker.CheckResult{
+		CheckerName: e.name,
+		Error:       e.err,
+	}, nil
+}
+func (e *errorChecker) Supports(_ context.Context, _ datasource.DataSource) bool { return true }

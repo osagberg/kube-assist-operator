@@ -20,7 +20,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -2031,34 +2030,10 @@ func TestServeIndex_NoTokenInHTML(t *testing.T) {
 	server := NewServer(datasource.NewKubernetes(cl), registry, ":8080")
 	server.authToken = testAuthToken
 
-	spaFS, err := fs.Sub(webAssets, "web/dist")
-	if err != nil {
-		t.Fatalf("failed to create sub filesystem: %v", err)
-	}
-	indexHTML, err := fs.ReadFile(spaFS, "index.html")
-	if err != nil {
-		t.Fatalf("failed to read index.html: %v", err)
-	}
-
-	// Build serveIndex inline (mirrors Start() logic)
-	serveIndex := func(w http.ResponseWriter, _ *http.Request) {
-		if server.authToken != "" {
-			http.SetCookie(w, &http.Cookie{
-				Name: "__dashboard_session", Value: server.authToken,
-				Path: "/", HttpOnly: true, Secure: server.tlsConfigured(),
-				SameSite: http.SameSiteStrictMode,
-				MaxAge:   int(server.sessionTTL.Seconds()),
-			})
-			w.Header().Set("Cache-Control", "no-store")
-		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(indexHTML)
-	}
-
+	handler := server.buildHandler()
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	rr := httptest.NewRecorder()
-	serveIndex(rr, req)
+	handler.ServeHTTP(rr, req)
 
 	body := rr.Body.String()
 	// Auth token must NEVER appear in rendered HTML (meta tag removed)
@@ -2077,33 +2052,10 @@ func TestServeIndex_SetsCookieWithoutMetaTag(t *testing.T) {
 	server := NewServer(datasource.NewKubernetes(cl), registry, ":8080")
 	server.authToken = testAuthToken
 
-	spaFS, err := fs.Sub(webAssets, "web/dist")
-	if err != nil {
-		t.Fatalf("failed to create sub filesystem: %v", err)
-	}
-	indexHTML, err := fs.ReadFile(spaFS, "index.html")
-	if err != nil {
-		t.Fatalf("failed to read index.html: %v", err)
-	}
-
-	serveIndex := func(w http.ResponseWriter, _ *http.Request) {
-		if server.authToken != "" {
-			http.SetCookie(w, &http.Cookie{
-				Name: "__dashboard_session", Value: server.authToken,
-				Path: "/", HttpOnly: true, Secure: server.tlsConfigured(),
-				SameSite: http.SameSiteStrictMode,
-				MaxAge:   int(server.sessionTTL.Seconds()),
-			})
-			w.Header().Set("Cache-Control", "no-store")
-		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(indexHTML)
-	}
-
+	handler := server.buildHandler()
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	rr := httptest.NewRecorder()
-	serveIndex(rr, req)
+	handler.ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusOK {
 		t.Errorf("serveIndex status = %d, want 200", rr.Code)
@@ -3541,37 +3493,11 @@ func TestServer_SessionCookie_MaxAgeHeader(t *testing.T) {
 	server := NewServer(datasource.NewKubernetes(cl), registry, ":8080")
 	server.authToken = testAuthToken
 
-	// Replicate the serveIndex closure from Start() — must mirror actual code
-	spaFS, err := fs.Sub(webAssets, "web/dist")
-	if err != nil {
-		t.Fatalf("failed to create sub filesystem: %v", err)
-	}
-	indexHTML, err := fs.ReadFile(spaFS, "index.html")
-	if err != nil {
-		t.Fatalf("failed to read index.html: %v", err)
-	}
-
-	serveIndex := func(w http.ResponseWriter, _ *http.Request) {
-		if server.authToken != "" {
-			http.SetCookie(w, &http.Cookie{
-				Name:     "__dashboard_session",
-				Value:    server.authToken,
-				Path:     "/",
-				HttpOnly: true,
-				Secure:   server.tlsConfigured(),
-				SameSite: http.SameSiteStrictMode,
-				MaxAge:   int(server.sessionTTL.Seconds()),
-			})
-			w.Header().Set("Cache-Control", "no-store")
-		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(indexHTML)
-	}
-
+	// Black-box test: exercise the real handler routing via buildHandler()
+	handler := server.buildHandler()
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	rr := httptest.NewRecorder()
-	serveIndex(rr, req)
+	handler.ServeHTTP(rr, req)
 
 	cookies := rr.Result().Cookies()
 	var sessionCookie *http.Cookie
