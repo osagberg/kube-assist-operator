@@ -37,6 +37,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -105,11 +106,15 @@ type Issue struct {
 
 // Summary provides aggregate health information
 type Summary struct {
-	TotalHealthy  int `json:"totalHealthy"`
-	TotalIssues   int `json:"totalIssues"`
-	CriticalCount int `json:"criticalCount"`
-	WarningCount  int `json:"warningCount"`
-	InfoCount     int `json:"infoCount"`
+	TotalHealthy             int     `json:"totalHealthy"`
+	TotalIssues              int     `json:"totalIssues"`
+	CriticalCount            int     `json:"criticalCount"`
+	WarningCount             int     `json:"warningCount"`
+	InfoCount                int     `json:"infoCount"`
+	HealthScore              float64 `json:"healthScore"`
+	DeploymentReady          int     `json:"deploymentReady"`
+	DeploymentDesired        int     `json:"deploymentDesired"`
+	DeploymentReadinessScore float64 `json:"deploymentReadinessScore"`
 }
 
 // aiEnhancement stores a cached AI suggestion for reapplication on cache hits.
@@ -146,13 +151,16 @@ type FleetSummary struct {
 
 // FleetClusterEntry contains health summary for a single cluster in the fleet.
 type FleetClusterEntry struct {
-	ClusterID     string  `json:"clusterId"`
-	HealthScore   float64 `json:"healthScore"`
-	TotalIssues   int     `json:"totalIssues"`
-	CriticalCount int     `json:"criticalCount"`
-	WarningCount  int     `json:"warningCount"`
-	InfoCount     int     `json:"infoCount"`
-	LastUpdated   string  `json:"lastUpdated"`
+	ClusterID                string  `json:"clusterId"`
+	HealthScore              float64 `json:"healthScore"`
+	TotalIssues              int     `json:"totalIssues"`
+	CriticalCount            int     `json:"criticalCount"`
+	WarningCount             int     `json:"warningCount"`
+	InfoCount                int     `json:"infoCount"`
+	DeploymentReady          int     `json:"deploymentReady"`
+	DeploymentDesired        int     `json:"deploymentDesired"`
+	DeploymentReadinessScore float64 `json:"deploymentReadinessScore"`
+	LastUpdated              string  `json:"lastUpdated"`
 }
 
 // Issue state action constants.
@@ -914,6 +922,8 @@ func (s *Server) runCheckForCluster(ctx context.Context, clusterID string, ds da
 		update.ClusterID = clusterID
 	}
 
+	deployReady, deployDesired, deployReadiness := computeDeploymentReadiness(checkCtx2, ds, namespaces)
+
 	// Snapshot active issue states for summary exclusion
 	s.mu.RLock()
 	activeStates := make(map[string]*IssueState, len(cs.issueStates))
@@ -927,6 +937,8 @@ func (s *Server) runCheckForCluster(ctx context.Context, clusterID string, ds da
 	s.mu.RUnlock()
 
 	var summary Summary
+	scoreCheckedResources := 0
+	scoreCriticalResources := 0
 	for name, result := range results {
 		cr := CheckResult{
 			Name:    name,
@@ -938,6 +950,9 @@ func (s *Server) runCheckForCluster(ctx context.Context, clusterID string, ds da
 		} else {
 			summary.TotalHealthy += result.Healthy
 			summary.TotalIssues += len(result.Issues)
+			checkedResources, criticalResources := computeCheckerOperationalCounts(result.Healthy, result.Issues, activeStates)
+			scoreCheckedResources += checkedResources
+			scoreCriticalResources += criticalResources
 
 			for _, issue := range result.Issues {
 				suggestion := issue.Suggestion
@@ -983,6 +998,10 @@ func (s *Server) runCheckForCluster(ctx context.Context, clusterID string, ds da
 
 		update.Results[name] = cr
 	}
+	summary.HealthScore = computeOperationalHealthScore(scoreCheckedResources, scoreCriticalResources)
+	summary.DeploymentReady = deployReady
+	summary.DeploymentDesired = deployDesired
+	summary.DeploymentReadinessScore = deployReadiness
 	update.Summary = summary
 
 	// Store latest and broadcast
@@ -1023,12 +1042,96 @@ func (s *Server) runCheckForCluster(ctx context.Context, clusterID string, ds da
 			"Info":     update.Summary.InfoCount,
 		},
 		ByChecker:   make(map[string]int),
-		HealthScore: history.ComputeScore(update.Summary.TotalHealthy, update.Summary.TotalIssues),
+		HealthScore: update.Summary.HealthScore,
 	}
 	for name, result := range update.Results {
 		snapshot.ByChecker[name] = len(result.Issues)
 	}
 	cs.history.Add(snapshot)
+}
+
+// computeCheckerOperationalCounts treats a resource as unhealthy only when it has
+// at least one unmuted critical issue. Warning/Info-only resources remain healthy.
+func computeCheckerOperationalCounts(healthy int, issues []checker.Issue, activeStates map[string]*IssueState) (int, int) {
+	resourceSeverity := make(map[string]string)
+	for _, issue := range issues {
+		issueKey := issue.Namespace + "/" + issue.Resource + "/" + issue.Type
+		if _, muted := activeStates[issueKey]; muted {
+			continue
+		}
+		resourceKey := issue.Namespace + "/" + issue.Resource
+		prev := resourceSeverity[resourceKey]
+		if severityRank(issue.Severity) > severityRank(prev) {
+			resourceSeverity[resourceKey] = issue.Severity
+		}
+	}
+
+	checkedResources := healthy + len(resourceSeverity)
+	criticalResources := 0
+	for _, sev := range resourceSeverity {
+		if sev == checker.SeverityCritical {
+			criticalResources++
+		}
+	}
+
+	return checkedResources, criticalResources
+}
+
+func severityRank(severity string) int {
+	switch severity {
+	case checker.SeverityCritical:
+		return 3
+	case checker.SeverityWarning:
+		return 2
+	case checker.SeverityInfo:
+		return 1
+	default:
+		return 0
+	}
+}
+
+func computeOperationalHealthScore(checkedResources, criticalResources int) float64 {
+	if checkedResources <= 0 {
+		return 100
+	}
+	if criticalResources < 0 {
+		criticalResources = 0
+	}
+	if criticalResources > checkedResources {
+		criticalResources = checkedResources
+	}
+	healthyResources := checkedResources - criticalResources
+	return float64(healthyResources) / float64(checkedResources) * 100
+}
+
+func computeDeploymentReadiness(ctx context.Context, ds datasource.DataSource, namespaces []string) (int, int, float64) {
+	totalReady := 0
+	totalDesired := 0
+
+	for _, ns := range namespaces {
+		deployments := &appsv1.DeploymentList{}
+		if err := ds.List(ctx, deployments, client.InNamespace(ns)); err != nil {
+			log.Error(err, "Failed to list deployments for readiness score", "namespace", ns)
+			continue
+		}
+		for _, deployment := range deployments.Items {
+			desired := 1
+			if deployment.Spec.Replicas != nil {
+				desired = int(*deployment.Spec.Replicas)
+			}
+			desired = max(desired, 0)
+			ready := int(deployment.Status.ReadyReplicas)
+			ready = max(ready, 0)
+			ready = min(ready, desired)
+			totalDesired += desired
+			totalReady += ready
+		}
+	}
+
+	if totalDesired == 0 {
+		return totalReady, totalDesired, 100
+	}
+	return totalReady, totalDesired, float64(totalReady) / float64(totalDesired) * 100
 }
 
 // toCausalAnalysisContext converts causal.CausalContext to ai.CausalAnalysisContext
@@ -1830,19 +1933,26 @@ func (s *Server) handleFleetSummary(w http.ResponseWriter, _ *http.Request) {
 		if cs.latest == nil {
 			continue
 		}
-		total := cs.latest.Summary.TotalHealthy + cs.latest.Summary.TotalIssues
-		score := float64(100)
-		if total > 0 {
-			score = float64(cs.latest.Summary.TotalHealthy) / float64(total) * 100
+		score := cs.latest.Summary.HealthScore
+		if score == 0 {
+			total := cs.latest.Summary.TotalHealthy + cs.latest.Summary.TotalIssues
+			if total > 0 {
+				score = float64(cs.latest.Summary.TotalHealthy) / float64(total) * 100
+			} else {
+				score = 100
+			}
 		}
 		summary.Clusters = append(summary.Clusters, FleetClusterEntry{
-			ClusterID:     clusterID,
-			HealthScore:   score,
-			TotalIssues:   cs.latest.Summary.TotalIssues,
-			CriticalCount: cs.latest.Summary.CriticalCount,
-			WarningCount:  cs.latest.Summary.WarningCount,
-			InfoCount:     cs.latest.Summary.InfoCount,
-			LastUpdated:   cs.latest.Timestamp.Format(time.RFC3339),
+			ClusterID:                clusterID,
+			HealthScore:              score,
+			TotalIssues:              cs.latest.Summary.TotalIssues,
+			CriticalCount:            cs.latest.Summary.CriticalCount,
+			WarningCount:             cs.latest.Summary.WarningCount,
+			InfoCount:                cs.latest.Summary.InfoCount,
+			DeploymentReady:          cs.latest.Summary.DeploymentReady,
+			DeploymentDesired:        cs.latest.Summary.DeploymentDesired,
+			DeploymentReadinessScore: cs.latest.Summary.DeploymentReadinessScore,
+			LastUpdated:              cs.latest.Timestamp.Format(time.RFC3339),
 		})
 	}
 	s.mu.RUnlock()

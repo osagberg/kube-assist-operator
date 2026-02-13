@@ -286,6 +286,26 @@ func TestParseResponse_InvalidEscapes(t *testing.T) {
 	}
 }
 
+func TestParseResponse_InvalidEscapesWithLiteralBackslashes(t *testing.T) {
+	// Real-world Anthropic output can mix invalid escapes (\|) and valid literals (\\|).
+	content := "```json\n" +
+		`{"suggestions":{"issue_0":{"suggestion":"Use grep \| for filters; keep literal \\| in examples","rootCause":"Path is \/etc\/app\.conf","confidence":0.85}},"summary":"Found issue"}` +
+		"\n```"
+	resp := ParseResponse(content, 400, "anthropic")
+
+	if resp.ParseFailed {
+		t.Fatal("ParseFailed should be false for mixed invalid and valid backslash escapes")
+	}
+
+	s, ok := resp.EnhancedSuggestions["issue_0"]
+	if !ok {
+		t.Fatal("Missing issue_0 suggestion")
+	}
+	if s.Suggestion != `Use grep | for filters; keep literal \| in examples` {
+		t.Errorf("Suggestion = %q, want %q", s.Suggestion, `Use grep | for filters; keep literal \| in examples`)
+	}
+}
+
 func TestParseResponse_ConfidenceClamping(t *testing.T) {
 	content := `{"suggestions":{"issue_0":{"suggestion":"Fix","confidence":1.5},"issue_1":{"suggestion":"Fix2","confidence":-0.5}},"summary":"test"}`
 	resp := ParseResponse(content, 100, "test")
@@ -354,7 +374,8 @@ func TestFixInvalidJSONEscapes(t *testing.T) {
 		{"preserves quote", `hello\"world`, `hello\"world`},
 		{"preserves valid slash", `hello\/world`, `hello\/world`},
 		{"preserves unicode", `hello\u0041world`, `hello\u0041world`},
-		{"double backslash then char", `hello\\world`, `hello\world`},
+		{"preserves literal backslash", `hello\\world`, `hello\\world`},
+		{"odd backslashes before invalid char", `hello\\\|world`, `hello\\|world`},
 		{"mixed valid and invalid", `path\: app\.conf`, `path: app.conf`},
 	}
 

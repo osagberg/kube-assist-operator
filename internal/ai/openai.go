@@ -23,7 +23,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"regexp"
 	"strings"
 	"time"
 
@@ -230,13 +229,47 @@ func extractJSON(content string) string {
 	return content
 }
 
-// fixInvalidJSONEscapes replaces backslash sequences that are not valid JSON
-// escapes (e.g. \. \' \:) with the literal character, which LLMs sometimes produce.
-// Valid JSON escapes: \" \\ \/ \b \f \n \r \t \uXXXX
-var invalidEscapeRe = regexp.MustCompile(`\\([^"\\/bfnrtu])`)
-
+// fixInvalidJSONEscapes removes only truly invalid JSON escapes.
+// It preserves valid even backslash runs (e.g. \\|) and strips one slash
+// only when an invalid escape is introduced by an odd backslash count (e.g. \|, \\\.).
 func fixInvalidJSONEscapes(s string) string {
-	return invalidEscapeRe.ReplaceAllString(s, "$1")
+	var b strings.Builder
+	b.Grow(len(s))
+
+	for i := 0; i < len(s); {
+		if s[i] != '\\' {
+			b.WriteByte(s[i])
+			i++
+			continue
+		}
+
+		j := i
+		for j < len(s) && s[j] == '\\' {
+			j++
+		}
+		runLen := j - i
+
+		if j < len(s) && !isValidJSONEscapeChar(s[j]) && runLen%2 == 1 {
+			// Remove only the unescaped slash that creates an invalid escape.
+			runLen--
+		}
+
+		for k := 0; k < runLen; k++ {
+			b.WriteByte('\\')
+		}
+		i = j
+	}
+
+	return b.String()
+}
+
+func isValidJSONEscapeChar(c byte) bool {
+	switch c {
+	case '"', '\\', '/', 'b', 'f', 'n', 'r', 't', 'u':
+		return true
+	default:
+		return false
+	}
 }
 
 const systemPrompt = `You are a Kubernetes troubleshooting expert. You analyze health check issues from Kubernetes clusters and provide actionable suggestions.

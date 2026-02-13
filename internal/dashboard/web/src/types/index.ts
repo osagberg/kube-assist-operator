@@ -49,6 +49,10 @@ export interface Summary {
   criticalCount: number
   warningCount: number
   infoCount: number
+  healthScore: number
+  deploymentReady: number
+  deploymentDesired: number
+  deploymentReadinessScore: number
 }
 
 // AI settings types matching Go structs
@@ -94,6 +98,9 @@ export interface FleetClusterEntry {
   criticalCount: number
   warningCount: number
   infoCount: number
+  deploymentReady: number
+  deploymentDesired: number
+  deploymentReadinessScore: number
   lastUpdated: string
 }
 

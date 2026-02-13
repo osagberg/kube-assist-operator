@@ -210,4 +210,29 @@ describe('response normalization', () => {
     const data = await fetchFleetSummary()
     expect(data.clusters).toEqual([])
   })
+
+  it('normalizes fleet deployment readiness fields', async () => {
+    fetchSpy.mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({
+        clusters: [
+          {
+            clusterId: 'alpha',
+            healthScore: 80,
+            totalIssues: 2,
+            criticalCount: 1,
+            warningCount: 1,
+            infoCount: 0,
+            lastUpdated: '2026-02-13T12:00:00Z',
+          },
+        ],
+      }),
+    })
+
+    const { fetchFleetSummary } = await import('./client')
+    const data = await fetchFleetSummary()
+    expect(data.clusters[0].deploymentReady).toBe(0)
+    expect(data.clusters[0].deploymentDesired).toBe(0)
+    expect(data.clusters[0].deploymentReadinessScore).toBe(100)
+  })
 })

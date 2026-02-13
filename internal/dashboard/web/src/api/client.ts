@@ -33,7 +33,31 @@ export function normalizeHealth(data: HealthUpdate): HealthUpdate {
     data.namespaces = []
   }
   if (!data.summary) {
-    data.summary = { totalHealthy: 0, totalIssues: 0, criticalCount: 0, warningCount: 0, infoCount: 0 }
+    data.summary = {
+      totalHealthy: 0,
+      totalIssues: 0,
+      criticalCount: 0,
+      warningCount: 0,
+      infoCount: 0,
+      healthScore: 100,
+      deploymentReady: 0,
+      deploymentDesired: 0,
+      deploymentReadinessScore: 100,
+    }
+  }
+  if (typeof data.summary.healthScore !== 'number') {
+    const total = data.summary.totalHealthy + data.summary.totalIssues
+    data.summary.healthScore = total === 0 ? 100 : (data.summary.totalHealthy / total) * 100
+  }
+  if (typeof data.summary.deploymentReady !== 'number') {
+    data.summary.deploymentReady = 0
+  }
+  if (typeof data.summary.deploymentDesired !== 'number') {
+    data.summary.deploymentDesired = 0
+  }
+  if (typeof data.summary.deploymentReadinessScore !== 'number') {
+    const desired = data.summary.deploymentDesired
+    data.summary.deploymentReadinessScore = desired === 0 ? 100 : (data.summary.deploymentReady / desired) * 100
   }
   if (!data.issueStates) {
     data.issueStates = {}
@@ -64,6 +88,18 @@ function normalizeFleet(data: FleetSummary): FleetSummary {
   }
   if (!data.clusters) {
     data.clusters = []
+  }
+  for (const cluster of data.clusters) {
+    if (typeof cluster.deploymentReady !== 'number') {
+      cluster.deploymentReady = 0
+    }
+    if (typeof cluster.deploymentDesired !== 'number') {
+      cluster.deploymentDesired = 0
+    }
+    if (typeof cluster.deploymentReadinessScore !== 'number') {
+      const desired = cluster.deploymentDesired
+      cluster.deploymentReadinessScore = desired === 0 ? 100 : (cluster.deploymentReady / desired) * 100
+    }
   }
   return data
 }

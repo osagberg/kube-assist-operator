@@ -93,8 +93,7 @@ function App() {
 
   const healthScore = useMemo(() => {
     if (!health) return 100
-    const total = health.summary.totalHealthy + health.summary.totalIssues
-    return total === 0 ? 100 : (health.summary.totalHealthy / total) * 100
+    return health.summary.healthScore
   }, [health])
 
   const handleTriggerCheck = async () => {
@@ -300,7 +299,16 @@ function App() {
             {/* Summary Row */}
             <div className="flex flex-col md:flex-row items-start gap-6">
               <HealthScoreRing score={healthScore} />
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 flex-1 w-full">
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-4 flex-1 w-full">
+                <MetricCard
+                  label="Deploy Ready"
+                  value={`${Math.round(health.summary.deploymentReadinessScore)}%`}
+                  hint={`${health.summary.deploymentReady}/${health.summary.deploymentDesired} replicas`}
+                  severity={deploymentReadinessSeverity(
+                    health.summary.deploymentReadinessScore,
+                    health.summary.deploymentDesired,
+                  )}
+                />
                 <MetricCard label="Healthy" value={health.summary.totalHealthy} severity="healthy" />
                 <MetricCard label="Critical" value={health.summary.criticalCount} severity="critical" />
                 <MetricCard label="Warnings" value={health.summary.warningCount} severity="warning" />
@@ -423,7 +431,14 @@ function PipelineIndicator({ phase }: { phase: string }) {
   )
 }
 
-function MetricCard({ label, value, severity }: { label: string; value: number; severity: string }) {
+function deploymentReadinessSeverity(score: number, desiredReplicas: number): string {
+  if (desiredReplicas === 0) return 'info'
+  if (score >= 95) return 'healthy'
+  if (score >= 80) return 'warning'
+  return 'critical'
+}
+
+function MetricCard({ label, value, severity, hint }: { label: string; value: number | string; severity: string; hint?: string }) {
   const pillClass = `severity-pill-${severity}`
   const pillLabels: Record<string, string> = { healthy: 'OK', critical: 'CR', warning: 'WR', info: 'IN' }
   const pillText = pillLabels[severity] ?? '??'
@@ -434,6 +449,7 @@ function MetricCard({ label, value, severity }: { label: string; value: number; 
         <span className="text-sm" style={{ color: 'var(--text-secondary)' }}>{label}</span>
       </div>
       <div className="text-2xl font-bold" style={{ color: 'var(--text-primary)' }}>{value}</div>
+      {hint && <div className="text-xs mt-1" style={{ color: 'var(--text-tertiary)' }}>{hint}</div>}
     </div>
   )
 }

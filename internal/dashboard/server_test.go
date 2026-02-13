@@ -27,6 +27,8 @@ import (
 	"time"
 
 	"golang.org/x/time/rate"
+	appsv1 "k8s.io/api/apps/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -1328,7 +1330,15 @@ func TestServer_HandleFleetSummary(t *testing.T) {
 		ClusterID:  "alpha",
 		Namespaces: []string{"default"},
 		Results:    map[string]CheckResult{},
-		Summary:    Summary{TotalHealthy: 8, TotalIssues: 2, CriticalCount: 1, WarningCount: 1},
+		Summary: Summary{
+			TotalHealthy:             8,
+			TotalIssues:              2,
+			CriticalCount:            1,
+			WarningCount:             1,
+			DeploymentReady:          3,
+			DeploymentDesired:        4,
+			DeploymentReadinessScore: 75,
+		},
 	}
 	csB := server.getOrCreateClusterState("beta")
 	csB.latest = &HealthUpdate{
@@ -1336,7 +1346,13 @@ func TestServer_HandleFleetSummary(t *testing.T) {
 		ClusterID:  "beta",
 		Namespaces: []string{"default", "prod"},
 		Results:    map[string]CheckResult{},
-		Summary:    Summary{TotalHealthy: 10, TotalIssues: 0},
+		Summary: Summary{
+			TotalHealthy:             10,
+			TotalIssues:              0,
+			DeploymentReady:          5,
+			DeploymentDesired:        5,
+			DeploymentReadinessScore: 100,
+		},
 	}
 	server.mu.Unlock()
 
@@ -1377,6 +1393,15 @@ func TestServer_HandleFleetSummary(t *testing.T) {
 	if alpha.HealthScore != 80 {
 		t.Errorf("alpha HealthScore = %f, want 80", alpha.HealthScore)
 	}
+	if alpha.DeploymentReady != 3 {
+		t.Errorf("alpha DeploymentReady = %d, want 3", alpha.DeploymentReady)
+	}
+	if alpha.DeploymentDesired != 4 {
+		t.Errorf("alpha DeploymentDesired = %d, want 4", alpha.DeploymentDesired)
+	}
+	if alpha.DeploymentReadinessScore != 75 {
+		t.Errorf("alpha DeploymentReadinessScore = %f, want 75", alpha.DeploymentReadinessScore)
+	}
 
 	beta, ok := clusterMap["beta"]
 	if !ok {
@@ -1387,6 +1412,177 @@ func TestServer_HandleFleetSummary(t *testing.T) {
 	}
 	if beta.HealthScore != 100 {
 		t.Errorf("beta HealthScore = %f, want 100", beta.HealthScore)
+	}
+	if beta.DeploymentReadinessScore != 100 {
+		t.Errorf("beta DeploymentReadinessScore = %f, want 100", beta.DeploymentReadinessScore)
+	}
+}
+
+func TestServer_HandleFleetSummary_UsesSummaryHealthScore(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	now := time.Now()
+	server.mu.Lock()
+	cs := server.getOrCreateClusterState("alpha")
+	cs.latest = &HealthUpdate{
+		Timestamp:  now,
+		ClusterID:  "alpha",
+		Namespaces: []string{"default"},
+		Results:    map[string]CheckResult{},
+		Summary: Summary{
+			TotalHealthy:  8,
+			TotalIssues:   2,
+			CriticalCount: 1,
+			WarningCount:  1,
+			HealthScore:   95,
+		},
+	}
+	server.mu.Unlock()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/fleet/summary", nil)
+	rr := httptest.NewRecorder()
+	server.handleFleetSummary(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("handleFleetSummary() status = %d, want %d", rr.Code, http.StatusOK)
+	}
+
+	var summary FleetSummary
+	if err := json.Unmarshal(rr.Body.Bytes(), &summary); err != nil {
+		t.Fatalf("handleFleetSummary() invalid JSON: %v", err)
+	}
+	if len(summary.Clusters) != 1 {
+		t.Fatalf("clusters = %d, want 1", len(summary.Clusters))
+	}
+	if summary.Clusters[0].HealthScore != 95 {
+		t.Errorf("HealthScore = %f, want 95", summary.Clusters[0].HealthScore)
+	}
+}
+
+func TestComputeCheckerOperationalCounts(t *testing.T) {
+	issues := []checker.Issue{
+		{
+			Type:      "NoReadinessProbe",
+			Severity:  checker.SeverityInfo,
+			Resource:  "deployment/nginx-healthy",
+			Namespace: "demo-app",
+		},
+		{
+			Type:      "NoMemoryLimit",
+			Severity:  checker.SeverityWarning,
+			Resource:  "deployment/nginx-healthy",
+			Namespace: "demo-app",
+		},
+		{
+			Type:      "ContainerNotReady",
+			Severity:  checker.SeverityCritical,
+			Resource:  "deployment/nginx-broken",
+			Namespace: "demo-app",
+		},
+	}
+
+	checked, critical := computeCheckerOperationalCounts(0, issues, map[string]*IssueState{})
+	if checked != 2 {
+		t.Errorf("checked resources = %d, want 2", checked)
+	}
+	if critical != 1 {
+		t.Errorf("critical resources = %d, want 1", critical)
+	}
+
+	score := computeOperationalHealthScore(checked, critical)
+	if score != 50 {
+		t.Errorf("score = %f, want 50", score)
+	}
+}
+
+func TestComputeCheckerOperationalCounts_MutedCritical(t *testing.T) {
+	issues := []checker.Issue{
+		{
+			Type:      "ContainerNotReady",
+			Severity:  checker.SeverityCritical,
+			Resource:  "deployment/nginx-broken",
+			Namespace: "demo-app",
+		},
+	}
+	activeStates := map[string]*IssueState{
+		"demo-app/deployment/nginx-broken/ContainerNotReady": {
+			Key:       "demo-app/deployment/nginx-broken/ContainerNotReady",
+			Action:    ActionAcknowledged,
+			CreatedAt: time.Now(),
+		},
+	}
+
+	checked, critical := computeCheckerOperationalCounts(0, issues, activeStates)
+	if checked != 0 {
+		t.Errorf("checked resources = %d, want 0", checked)
+	}
+	if critical != 0 {
+		t.Errorf("critical resources = %d, want 0", critical)
+	}
+
+	score := computeOperationalHealthScore(checked, critical)
+	if score != 100 {
+		t.Errorf("score = %f, want 100", score)
+	}
+}
+
+func TestComputeDeploymentReadiness(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := appsv1.AddToScheme(scheme); err != nil {
+		t.Fatalf("failed to add apps scheme: %v", err)
+	}
+
+	replicasTwo := int32(2)
+	replicasOne := int32(1)
+	client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
+		&appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{Name: "healthy", Namespace: "demo"},
+			Spec:       appsv1.DeploymentSpec{Replicas: &replicasTwo},
+			Status:     appsv1.DeploymentStatus{ReadyReplicas: 2},
+		},
+		&appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{Name: "broken", Namespace: "demo"},
+			Spec:       appsv1.DeploymentSpec{Replicas: &replicasOne},
+			Status:     appsv1.DeploymentStatus{ReadyReplicas: 0},
+		},
+		&appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{Name: "default-replicas", Namespace: "demo"},
+			Spec:       appsv1.DeploymentSpec{},
+			Status:     appsv1.DeploymentStatus{ReadyReplicas: 1},
+		},
+	).Build()
+
+	ready, desired, score := computeDeploymentReadiness(context.Background(), datasource.NewKubernetes(client), []string{"demo"})
+	if ready != 3 {
+		t.Errorf("ready replicas = %d, want 3", ready)
+	}
+	if desired != 4 {
+		t.Errorf("desired replicas = %d, want 4", desired)
+	}
+	if score != 75 {
+		t.Errorf("readiness score = %f, want 75", score)
+	}
+}
+
+func TestComputeDeploymentReadiness_NoDeployments(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := appsv1.AddToScheme(scheme); err != nil {
+		t.Fatalf("failed to add apps scheme: %v", err)
+	}
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	ready, desired, score := computeDeploymentReadiness(context.Background(), datasource.NewKubernetes(client), []string{"demo"})
+	if ready != 0 {
+		t.Errorf("ready replicas = %d, want 0", ready)
+	}
+	if desired != 0 {
+		t.Errorf("desired replicas = %d, want 0", desired)
+	}
+	if score != 100 {
+		t.Errorf("readiness score = %f, want 100", score)
 	}
 }
 

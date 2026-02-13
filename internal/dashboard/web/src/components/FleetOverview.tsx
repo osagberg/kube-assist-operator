@@ -30,6 +30,15 @@ export function FleetOverview({ clusters, onDrillDown }: Props) {
 }
 
 function FleetCard({ entry, onClick }: { entry: FleetClusterEntry; onClick: () => void }) {
+  const deployReadiness = Math.round(entry.deploymentReadinessScore)
+  const readinessPillClass = entry.deploymentDesired === 0
+    ? 'severity-pill-info'
+    : deployReadiness >= 95
+      ? 'severity-pill-healthy'
+      : deployReadiness >= 80
+        ? 'severity-pill-warning'
+        : 'severity-pill-critical'
+
   return (
     <button
       onClick={onClick}
@@ -54,6 +63,12 @@ function FleetCard({ entry, onClick }: { entry: FleetClusterEntry; onClick: () =
             {entry.totalIssues === 0 && (
               <span className="severity-pill-healthy">OK</span>
             )}
+            <span className={readinessPillClass}>
+              DR {deployReadiness}%
+            </span>
+          </div>
+          <div className="text-[10px] mt-1" style={{ color: 'var(--text-secondary)' }}>
+            Deployments: {entry.deploymentReady}/{entry.deploymentDesired} ready replicas
           </div>
           <div className="text-[10px] mt-1.5" style={{ color: 'var(--text-tertiary)' }}>
             {new Date(entry.lastUpdated).toLocaleTimeString()}
