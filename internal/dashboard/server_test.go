@@ -1335,6 +1335,7 @@ func TestServer_HandleFleetSummary(t *testing.T) {
 			TotalIssues:              2,
 			CriticalCount:            1,
 			WarningCount:             1,
+			HealthScore:              80,
 			DeploymentReady:          3,
 			DeploymentDesired:        4,
 			DeploymentReadinessScore: 75,
@@ -1349,6 +1350,7 @@ func TestServer_HandleFleetSummary(t *testing.T) {
 		Summary: Summary{
 			TotalHealthy:             10,
 			TotalIssues:              0,
+			HealthScore:              100,
 			DeploymentReady:          5,
 			DeploymentDesired:        5,
 			DeploymentReadinessScore: 100,
@@ -1389,7 +1391,6 @@ func TestServer_HandleFleetSummary(t *testing.T) {
 	if alpha.CriticalCount != 1 {
 		t.Errorf("alpha CriticalCount = %d, want 1", alpha.CriticalCount)
 	}
-	// 8 healthy out of 10 total = 80%
 	if alpha.HealthScore != 80 {
 		t.Errorf("alpha HealthScore = %f, want 80", alpha.HealthScore)
 	}
@@ -1459,6 +1460,51 @@ func TestServer_HandleFleetSummary_UsesSummaryHealthScore(t *testing.T) {
 	}
 	if summary.Clusters[0].HealthScore != 95 {
 		t.Errorf("HealthScore = %f, want 95", summary.Clusters[0].HealthScore)
+	}
+}
+
+func TestServer_HandleFleetSummary_ZeroScoreIsValid(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	now := time.Now()
+	server.mu.Lock()
+	cs := server.getOrCreateClusterState("all-critical")
+	cs.latest = &HealthUpdate{
+		Timestamp:  now,
+		ClusterID:  "all-critical",
+		Namespaces: []string{"default"},
+		Results:    map[string]CheckResult{},
+		Summary: Summary{
+			TotalHealthy:  0,
+			TotalIssues:   5,
+			CriticalCount: 5,
+			HealthScore:   0,
+		},
+	}
+	server.mu.Unlock()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/fleet/summary", nil)
+	rr := httptest.NewRecorder()
+	server.handleFleetSummary(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("handleFleetSummary() status = %d, want %d", rr.Code, http.StatusOK)
+	}
+
+	var summary FleetSummary
+	if err := json.Unmarshal(rr.Body.Bytes(), &summary); err != nil {
+		t.Fatalf("handleFleetSummary() invalid JSON: %v", err)
+	}
+	if len(summary.Clusters) != 1 {
+		t.Fatalf("clusters = %d, want 1", len(summary.Clusters))
+	}
+	// A score of 0 means all resources have critical issues — this is valid,
+	// not "score not computed". The fleet handler must preserve it as-is.
+	if summary.Clusters[0].HealthScore != 0 {
+		t.Errorf("HealthScore = %f, want 0 (all-critical cluster)", summary.Clusters[0].HealthScore)
 	}
 }
 

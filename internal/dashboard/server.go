@@ -1934,14 +1934,6 @@ func (s *Server) handleFleetSummary(w http.ResponseWriter, _ *http.Request) {
 			continue
 		}
 		score := cs.latest.Summary.HealthScore
-		if score == 0 {
-			total := cs.latest.Summary.TotalHealthy + cs.latest.Summary.TotalIssues
-			if total > 0 {
-				score = float64(cs.latest.Summary.TotalHealthy) / float64(total) * 100
-			} else {
-				score = 100
-			}
-		}
 		summary.Clusters = append(summary.Clusters, FleetClusterEntry{
 			ClusterID:                clusterID,
 			HealthScore:              score,
