@@ -64,6 +64,9 @@ spec:
             - --dashboard-tls-key-file=/etc/dashboard-tls/tls.key
             {{- end }}
             - --max-sse-clients={{ .Values.dashboard.maxSSEClients }}
+            - --check-interval={{ .Values.dashboard.checkInterval }}
+            - --sse-buffer-size={{ .Values.dashboard.sseBufferSize }}
+            - --history-size={{ .Values.dashboard.historySize }}
             {{- end }}
             {{- if .Values.ai.enabled }}
             - --enable-ai
@@ -80,6 +83,8 @@ spec:
             {{- if .Values.ai.budget.monthlyTokenLimit }}
             - --ai-monthly-token-limit={{ .Values.ai.budget.monthlyTokenLimit }}
             {{- end }}
+            - --ai-analysis-timeout={{ .Values.ai.analysisTimeout }}
+            - --ai-max-issues={{ .Values.ai.maxIssuesPerBatch }}
             {{- end }}
             {{- if and .Values.datasource (ne .Values.datasource.type "kubernetes") }}
             - --datasource={{ .Values.datasource.type }}

@@ -43,7 +43,7 @@ import (
 // runHealthChecker periodically runs health checks.
 // The first check is already performed synchronously in Start().
 func (s *Server) runHealthChecker(ctx context.Context) {
-	ticker := time.NewTicker(30 * time.Second)
+	ticker := time.NewTicker(s.checkInterval)
 	defer ticker.Stop()
 
 	for {
@@ -131,7 +131,7 @@ func (s *Server) runAIAnalysisForCluster(
 	}
 
 	// Long-running AI call — outside lock
-	aiCtx, aiCancel := context.WithTimeout(ctx, 90*time.Second)
+	aiCtx, aiCancel := context.WithTimeout(ctx, s.aiAnalysisTimeout)
 	enhanced, tokens, totalCount, aiResp, aiErr := checker.EnhanceAllWithAI(aiCtx, results, checkCtx)
 	aiCancel()
 
@@ -325,6 +325,7 @@ func (s *Server) runCheckForCluster(ctx context.Context, clusterID string, ds da
 		DataSource: ds,
 		Namespaces: namespaces,
 		AIEnabled:  false,
+		MaxIssues:  s.maxIssuesPerBatch,
 	}
 
 	results := s.registry.RunAll(checkCtx2, checkCtx, nil)

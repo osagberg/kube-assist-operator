@@ -76,7 +76,7 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 
 	clusterID := r.URL.Query().Get("clusterId")
-	clientCh := make(chan HealthUpdate, 10)
+	clientCh := make(chan HealthUpdate, s.sseBufferSize)
 
 	s.mu.Lock()
 	if s.maxSSEClients > 0 && len(s.clients) >= s.maxSSEClients {

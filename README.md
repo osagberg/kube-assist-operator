@@ -264,9 +264,14 @@ Common values:
 | `dashboard.allowInsecureHttp` | `false` | Permit auth without TLS (dev only) |
 | `dashboard.tls.enabled` | `false` | Enable dashboard TLS |
 | `dashboard.maxSSEClients` | `100` | Max concurrent SSE clients |
+| `dashboard.checkInterval` | `"30s"` | Health check polling interval |
+| `dashboard.sseBufferSize` | `10` | SSE client channel buffer capacity |
+| `dashboard.historySize` | `100` | Health history ring buffer capacity |
 | `ai.enabled` | `false` | Enable AI suggestions |
 | `ai.provider` | `noop` | Provider: anthropic/openai/noop |
 | `ai.apiKeySecretRef.name` | `""` | Secret containing API key |
+| `ai.analysisTimeout` | `"90s"` | AI analysis context timeout |
+| `ai.maxIssuesPerBatch` | `15` | Max issues sent to AI per batch |
 | `networkPolicy.enabled` | `true` | Enable network policy |
 | `networkPolicy.ingressMode` | `strict` | Ingress policy mode |
 | `datasource.type` | `kubernetes` | `kubernetes` or `console` |

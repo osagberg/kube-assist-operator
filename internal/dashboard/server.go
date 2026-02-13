@@ -200,6 +200,11 @@ type Server struct {
 	aiEnabled         bool
 	aiConfig          ai.Config
 	checkTimeout      time.Duration
+	checkInterval     time.Duration // health check polling interval
+	aiAnalysisTimeout time.Duration // AI analysis context timeout
+	maxIssuesPerBatch int           // max issues sent to AI per batch
+	sseBufferSize     int           // SSE client channel buffer capacity
+	historySize       int           // health history ring buffer capacity
 	clusterWorkers    int
 	correlator        *causal.Correlator
 	k8sWriter         client.Client // optional: for creating TroubleshootRequest CRs
@@ -226,6 +231,11 @@ func NewServer(ds datasource.DataSource, registry *checker.Registry, addr string
 		allowInsecureHTTP: parseBoolEnv("DASHBOARD_ALLOW_INSECURE_HTTP"),
 		aiConfig:          ai.DefaultConfig(),
 		checkTimeout:      2 * time.Minute,
+		checkInterval:     30 * time.Second,
+		aiAnalysisTimeout: 90 * time.Second,
+		maxIssuesPerBatch: 15,
+		sseBufferSize:     10,
+		historySize:       100,
 		clusterWorkers:    parseClusterWorkers(),
 		correlator:        causal.NewCorrelator(),
 		clients:           make(map[chan HealthUpdate]string),
@@ -243,7 +253,7 @@ func (s *Server) getOrCreateClusterState(clusterID string) *clusterState {
 	cs, ok := s.clusters[clusterID]
 	if !ok {
 		cs = &clusterState{
-			history:     history.New(100),
+			history:     history.New(s.historySize),
 			issueStates: make(map[string]*IssueState),
 		}
 		s.clusters[clusterID] = cs
@@ -443,6 +453,46 @@ func (s *Server) WithMaxSSEClients(max int) *Server {
 func (s *Server) WithK8sWriter(c client.Client, scheme *runtime.Scheme) *Server {
 	s.k8sWriter = c
 	s.scheme = scheme
+	return s
+}
+
+// WithCheckInterval sets the health check polling interval.
+func (s *Server) WithCheckInterval(d time.Duration) *Server {
+	if d > 0 {
+		s.checkInterval = d
+	}
+	return s
+}
+
+// WithAIAnalysisTimeout sets the AI analysis context timeout.
+func (s *Server) WithAIAnalysisTimeout(d time.Duration) *Server {
+	if d > 0 {
+		s.aiAnalysisTimeout = d
+	}
+	return s
+}
+
+// WithMaxIssuesPerBatch sets the max issues sent to AI per batch.
+func (s *Server) WithMaxIssuesPerBatch(n int) *Server {
+	if n > 0 {
+		s.maxIssuesPerBatch = n
+	}
+	return s
+}
+
+// WithSSEBufferSize sets the SSE client channel buffer capacity.
+func (s *Server) WithSSEBufferSize(n int) *Server {
+	if n > 0 {
+		s.sseBufferSize = n
+	}
+	return s
+}
+
+// WithHistorySize sets the health history ring buffer capacity.
+func (s *Server) WithHistorySize(n int) *Server {
+	if n > 0 {
+		s.historySize = n
+	}
 	return s
 }
 

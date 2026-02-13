@@ -94,6 +94,11 @@ func main() {
 	var aiDailyTokenLimit int
 	var aiMonthlyTokenLimit int
 	var maxSSEClients int
+	var checkInterval time.Duration
+	var aiAnalysisTimeout time.Duration
+	var aiMaxIssues int
+	var sseBufferSize int
+	var historySize int
 	var notifySemCapacity int
 	var datasourceType string
 	var consoleURL string
@@ -128,6 +133,16 @@ func main() {
 		"Max AI tokens per month (0 = unlimited).")
 	flag.IntVar(&maxSSEClients, "max-sse-clients", 100,
 		"Maximum concurrent SSE dashboard connections (0 = unlimited).")
+	flag.DurationVar(&checkInterval, "check-interval", 30*time.Second,
+		"Health check polling interval (e.g. 30s, 1m).")
+	flag.DurationVar(&aiAnalysisTimeout, "ai-analysis-timeout", 90*time.Second,
+		"AI analysis context timeout (e.g. 90s, 2m).")
+	flag.IntVar(&aiMaxIssues, "ai-max-issues", 15,
+		"Maximum issues sent to AI per batch.")
+	flag.IntVar(&sseBufferSize, "sse-buffer-size", 10,
+		"SSE client channel buffer capacity.")
+	flag.IntVar(&historySize, "history-size", 100,
+		"Health history ring buffer capacity.")
 	flag.IntVar(&notifySemCapacity, "notify-sem-capacity", 5,
 		"Maximum concurrent notification dispatches.")
 	flag.StringVar(&datasourceType, "datasource", "kubernetes",
@@ -425,7 +440,12 @@ func main() {
 	if enableDashboard {
 		dashboardServer := dashboard.NewServer(ds, registry, dashboardAddr).
 			WithAI(aiManager, enableAI).
-			WithMaxSSEClients(maxSSEClients)
+			WithMaxSSEClients(maxSSEClients).
+			WithCheckInterval(checkInterval).
+			WithAIAnalysisTimeout(aiAnalysisTimeout).
+			WithMaxIssuesPerBatch(aiMaxIssues).
+			WithSSEBufferSize(sseBufferSize).
+			WithHistorySize(historySize)
 		if datasourceType == "kubernetes" {
 			dashboardServer = dashboardServer.WithK8sWriter(mgr.GetClient(), mgr.GetScheme())
 		}

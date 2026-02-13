@@ -86,6 +86,12 @@ dashboard:
   # Maximum number of concurrent SSE client connections.
   # Excess connections are rejected with HTTP 503. Set to 0 for unlimited.
   maxSSEClients: 100
+  # Health check polling interval (Go duration string, e.g. "30s", "1m").
+  checkInterval: "30s"
+  # SSE client channel buffer capacity.
+  sseBufferSize: 10
+  # Health history ring buffer capacity (number of snapshots retained).
+  historySize: 100
   # Reference to a Secret containing the auth token.
   # If set, takes precedence over authToken.
   authTokenSecretRef:
@@ -121,6 +127,10 @@ ai:
     key: "api-key"
   # Optional cheaper model for AI explain/narrative mode.
   explainModel: ""
+  # AI analysis context timeout (Go duration string, e.g. "90s", "2m").
+  analysisTimeout: "90s"
+  # Maximum issues sent to AI per batch.
+  maxIssuesPerBatch: 15
   # Token budget limits (0 = unlimited).
   budget:
     dailyTokenLimit: 0
