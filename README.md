@@ -357,7 +357,16 @@ make install-cli
 
 ## Roadmap (Selected)
 
+### v1.12.0 — AI Intelligence Upgrade
+- [ ] Schema-enforced AI outputs (OpenAI `json_schema` + Anthropic `tool_use` schemas)
+- [ ] Bounded log/event context in AI analysis (`ai.logContext.enabled`)
+- [ ] NLQ chat interface — interactive AI diagnostics via function calling (`dashboard.chat.enabled`)
+- [ ] Runbook RAG — org-specific knowledge retrieval (`ai.rag.enabled`)
+- [ ] External log sources — Splunk/Loki integration (`datasource.logs.type`)
+
+### Other
 - [ ] Multi-cluster e2e tests with Kind clusters
+- [ ] Prometheus ServiceMonitor + Grafana dashboard templates
 - [ ] Enterprise-ready authn/authz profile (OIDC/SSO front door, tenant scoping, audit trail)
 - [ ] Provider-style integrations for enterprise environments (Splunk/AKS/Prometheus)
 
