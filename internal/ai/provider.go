@@ -147,6 +147,12 @@ type AnalysisResponse struct {
 
 	// TokensUsed tracks token consumption (if available)
 	TokensUsed int `json:"tokensUsed,omitempty"`
+
+	// Truncated indicates the API response was cut off by max_tokens limit.
+	Truncated bool `json:"truncated,omitempty"`
+
+	// ParseFailed indicates JSON parsing of the AI response failed.
+	ParseFailed bool `json:"parseFailed,omitempty"`
 }
 
 // EnhancedSuggestion contains AI-generated analysis for an issue
@@ -310,6 +316,7 @@ func ParseResponse(content string, tokensUsed int, providerName string) *Analysi
 			Summary:             content,
 			RawContent:          content,
 			TokensUsed:          tokensUsed,
+			ParseFailed:         true,
 		}
 	}
 

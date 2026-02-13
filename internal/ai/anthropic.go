@@ -113,9 +113,10 @@ type anthropicMessage struct {
 }
 
 type anthropicResponse struct {
-	ID      string `json:"id"`
-	Type    string `json:"type"`
-	Content []struct {
+	ID         string `json:"id"`
+	Type       string `json:"type"`
+	StopReason string `json:"stop_reason"`
+	Content    []struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
 	} `json:"content"`
@@ -212,5 +213,13 @@ func (p *AnthropicProvider) Analyze(ctx context.Context, request AnalysisRequest
 	}
 
 	tokensUsed := anthropicResp.Usage.InputTokens + anthropicResp.Usage.OutputTokens
+
+	if anthropicResp.StopReason == "max_tokens" {
+		log.Info("Anthropic response truncated by max_tokens", "outputTokens", anthropicResp.Usage.OutputTokens)
+		resp := ParseResponse(textContent, tokensUsed, ProviderNameAnthropic)
+		resp.Truncated = true
+		return resp, nil
+	}
+
 	return ParseResponse(textContent, tokensUsed, ProviderNameAnthropic), nil
 }

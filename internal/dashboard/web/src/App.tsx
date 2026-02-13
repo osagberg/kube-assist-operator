@@ -332,7 +332,7 @@ function App() {
             {/* Checker Cards */}
             <div className="space-y-4">
               {Object.entries(health.results)
-                .sort(([, a], [, b]) => b.issues.length - a.issues.length)
+                .sort(([, a], [, b]) => (b.issues?.length ?? 0) - (a.issues?.length ?? 0))
                 .map(([name, result]) => (
                   <CheckerCard
                     key={name}

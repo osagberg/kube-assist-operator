@@ -190,7 +190,16 @@ func (p *OpenAIProvider) Analyze(ctx context.Context, request AnalysisRequest) (
 		return nil, fmt.Errorf("no response from API")
 	}
 
-	return ParseResponse(openAIResp.Choices[0].Message.Content, openAIResp.Usage.TotalTokens, ProviderNameOpenAI), nil
+	tokensUsed := openAIResp.Usage.TotalTokens
+
+	if openAIResp.Choices[0].FinishReason == "length" {
+		log.Info("OpenAI response truncated by max_tokens", "totalTokens", tokensUsed)
+		resp := ParseResponse(openAIResp.Choices[0].Message.Content, tokensUsed, ProviderNameOpenAI)
+		resp.Truncated = true
+		return resp, nil
+	}
+
+	return ParseResponse(openAIResp.Choices[0].Message.Content, tokensUsed, ProviderNameOpenAI), nil
 }
 
 // extractJSON strips markdown code fences from AI responses.

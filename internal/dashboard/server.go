@@ -708,7 +708,7 @@ func (s *Server) runAIAnalysisForCluster(
 	}
 
 	// AI returned 0 enhanced (likely truncated JSON)
-	return s.handleAITruncatedForCluster(results, causalCtx, enabled, provider, totalCount, tokens, cs)
+	return s.handleAITruncatedForCluster(results, causalCtx, enabled, provider, totalCount, tokens, cs, aiResp)
 }
 
 // handleAIErrorForCluster handles AI call failure, reusing cached results when available.
@@ -761,6 +761,7 @@ func (s *Server) handleAITruncatedForCluster(
 	totalCount int,
 	tokens int,
 	cs *clusterState,
+	aiResp *ai.AnalysisResponse,
 ) *AIStatus {
 	s.mu.RLock()
 	cachedResult := cs.lastAIResult
@@ -773,7 +774,8 @@ func (s *Server) handleAITruncatedForCluster(
 		if len(cachedInsights) > 0 {
 			applyCausalInsights(causalCtx, cachedInsights)
 		}
-		log.Info("AI response truncated (0 enhanced), reusing last good result", "tokens", tokens)
+		log.Info("AI returned 0 enhanced, reusing last good result",
+			"tokens", tokens, "apiTruncated", aiResp != nil && aiResp.Truncated, "parseFailed", aiResp != nil && aiResp.ParseFailed)
 		return &AIStatus{
 			Enabled:         enabled,
 			Provider:        provider.Name(),
@@ -783,14 +785,25 @@ func (s *Server) handleAITruncatedForCluster(
 			CheckPhase:      "done",
 		}
 	}
-	log.Info("AI response truncated, no cached result to fall back on", "tokens", tokens)
+	log.Info("AI returned 0 enhanced, no cached result to fall back on",
+		"tokens", tokens, "apiTruncated", aiResp != nil && aiResp.Truncated, "parseFailed", aiResp != nil && aiResp.ParseFailed)
 	return &AIStatus{
 		Enabled:         enabled,
 		Provider:        provider.Name(),
 		TotalIssueCount: totalCount,
-		LastError:       "AI response truncated — retrying next cycle",
+		LastError:       aiTruncationReason(aiResp),
 		CheckPhase:      "done",
 	}
+}
+
+func aiTruncationReason(resp *ai.AnalysisResponse) string {
+	if resp != nil && resp.Truncated {
+		return "AI response truncated by token limit — retrying next cycle"
+	}
+	if resp != nil && resp.ParseFailed {
+		return "AI response could not be parsed — retrying next cycle"
+	}
+	return "AI returned no suggestions — retrying next cycle"
 }
 
 // runCheck performs a health check and broadcasts results.

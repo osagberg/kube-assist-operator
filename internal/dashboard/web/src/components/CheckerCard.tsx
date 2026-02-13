@@ -32,8 +32,9 @@ function isStateMuted(state: IssueState | undefined): boolean {
 export function CheckerCard({ name, result, search, severity, namespace, issueStates, onAcknowledge, onSnooze, onDismissState, onDiagnose }: Props) {
   const [collapsed, setCollapsed] = useState(false)
   const [showMuted, setShowMuted] = useState(false)
+  const issues = Array.isArray(result.issues) ? result.issues : []
 
-  const filteredIssues = result.issues.filter((issue) => {
+  const filteredIssues = issues.filter((issue) => {
     if (severity !== 'all' && issue.severity !== severity) return false
     if (namespace && issue.namespace !== namespace) return false
     if (search) {
@@ -52,7 +53,7 @@ export function CheckerCard({ name, result, search, severity, namespace, issueSt
 
   const hasCritical = activeIssues.some((i) => i.severity === 'Critical')
   const hasWarning = activeIssues.some((i) => i.severity === 'Warning')
-  const aiCount = result.issues.filter((i) => i.aiEnhanced).length
+  const aiCount = issues.filter((i) => i.aiEnhanced).length
 
   return (
     <div className="glass-panel rounded-xl">
@@ -147,7 +148,7 @@ export function CheckerCard({ name, result, search, severity, namespace, issueSt
         </div>
       )}
 
-      {!collapsed && activeIssues.length === 0 && mutedIssues.length === 0 && result.issues.length > 0 && (
+      {!collapsed && activeIssues.length === 0 && mutedIssues.length === 0 && issues.length > 0 && (
         <div className="px-4 py-3 text-sm border-t border-edge" style={{ color: 'var(--text-tertiary)' }}>
           No issues match filters
         </div>

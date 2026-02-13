@@ -3958,3 +3958,41 @@ func TestServer_HandlePostAISettings_TrailingToken(t *testing.T) {
 			rr.Code, http.StatusBadRequest, rr.Body.String())
 	}
 }
+
+func TestServer_HandleIssueAcknowledge_DELETE_TrailingToken(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	body := `{"key":"default/nginx/CrashLoopBackOff"}{"extra":"data"}`
+	req := httptest.NewRequest(http.MethodDelete, "/api/issues/acknowledge", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	server.handleIssueAcknowledge(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("DELETE /api/issues/acknowledge with trailing token: status = %d, want %d; body = %s",
+			rr.Code, http.StatusBadRequest, rr.Body.String())
+	}
+}
+
+func TestServer_HandleIssueSnooze_DELETE_TrailingToken(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	body := `{"key":"default/nginx/CrashLoopBackOff"}{"extra":"data"}`
+	req := httptest.NewRequest(http.MethodDelete, "/api/issues/snooze", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	server.handleIssueSnooze(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("DELETE /api/issues/snooze with trailing token: status = %d, want %d; body = %s",
+			rr.Code, http.StatusBadRequest, rr.Body.String())
+	}
+}
