@@ -302,16 +302,15 @@ CLUSTER_A ?= kube-assist-a
 CLUSTER_B ?= kube-assist-b
 KUBECONFIG_A ?= /tmp/kind-$(CLUSTER_A).yaml
 KUBECONFIG_B ?= /tmp/kind-$(CLUSTER_B).yaml
-ORBSTACK_KUBECONFIG ?= $(HOME)/.kube/config
 
 .PHONY: setup-multi-cluster
 setup-multi-cluster: ## Create two Kind clusters for console backend integration testing
 	CLUSTER_A=$(CLUSTER_A) CLUSTER_B=$(CLUSTER_B) KUBECONFIG_A=$(KUBECONFIG_A) KUBECONFIG_B=$(KUBECONFIG_B) KIND=$(KIND) hack/multi-cluster-setup.sh
 
 .PHONY: run-console-backend
-run-console-backend: ## Run console backend with OrbStack + Kind clusters (dev mode)
+run-console-backend: ## Run console backend against Kind clusters
 	go run ./cmd/console-backend/ --allow-insecure \
-		--kubeconfigs=orbstack=$(ORBSTACK_KUBECONFIG),$(CLUSTER_A)=$(KUBECONFIG_A),$(CLUSTER_B)=$(KUBECONFIG_B)
+		--kubeconfigs=$(CLUSTER_A)=$(KUBECONFIG_A),$(CLUSTER_B)=$(KUBECONFIG_B)
 
 .PHONY: test-multi-cluster
 test-multi-cluster: ## Run multi-cluster integration tests (requires Kind clusters)
@@ -321,94 +320,3 @@ test-multi-cluster: ## Run multi-cluster integration tests (requires Kind cluste
 cleanup-multi-cluster: ## Tear down Kind clusters used for multi-cluster testing
 	CLUSTER_A=$(CLUSTER_A) CLUSTER_B=$(CLUSTER_B) KUBECONFIG_A=$(KUBECONFIG_A) KUBECONFIG_B=$(KUBECONFIG_B) KIND=$(KIND) hack/multi-cluster-teardown.sh
 
-DEMO_PIDFILE ?= /tmp/kube-assist-demo.pids
-DEMO_OPEN_BROWSER ?= 1
-DEMO_CLEAN_ORBSTACK ?= 0
-
-# _demo-kill-stale removes only kube-assist-related port-forwards and pidfile processes.
-_demo-kill-stale:
-	@if [ -f $(DEMO_PIDFILE) ]; then \
-		echo "==> Killing previous demo PIDs..."; \
-		while read -r pid; do \
-			kill "$$pid" 2>/dev/null && echo "    Killed PID $$pid" || true; \
-		done < $(DEMO_PIDFILE); \
-		rm -f $(DEMO_PIDFILE); \
-	fi
-	@echo "==> Killing stale kube-assist port-forwards..."
-	@pkill -f 'kubectl port-forward.*kube-assist.*(9090|8085)' 2>/dev/null && echo "    Killed stale port-forwards" || true
-
-# _demo-wait-ready polls the console backend health endpoint until it responds.
-_demo-wait-ready:
-	@printf "==> Waiting for console backend..."
-	@for i in $$(seq 1 30); do \
-		if curl -sf http://localhost:8085/healthz >/dev/null 2>&1; then \
-			echo " ready"; \
-			exit 0; \
-		fi; \
-		printf "."; \
-		sleep 1; \
-	done; \
-	echo " timeout (console backend may still be compiling, check logs)"
-
-.PHONY: demo-fleet
-demo-fleet: _demo-kill-stale setup-multi-cluster ## Fleet demo: Kind + OrbStack, console backend + dashboard
-	@rm -f $(DEMO_PIDFILE)
-	@echo "==> Starting console backend on :8085..."
-	@go run ./cmd/console-backend/ --allow-insecure \
-		--kubeconfigs=orbstack=$(ORBSTACK_KUBECONFIG),$(CLUSTER_A)=$(KUBECONFIG_A),$(CLUSTER_B)=$(KUBECONFIG_B) \
-		>> /tmp/kube-assist-console.log 2>&1 & echo $$! >> $(DEMO_PIDFILE)
-	@$(MAKE) _demo-wait-ready
-	@echo "==> Starting dashboard on :9090 (fleet mode)..."
-	@go run ./cmd/main.go --enable-dashboard --dashboard-bind-address=:9090 \
-		--datasource=console --console-url=http://localhost:8085 --cluster-id=orbstack \
-		>> /tmp/kube-assist-dashboard.log 2>&1 & echo $$! >> $(DEMO_PIDFILE)
-	@sleep 3
-	@echo ""
-	@echo "==> Fleet demo running!"
-	@echo "    Clusters:   orbstack, $(CLUSTER_A), $(CLUSTER_B)"
-	@echo "    Dashboard:  http://localhost:9090"
-	@echo "    Console:    http://localhost:8085/api/v1/clusters"
-	@echo "    Logs:       /tmp/kube-assist-{console,dashboard}.log"
-	@echo "    Stop:       make demo-fleet-down"
-	@if [ "$(DEMO_OPEN_BROWSER)" = "1" ] && command -v open >/dev/null 2>&1; then \
-		open http://localhost:9090; \
-	fi
-
-.PHONY: demo-fleet-down
-demo-fleet-down: _demo-kill-stale ## Stop fleet demo + delete Kind clusters
-	@$(MAKE) cleanup-multi-cluster
-	@if [ "$(DEMO_CLEAN_ORBSTACK)" = "1" ]; then \
-		echo "==> Cleaning demo-app namespace from OrbStack..."; \
-		kubectl delete namespace demo-app --ignore-not-found; \
-	fi
-	@rm -f /tmp/kube-assist-console.log /tmp/kube-assist-dashboard.log
-	@echo "==> Fleet demo torn down."
-
-.PHONY: demo-single
-demo-single: _demo-kill-stale ## Single-cluster demo: OrbStack only, kubernetes datasource (TroubleshootRequest enabled)
-	@rm -f $(DEMO_PIDFILE)
-	@echo "==> Starting dashboard on :9090 (single-cluster mode)..."
-	@go run ./cmd/main.go --enable-dashboard --dashboard-bind-address=:9090 \
-		>> /tmp/kube-assist-dashboard.log 2>&1 & echo $$! >> $(DEMO_PIDFILE)
-	@sleep 3
-	@echo ""
-	@echo "==> Single-cluster demo running!"
-	@echo "    Cluster:    orbstack (default kubeconfig)"
-	@echo "    Dashboard:  http://localhost:9090"
-	@echo "    Features:   TroubleshootRequest create enabled"
-	@echo "    Logs:       /tmp/kube-assist-dashboard.log"
-	@echo "    Stop:       make demo-single-down"
-	@if [ "$(DEMO_OPEN_BROWSER)" = "1" ] && command -v open >/dev/null 2>&1; then \
-		open http://localhost:9090; \
-	fi
-
-.PHONY: demo-single-down
-demo-single-down: _demo-kill-stale ## Stop single-cluster demo
-	@rm -f /tmp/kube-assist-dashboard.log
-	@echo "==> Single-cluster demo torn down."
-
-.PHONY: start
-start: demo-fleet ## Alias for demo-fleet
-
-.PHONY: stop
-stop: demo-fleet-down ## Alias for demo-fleet-down
