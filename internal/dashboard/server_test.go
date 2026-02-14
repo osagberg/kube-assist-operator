@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -44,6 +45,7 @@ const (
 	providerNoop      = "noop"
 	providerAnthropic = "anthropic"
 	testAuthToken     = "secret-token"
+	testOriginal      = "original"
 )
 
 func TestServer_SPAEmbed(t *testing.T) {
@@ -4236,5 +4238,901 @@ func TestServer_HandleIssueSnooze_DELETE_TrailingToken(t *testing.T) {
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("DELETE /api/issues/snooze with trailing token: status = %d, want %d; body = %s",
 			rr.Code, http.StatusBadRequest, rr.Body.String())
+	}
+}
+
+// ===== T0-3: AI Analysis Helper Tests =====
+
+func TestComputeIssueHash_Deterministic(t *testing.T) {
+	results := map[string]*checker.CheckResult{
+		"workload": {
+			Issues: []checker.Issue{
+				{Type: "CrashLoop", Severity: checker.SeverityCritical, Namespace: "default", Resource: "pod/web"},
+				{Type: "HighRestart", Severity: checker.SeverityWarning, Namespace: "default", Resource: "pod/api"},
+			},
+		},
+	}
+	h1 := computeIssueHash(results)
+	h2 := computeIssueHash(results)
+	if h1 != h2 {
+		t.Errorf("computeIssueHash not deterministic: %s != %s", h1, h2)
+	}
+	if len(h1) != 64 {
+		t.Errorf("expected SHA-256 hex (64 chars), got %d chars", len(h1))
+	}
+}
+
+func TestComputeIssueHash_DifferentIssues(t *testing.T) {
+	r1 := map[string]*checker.CheckResult{
+		"workload": {Issues: []checker.Issue{{Type: "A", Severity: "critical", Namespace: "ns", Resource: "pod/a"}}},
+	}
+	r2 := map[string]*checker.CheckResult{
+		"workload": {Issues: []checker.Issue{{Type: "B", Severity: "warning", Namespace: "ns", Resource: "pod/b"}}},
+	}
+	if computeIssueHash(r1) == computeIssueHash(r2) {
+		t.Error("different issues should produce different hashes")
+	}
+}
+
+func TestComputeIssueHash_EmptyResults(t *testing.T) {
+	h1 := computeIssueHash(nil)
+	h2 := computeIssueHash(map[string]*checker.CheckResult{})
+	if h1 != h2 {
+		t.Errorf("nil and empty should produce same hash: %s != %s", h1, h2)
+	}
+}
+
+func TestComputeIssueHash_SkipsErrors(t *testing.T) {
+	errResult := map[string]*checker.CheckResult{
+		"workload": {Error: errors.New("fail")},
+	}
+	empty := map[string]*checker.CheckResult{}
+	if computeIssueHash(errResult) != computeIssueHash(empty) {
+		t.Error("results with only errors should hash same as empty")
+	}
+}
+
+func TestSnapshotAIEnhancements_CapturesAISuggestions(t *testing.T) {
+	results := map[string]*checker.CheckResult{
+		"workload": {
+			Issues: []checker.Issue{
+				{
+					Type: "CrashLoop", Resource: "pod/web", Namespace: "default",
+					Suggestion: "AI Analysis: memory leak in container",
+					Metadata:   map[string]string{"aiRootCause": "memory leak"},
+				},
+				{
+					Type: "HighRestart", Resource: "pod/api", Namespace: "default",
+					Suggestion: "Check readiness probe",
+				},
+			},
+		},
+	}
+
+	snap := snapshotAIEnhancements(results)
+	if len(snap) != 1 {
+		t.Fatalf("expected 1 checker in snapshot, got %d", len(snap))
+	}
+	wl := snap["workload"]
+	if len(wl) != 1 {
+		t.Fatalf("expected 1 AI-enhanced issue, got %d", len(wl))
+	}
+	enh := wl["CrashLoop|pod/web|default"]
+	if enh.Suggestion != "AI Analysis: memory leak in container" {
+		t.Errorf("wrong suggestion: %s", enh.Suggestion)
+	}
+	if enh.RootCause != "memory leak" {
+		t.Errorf("wrong root cause: %s", enh.RootCause)
+	}
+}
+
+func TestSnapshotAIEnhancements_EmptyResults(t *testing.T) {
+	snap := snapshotAIEnhancements(map[string]*checker.CheckResult{})
+	if len(snap) != 0 {
+		t.Errorf("expected empty snapshot, got %d entries", len(snap))
+	}
+}
+
+func TestReapplyAIEnhancements_RestoresCachedSuggestions(t *testing.T) {
+	results := map[string]*checker.CheckResult{
+		"workload": {
+			Issues: []checker.Issue{
+				{Type: "CrashLoop", Resource: "pod/web", Namespace: "default", Suggestion: testOriginal},
+			},
+		},
+	}
+	enhancements := map[string]map[string]aiEnhancement{
+		"workload": {
+			"CrashLoop|pod/web|default": {Suggestion: "AI Analysis: cached fix", RootCause: "OOM"},
+		},
+	}
+
+	reapplyAIEnhancements(results, enhancements)
+
+	issue := results["workload"].Issues[0]
+	if issue.Suggestion != "AI Analysis: cached fix" {
+		t.Errorf("suggestion not restored: %s", issue.Suggestion)
+	}
+	if issue.Metadata["aiRootCause"] != "OOM" {
+		t.Errorf("root cause not restored: %s", issue.Metadata["aiRootCause"])
+	}
+}
+
+func TestReapplyAIEnhancements_NilEnhancements(t *testing.T) {
+	results := map[string]*checker.CheckResult{
+		"workload": {
+			Issues: []checker.Issue{
+				{Type: "CrashLoop", Resource: "pod/web", Namespace: "default", Suggestion: testOriginal},
+			},
+		},
+	}
+	reapplyAIEnhancements(results, nil)
+	if results["workload"].Issues[0].Suggestion != testOriginal {
+		t.Error("nil enhancements should not modify results")
+	}
+}
+
+func TestReapplyAIEnhancements_NoMatchingKey(t *testing.T) {
+	results := map[string]*checker.CheckResult{
+		"workload": {
+			Issues: []checker.Issue{
+				{Type: "CrashLoop", Resource: "pod/web", Namespace: "default", Suggestion: testOriginal},
+			},
+		},
+	}
+	enhancements := map[string]map[string]aiEnhancement{
+		"workload": {
+			"OtherType|pod/other|other-ns": {Suggestion: "AI Analysis: unrelated"},
+		},
+	}
+	reapplyAIEnhancements(results, enhancements)
+	if results["workload"].Issues[0].Suggestion != testOriginal {
+		t.Error("non-matching key should not modify results")
+	}
+}
+
+func TestApplyCausalInsights_MatchingGroup(t *testing.T) {
+	cc := &causal.CausalContext{
+		Groups: []causal.CausalGroup{
+			{RootCause: "unknown"},
+			{RootCause: "unknown"},
+		},
+	}
+	insights := []ai.CausalGroupInsight{
+		{GroupID: "group_0", AIRootCause: "memory pressure", AISuggestion: "increase limits", AISteps: []string{"step1"}},
+	}
+	applyCausalInsights(cc, insights)
+
+	if cc.Groups[0].AIRootCause != "memory pressure" {
+		t.Errorf("group 0 root cause not set: %s", cc.Groups[0].AIRootCause)
+	}
+	if cc.Groups[0].AISuggestion != "increase limits" {
+		t.Errorf("group 0 suggestion not set: %s", cc.Groups[0].AISuggestion)
+	}
+	if !cc.Groups[0].AIEnhanced {
+		t.Error("group 0 should be marked AI-enhanced")
+	}
+	if cc.Groups[1].AIEnhanced {
+		t.Error("group 1 should NOT be AI-enhanced")
+	}
+}
+
+func TestApplyCausalInsights_OutOfBounds(t *testing.T) {
+	cc := &causal.CausalContext{
+		Groups: []causal.CausalGroup{{RootCause: "original"}},
+	}
+	insights := []ai.CausalGroupInsight{
+		{GroupID: "group_5", AIRootCause: "should not apply"},
+	}
+	applyCausalInsights(cc, insights)
+	if cc.Groups[0].AIEnhanced {
+		t.Error("out-of-bounds insight should not modify any group")
+	}
+}
+
+func TestApplyCausalInsights_NilContext(t *testing.T) {
+	// Should not panic
+	applyCausalInsights(nil, []ai.CausalGroupInsight{{GroupID: "group_0"}})
+}
+
+func TestApplyCausalInsights_EmptyInsights(t *testing.T) {
+	cc := &causal.CausalContext{
+		Groups: []causal.CausalGroup{{RootCause: "original"}},
+	}
+	applyCausalInsights(cc, nil)
+	if cc.Groups[0].AIEnhanced {
+		t.Error("nil insights should not modify groups")
+	}
+}
+
+func TestAiTruncationReason(t *testing.T) {
+	tests := []struct {
+		name string
+		resp *ai.AnalysisResponse
+		want string
+	}{
+		{"nil response", nil, "AI returned no suggestions — retrying next cycle"},
+		{"truncated", &ai.AnalysisResponse{Truncated: true}, "AI response truncated by token limit — retrying next cycle"},
+		{"parse failed", &ai.AnalysisResponse{ParseFailed: true}, "AI response could not be parsed — retrying next cycle"},
+		{"neither", &ai.AnalysisResponse{}, "AI returned no suggestions — retrying next cycle"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := aiTruncationReason(tt.resp)
+			if got != tt.want {
+				t.Errorf("aiTruncationReason() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestBroadcastPhase_UpdatesClients(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	s := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	// Set up cluster state
+	s.mu.Lock()
+	s.clusters["test-cluster"] = &clusterState{
+		latest: &HealthUpdate{},
+	}
+	ch := make(chan HealthUpdate, 1)
+	s.clients[ch] = "test-cluster"
+	s.mu.Unlock()
+
+	s.broadcastPhase("test-cluster", "analyzing")
+
+	select {
+	case update := <-ch:
+		if update.AIStatus == nil {
+			t.Fatal("AIStatus should not be nil after broadcastPhase")
+		}
+		if update.AIStatus.CheckPhase != "analyzing" {
+			t.Errorf("CheckPhase = %q, want %q", update.AIStatus.CheckPhase, "analyzing")
+		}
+	default:
+		t.Error("expected broadcast to send update to client")
+	}
+}
+
+func TestBroadcastPhase_NoCluster(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	s := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	// Should not panic with no matching cluster
+	s.broadcastPhase("nonexistent", "analyzing")
+}
+
+func TestBroadcastPhase_FiltersByClusterID(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	s := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	s.mu.Lock()
+	s.clusters["cluster-a"] = &clusterState{latest: &HealthUpdate{}}
+	chA := make(chan HealthUpdate, 1)
+	s.clients[chA] = "cluster-a"
+	chB := make(chan HealthUpdate, 1)
+	s.clients[chB] = "cluster-b"
+	s.mu.Unlock()
+
+	s.broadcastPhase("cluster-a", "running")
+
+	select {
+	case <-chA:
+		// expected
+	default:
+		t.Error("client subscribed to cluster-a should receive broadcast")
+	}
+	select {
+	case <-chB:
+		t.Error("client subscribed to cluster-b should NOT receive broadcast for cluster-a")
+	default:
+		// expected
+	}
+}
+
+func TestHandleAIErrorForCluster_WithCache(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	s := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	cs := &clusterState{
+		lastAIResult:       &AIStatus{IssuesEnhanced: 3, Provider: "openai"},
+		lastAIEnhancements: map[string]map[string]aiEnhancement{},
+	}
+	results := map[string]*checker.CheckResult{
+		"workload": {Issues: []checker.Issue{}},
+	}
+	provider := ai.NewNoOpProvider()
+
+	status := s.handleAIErrorForCluster(
+		context.DeadlineExceeded, results, nil, true, provider, 5, cs,
+	)
+
+	if !status.CacheHit {
+		t.Error("expected CacheHit=true when cache exists")
+	}
+	if status.IssuesEnhanced != 3 {
+		t.Errorf("expected IssuesEnhanced=3 from cache, got %d", status.IssuesEnhanced)
+	}
+	if !strings.Contains(status.LastError, "retrying") {
+		t.Errorf("expected 'retrying' prefix in LastError, got %q", status.LastError)
+	}
+}
+
+func TestHandleAIErrorForCluster_NoCache(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	s := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	cs := &clusterState{}
+	results := map[string]*checker.CheckResult{}
+	provider := ai.NewNoOpProvider()
+
+	status := s.handleAIErrorForCluster(
+		context.DeadlineExceeded, results, nil, true, provider, 5, cs,
+	)
+
+	if status.CacheHit {
+		t.Error("expected CacheHit=false when no cache")
+	}
+	if status.LastError == "" {
+		t.Error("expected LastError to be set")
+	}
+	if status.TotalIssueCount != 5 {
+		t.Errorf("expected TotalIssueCount=5, got %d", status.TotalIssueCount)
+	}
+}
+
+func TestHandleAITruncatedForCluster_WithCache(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	s := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	cs := &clusterState{
+		lastAIResult:       &AIStatus{IssuesEnhanced: 2, Provider: "openai"},
+		lastAIEnhancements: map[string]map[string]aiEnhancement{},
+	}
+	results := map[string]*checker.CheckResult{}
+	provider := ai.NewNoOpProvider()
+
+	status := s.handleAITruncatedForCluster(
+		results, nil, true, provider, 10, 500, cs,
+		&ai.AnalysisResponse{Truncated: true},
+	)
+
+	if !status.CacheHit {
+		t.Error("expected CacheHit=true when cache exists")
+	}
+	if status.IssuesEnhanced != 2 {
+		t.Errorf("expected IssuesEnhanced=2 from cache, got %d", status.IssuesEnhanced)
+	}
+}
+
+func TestHandleAITruncatedForCluster_NoCache(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	s := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	cs := &clusterState{}
+	results := map[string]*checker.CheckResult{}
+	provider := ai.NewNoOpProvider()
+
+	status := s.handleAITruncatedForCluster(
+		results, nil, true, provider, 10, 500, cs,
+		&ai.AnalysisResponse{ParseFailed: true},
+	)
+
+	if status.CacheHit {
+		t.Error("expected CacheHit=false when no cache")
+	}
+	if !strings.Contains(status.LastError, "parsed") {
+		t.Errorf("expected parse failure message, got %q", status.LastError)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// With* option setters
+// ---------------------------------------------------------------------------
+
+func TestWithCheckInterval(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	s := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	orig := s.checkInterval
+	s.WithCheckInterval(30 * time.Second)
+	if s.checkInterval != 30*time.Second {
+		t.Errorf("expected 30s, got %v", s.checkInterval)
+	}
+
+	// zero/negative should be ignored
+	s.WithCheckInterval(0)
+	if s.checkInterval != 30*time.Second {
+		t.Error("zero duration should not change interval")
+	}
+	s.WithCheckInterval(-1 * time.Second)
+	if s.checkInterval != 30*time.Second {
+		t.Error("negative duration should not change interval")
+	}
+	_ = orig
+}
+
+func TestWithAIAnalysisTimeout(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	s := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	s.WithAIAnalysisTimeout(60 * time.Second)
+	if s.aiAnalysisTimeout != 60*time.Second {
+		t.Errorf("expected 60s, got %v", s.aiAnalysisTimeout)
+	}
+	s.WithAIAnalysisTimeout(0)
+	if s.aiAnalysisTimeout != 60*time.Second {
+		t.Error("zero should not change timeout")
+	}
+}
+
+func TestWithMaxIssuesPerBatch(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	s := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	s.WithMaxIssuesPerBatch(50)
+	if s.maxIssuesPerBatch != 50 {
+		t.Errorf("expected 50, got %d", s.maxIssuesPerBatch)
+	}
+	s.WithMaxIssuesPerBatch(0)
+	if s.maxIssuesPerBatch != 50 {
+		t.Error("zero should not change max")
+	}
+}
+
+func TestWithSSEBufferSize(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	s := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	s.WithSSEBufferSize(100)
+	if s.sseBufferSize != 100 {
+		t.Errorf("expected 100, got %d", s.sseBufferSize)
+	}
+	s.WithSSEBufferSize(-1)
+	if s.sseBufferSize != 100 {
+		t.Error("negative should not change size")
+	}
+}
+
+func TestWithHistorySize(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	s := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	s.WithHistorySize(200)
+	if s.historySize != 200 {
+		t.Errorf("expected 200, got %d", s.historySize)
+	}
+	s.WithHistorySize(0)
+	if s.historySize != 200 {
+		t.Error("zero should not change size")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// parseBoolEnv tests
+// ---------------------------------------------------------------------------
+
+func TestParseBoolEnv(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		want  bool
+	}{
+		{"empty string", "", false},
+		{"true", "true", true},
+		{"false", "false", false},
+		{"1", "1", true},
+		{"0", "0", false},
+		{"invalid", "notabool", false},
+		{"whitespace true", "  true  ", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("TEST_PARSE_BOOL_ENV", tt.value)
+			got := parseBoolEnv("TEST_PARSE_BOOL_ENV")
+			if got != tt.want {
+				t.Errorf("parseBoolEnv() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// newMutationLimiter tests
+// ---------------------------------------------------------------------------
+
+func TestNewMutationLimiter_Defaults(t *testing.T) {
+	t.Setenv("DASHBOARD_RATE_LIMIT", "")
+	t.Setenv("DASHBOARD_RATE_BURST", "")
+	lim := newMutationLimiter()
+	if lim == nil {
+		t.Fatal("expected non-nil limiter")
+	}
+	if lim.Limit() != 10 {
+		t.Errorf("expected default rate 10, got %v", lim.Limit())
+	}
+	if lim.Burst() != 20 {
+		t.Errorf("expected default burst 20, got %d", lim.Burst())
+	}
+}
+
+func TestNewMutationLimiter_CustomEnv(t *testing.T) {
+	t.Setenv("DASHBOARD_RATE_LIMIT", "50")
+	t.Setenv("DASHBOARD_RATE_BURST", "100")
+
+	lim := newMutationLimiter()
+	if lim.Limit() != 50 {
+		t.Errorf("expected rate 50, got %v", lim.Limit())
+	}
+	if lim.Burst() != 100 {
+		t.Errorf("expected burst 100, got %d", lim.Burst())
+	}
+}
+
+func TestNewMutationLimiter_InvalidEnv(t *testing.T) {
+	t.Setenv("DASHBOARD_RATE_LIMIT", "notanumber")
+	t.Setenv("DASHBOARD_RATE_BURST", "-5")
+
+	lim := newMutationLimiter()
+	// Should fall back to defaults
+	if lim.Limit() != 10 {
+		t.Errorf("expected default rate 10 on invalid env, got %v", lim.Limit())
+	}
+	if lim.Burst() != 20 {
+		t.Errorf("expected default burst 20 on invalid env, got %d", lim.Burst())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// handleClusters tests
+// ---------------------------------------------------------------------------
+
+func TestHandleClusters_NonConsoleDataSource(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	s := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	handler := s.buildHandler()
+	req := httptest.NewRequest(http.MethodGet, "/api/clusters", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	clusters, ok := resp["clusters"]
+	if !ok {
+		t.Fatal("expected 'clusters' key in response")
+	}
+	arr, ok := clusters.([]any)
+	if !ok {
+		t.Fatal("expected clusters to be an array")
+	}
+	if len(arr) != 0 {
+		t.Errorf("expected empty clusters, got %d", len(arr))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// handleAICatalog tests
+// ---------------------------------------------------------------------------
+
+func TestHandleAICatalog_AllProviders(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	s := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	handler := s.buildHandler()
+	req := httptest.NewRequest(http.MethodGet, "/api/settings/ai/catalog", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+	if w.Body.Len() == 0 {
+		t.Error("expected non-empty catalog response")
+	}
+}
+
+func TestHandleAICatalog_FilterByProvider(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	s := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	handler := s.buildHandler()
+	req := httptest.NewRequest(http.MethodGet, "/api/settings/ai/catalog?provider=openai", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// runCheckForCluster with issues (exercises issue processing paths)
+// ---------------------------------------------------------------------------
+
+// fakeChecker is a test checker that returns configurable results.
+type fakeChecker struct {
+	name   string
+	result *checker.CheckResult
+}
+
+func (f *fakeChecker) Name() string { return f.name }
+func (f *fakeChecker) Check(_ context.Context, _ *checker.CheckContext) (*checker.CheckResult, error) {
+	return f.result, nil
+}
+func (f *fakeChecker) Supports(_ context.Context, _ datasource.DataSource) bool { return true }
+
+func TestRunCheckForCluster_WithIssues(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = appsv1.AddToScheme(scheme)
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+
+	// Register a checker that reports issues
+	registry.MustRegister(&fakeChecker{
+		name: "test-checker",
+		result: &checker.CheckResult{
+			CheckerName: "test-checker",
+			Healthy:     5,
+			Issues: []checker.Issue{
+				{
+					Type:       "CrashLoop",
+					Severity:   checker.SeverityCritical,
+					Resource:   "pod/web",
+					Namespace:  "default",
+					Message:    "Container restarting",
+					Suggestion: "AI Analysis: memory leak detected",
+					Metadata:   map[string]string{"aiRootCause": "OOM"},
+				},
+				{
+					Type:      "MissingProbe",
+					Severity:  checker.SeverityWarning,
+					Resource:  "deploy/api",
+					Namespace: "default",
+					Message:   "No readiness probe",
+				},
+				{
+					Type:      "InfoEvent",
+					Severity:  checker.SeverityInfo,
+					Resource:  "deploy/worker",
+					Namespace: "default",
+					Message:   "Scaled up",
+				},
+			},
+		},
+	})
+
+	// Register a checker that returns an error
+	registry.MustRegister(&fakeChecker{
+		name: "error-checker",
+		result: &checker.CheckResult{
+			CheckerName: "error-checker",
+			Error:       errors.New("connection refused"),
+		},
+	})
+
+	s := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	s.runCheck(t.Context())
+
+	s.mu.RLock()
+	cs := s.clusters[""]
+	s.mu.RUnlock()
+
+	if cs == nil || cs.latest == nil {
+		t.Fatal("expected cluster state with latest update")
+	}
+
+	update := cs.latest
+	if update.Summary.TotalIssues != 3 {
+		t.Errorf("expected 3 total issues, got %d", update.Summary.TotalIssues)
+	}
+	if update.Summary.CriticalCount != 1 {
+		t.Errorf("expected 1 critical, got %d", update.Summary.CriticalCount)
+	}
+	if update.Summary.WarningCount != 1 {
+		t.Errorf("expected 1 warning, got %d", update.Summary.WarningCount)
+	}
+	if update.Summary.InfoCount != 1 {
+		t.Errorf("expected 1 info, got %d", update.Summary.InfoCount)
+	}
+	if update.Summary.TotalHealthy != 5 {
+		t.Errorf("expected 5 healthy, got %d", update.Summary.TotalHealthy)
+	}
+
+	// Check that error checker produced an error string
+	errResult, ok := update.Results["error-checker"]
+	if !ok {
+		t.Fatal("expected error-checker result")
+	}
+	if errResult.Error == "" {
+		t.Error("expected error string for error-checker")
+	}
+
+	// Check AI enhancement detection
+	testResult, ok := update.Results["test-checker"]
+	if !ok {
+		t.Fatal("expected test-checker result")
+	}
+	if len(testResult.Issues) != 3 {
+		t.Fatalf("expected 3 issues in test-checker, got %d", len(testResult.Issues))
+	}
+	crashLoop := testResult.Issues[0]
+	if !crashLoop.AIEnhanced {
+		t.Error("CrashLoop issue should be marked AIEnhanced")
+	}
+	if crashLoop.RootCause != "OOM" {
+		t.Errorf("expected RootCause=OOM, got %q", crashLoop.RootCause)
+	}
+
+	// Health score should be calculated
+	if update.Summary.HealthScore < 0 || update.Summary.HealthScore > 100 {
+		t.Errorf("health score out of range: %f", update.Summary.HealthScore)
+	}
+
+	// History should have been recorded
+	if cs.history.Len() == 0 {
+		t.Error("expected at least one history snapshot")
+	}
+}
+
+func TestRunCheckForCluster_WithMutedIssues(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = appsv1.AddToScheme(scheme)
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+
+	registry.MustRegister(&fakeChecker{
+		name: "workload",
+		result: &checker.CheckResult{
+			CheckerName: "workload",
+			Healthy:     3,
+			Issues: []checker.Issue{
+				{
+					Type:      "CrashLoop",
+					Severity:  checker.SeverityCritical,
+					Resource:  "pod/web",
+					Namespace: "default",
+					Message:   "Container restarting",
+				},
+			},
+		},
+	})
+
+	s := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	// Pre-populate an acknowledged issue state
+	cs := s.getOrCreateClusterState("")
+	cs.issueStates = map[string]*IssueState{
+		"default/pod/web/CrashLoop": {Action: ActionAcknowledged},
+	}
+
+	s.runCheck(t.Context())
+
+	s.mu.RLock()
+	latest := cs.latest
+	s.mu.RUnlock()
+
+	if latest == nil {
+		t.Fatal("expected latest update")
+	}
+	// Issue should still exist in results but be excluded from severity count
+	if latest.Summary.CriticalCount != 0 {
+		t.Errorf("muted issue should not count toward critical: got %d", latest.Summary.CriticalCount)
+	}
+	if latest.Summary.TotalIssues != 1 {
+		t.Errorf("total issues should still be 1: got %d", latest.Summary.TotalIssues)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// handlePostAISettings validation branches
+// ---------------------------------------------------------------------------
+
+func TestHandlePostAISettings_APIKeyTooLong(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	s := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	handler := s.buildHandler()
+	longKey := strings.Repeat("x", 257)
+	body := `{"provider":"noop","apiKey":"` + longKey + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/settings/ai", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for apiKey too long, got %d", w.Code)
+	}
+}
+
+func TestHandlePostAISettings_ModelTooLong(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	s := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	handler := s.buildHandler()
+	longModel := strings.Repeat("m", 129)
+	body := `{"provider":"noop","model":"` + longModel + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/settings/ai", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for model too long, got %d", w.Code)
+	}
+}
+
+func TestHandlePostAISettings_ExplainModelTooLong(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	s := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	handler := s.buildHandler()
+	longModel := strings.Repeat("m", 129)
+	body := `{"provider":"noop","explainModel":"` + longModel + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/settings/ai", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for explainModel too long, got %d", w.Code)
+	}
+}
+
+func TestHandleAICatalog_UnknownProvider(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	s := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	handler := s.buildHandler()
+	req := httptest.NewRequest(http.MethodGet, "/api/settings/ai/catalog?provider=nonexistent", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
 	}
 }

@@ -144,6 +144,45 @@ func TestNetworkPolicyChecker_AllowAllIngress(t *testing.T) {
 	}
 }
 
+func TestNetworkPolicyChecker_AllowAllEgress(t *testing.T) {
+	np := &networkingv1.NetworkPolicy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "allow-all-egress",
+			Namespace: "default",
+		},
+		Spec: networkingv1.NetworkPolicySpec{
+			PodSelector: metav1.LabelSelector{
+				MatchLabels: map[string]string{
+					"app": "web",
+				},
+			},
+			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeEgress},
+			Egress: []networkingv1.NetworkPolicyEgressRule{
+				{}, // empty To and Ports = allow all
+			},
+		},
+	}
+
+	c := NewNetworkPolicyChecker()
+	checkCtx := testutil.NewCheckContext(t, []string{"default"}, np)
+
+	result, err := c.Check(context.Background(), checkCtx)
+	if err != nil {
+		t.Fatalf("Check() error = %v", err)
+	}
+
+	found := false
+	for _, issue := range result.Issues {
+		if issue.Type == "OverlyPermissivePolicy" && issue.Severity == checker.SeverityWarning {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("Check() did not find expected OverlyPermissivePolicy warning issue for allow-all egress")
+	}
+}
+
 func TestNetworkPolicyChecker_NamespaceWidePolicy(t *testing.T) {
 	np := &networkingv1.NetworkPolicy{
 		ObjectMeta: metav1.ObjectMeta{
@@ -151,7 +190,7 @@ func TestNetworkPolicyChecker_NamespaceWidePolicy(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: networkingv1.NetworkPolicySpec{
-			PodSelector: metav1.LabelSelector{},
+			PodSelector: metav1.LabelSelector{}, // empty = all pods
 			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
 		},
 	}
@@ -218,5 +257,195 @@ func TestNetworkPolicyChecker_MultipleNamespaces(t *testing.T) {
 	}
 	if !foundNoPolicy {
 		t.Error("Check() did not find expected NoNetworkPolicy issue for ns-without-policy")
+	}
+}
+
+func TestNetworkPolicyChecker_IsAllowAll(t *testing.T) {
+	c := NewNetworkPolicyChecker()
+
+	tests := []struct {
+		name string
+		np   *networkingv1.NetworkPolicy
+		want bool
+	}{
+		{
+			name: "allow-all ingress - empty From and Ports",
+			np: &networkingv1.NetworkPolicy{
+				Spec: networkingv1.NetworkPolicySpec{
+					PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
+					Ingress: []networkingv1.NetworkPolicyIngressRule{
+						{}, // empty From and Ports
+					},
+				},
+			},
+			want: true,
+		},
+		{
+			name: "allow-all egress - empty To and Ports",
+			np: &networkingv1.NetworkPolicy{
+				Spec: networkingv1.NetworkPolicySpec{
+					PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeEgress},
+					Egress: []networkingv1.NetworkPolicyEgressRule{
+						{}, // empty To and Ports
+					},
+				},
+			},
+			want: true,
+		},
+		{
+			name: "deny-all ingress - no rules",
+			np: &networkingv1.NetworkPolicy{
+				Spec: networkingv1.NetworkPolicySpec{
+					PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
+					Ingress:     []networkingv1.NetworkPolicyIngressRule{},
+				},
+			},
+			want: false,
+		},
+		{
+			name: "deny-all egress - no rules",
+			np: &networkingv1.NetworkPolicy{
+				Spec: networkingv1.NetworkPolicySpec{
+					PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeEgress},
+					Egress:      []networkingv1.NetworkPolicyEgressRule{},
+				},
+			},
+			want: false,
+		},
+		{
+			name: "restrictive ingress with From selectors",
+			np: &networkingv1.NetworkPolicy{
+				Spec: networkingv1.NetworkPolicySpec{
+					PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
+					Ingress: []networkingv1.NetworkPolicyIngressRule{
+						{
+							From: []networkingv1.NetworkPolicyPeer{
+								{
+									PodSelector: &metav1.LabelSelector{
+										MatchLabels: map[string]string{"role": "frontend"},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			want: false,
+		},
+		{
+			name: "restrictive egress with To selectors",
+			np: &networkingv1.NetworkPolicy{
+				Spec: networkingv1.NetworkPolicySpec{
+					PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeEgress},
+					Egress: []networkingv1.NetworkPolicyEgressRule{
+						{
+							To: []networkingv1.NetworkPolicyPeer{
+								{
+									PodSelector: &metav1.LabelSelector{
+										MatchLabels: map[string]string{"role": "db"},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			want: false,
+		},
+		{
+			name: "no policy types at all",
+			np: &networkingv1.NetworkPolicy{
+				Spec: networkingv1.NetworkPolicySpec{
+					PolicyTypes: []networkingv1.PolicyType{},
+				},
+			},
+			want: false,
+		},
+		{
+			name: "both policy types but only ingress is allow-all",
+			np: &networkingv1.NetworkPolicy{
+				Spec: networkingv1.NetworkPolicySpec{
+					PolicyTypes: []networkingv1.PolicyType{
+						networkingv1.PolicyTypeIngress,
+						networkingv1.PolicyTypeEgress,
+					},
+					Ingress: []networkingv1.NetworkPolicyIngressRule{
+						{}, // allow all ingress
+					},
+					Egress: []networkingv1.NetworkPolicyEgressRule{
+						{
+							To: []networkingv1.NetworkPolicyPeer{
+								{
+									PodSelector: &metav1.LabelSelector{
+										MatchLabels: map[string]string{"role": "db"},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			want: true, // ingress is allow-all, so isAllowAll returns true
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := c.isAllowAll(tt.np); got != tt.want {
+				t.Errorf("isAllowAll() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestNetworkPolicyChecker_MatchExpressionSelector(t *testing.T) {
+	// A policy with MatchExpressions (not MatchLabels) should NOT trigger
+	// NamespaceWidePolicy because the pod selector is not empty.
+	np := &networkingv1.NetworkPolicy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "expression-selector",
+			Namespace: "default",
+		},
+		Spec: networkingv1.NetworkPolicySpec{
+			PodSelector: metav1.LabelSelector{
+				MatchExpressions: []metav1.LabelSelectorRequirement{
+					{
+						Key:      "app",
+						Operator: metav1.LabelSelectorOpIn,
+						Values:   []string{"web", "api"},
+					},
+				},
+			},
+			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
+			Ingress: []networkingv1.NetworkPolicyIngressRule{
+				{
+					From: []networkingv1.NetworkPolicyPeer{
+						{
+							PodSelector: &metav1.LabelSelector{
+								MatchLabels: map[string]string{"role": "frontend"},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	c := NewNetworkPolicyChecker()
+	checkCtx := testutil.NewCheckContext(t, []string{"default"}, np)
+
+	result, err := c.Check(context.Background(), checkCtx)
+	if err != nil {
+		t.Fatalf("Check() error = %v", err)
+	}
+
+	if result.Healthy != 1 {
+		t.Errorf("Check() healthy = %d, want 1", result.Healthy)
+	}
+
+	for _, issue := range result.Issues {
+		if issue.Type == "NamespaceWidePolicy" {
+			t.Error("Check() should not report NamespaceWidePolicy for policy with MatchExpressions")
+		}
 	}
 }
