@@ -322,10 +322,12 @@ func (s *Server) runCheckForCluster(ctx context.Context, clusterID string, ds da
 	s.broadcastPhase(clusterID, "checkers")
 
 	checkCtx := &checker.CheckContext{
-		DataSource: ds,
-		Namespaces: namespaces,
-		AIEnabled:  false,
-		MaxIssues:  s.maxIssuesPerBatch,
+		DataSource:       ds,
+		Namespaces:       namespaces,
+		AIEnabled:        false,
+		MaxIssues:        s.maxIssuesPerBatch,
+		LogContextConfig: s.logContextConfig,
+		Clientset:        s.logContextClient,
 	}
 
 	results := s.registry.RunAll(checkCtx2, checkCtx, nil)
@@ -376,9 +378,8 @@ func (s *Server) runCheckForCluster(ctx context.Context, clusterID string, ds da
 	// Snapshot active issue states for summary exclusion
 	s.mu.RLock()
 	activeStates := make(map[string]*IssueState, len(cs.issueStates))
-	now2 := time.Now()
 	for k, st := range cs.issueStates {
-		if st.Action == ActionSnoozed && st.SnoozedUntil != nil && st.SnoozedUntil.Before(now2) {
+		if st.IsExpired() {
 			continue // expired snooze
 		}
 		activeStates[k] = st
@@ -456,9 +457,8 @@ func (s *Server) runCheckForCluster(ctx context.Context, clusterID string, ds da
 	// Store latest and broadcast
 	s.mu.Lock()
 	// Merge non-expired issue states into the update and clean up expired entries
-	nowBroadcast := time.Now()
 	for k, st := range cs.issueStates {
-		if st.Action == ActionSnoozed && st.SnoozedUntil != nil && st.SnoozedUntil.Before(nowBroadcast) {
+		if st.IsExpired() {
 			delete(cs.issueStates, k)
 			continue
 		}

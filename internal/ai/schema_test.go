@@ -18,7 +18,9 @@ package ai
 
 import (
 	"encoding/json"
+	"reflect"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -181,5 +183,101 @@ func TestAnalysisResponseSchema_StrictModeRequirements(t *testing.T) {
 	}
 	if !slices.Contains(required, "causalInsights") {
 		t.Error("causalInsights must be in required for OpenAI strict mode")
+	}
+}
+
+// jsonTags extracts the set of JSON field names from a struct type.
+func jsonTags(t reflect.Type) map[string]bool {
+	tags := make(map[string]bool)
+	for i := range t.NumField() {
+		tag := t.Field(i).Tag.Get("json")
+		if tag == "" || tag == "-" {
+			continue
+		}
+		name := strings.Split(tag, ",")[0]
+		if name != "" {
+			tags[name] = true
+		}
+	}
+	return tags
+}
+
+// schemaProperties extracts property names from a JSON Schema map.
+func schemaProperties(schema map[string]any) map[string]bool {
+	props := make(map[string]bool)
+	if p, ok := schema["properties"].(map[string]any); ok {
+		for name := range p {
+			props[name] = true
+		}
+	}
+	return props
+}
+
+func TestAnalysisResponseSchema_MatchesStruct(t *testing.T) {
+	schema := AnalysisResponseSchema()
+
+	// Top-level schema should have "suggestions", "causalInsights", "summary"
+	topProps := schemaProperties(schema)
+	for _, required := range []string{"suggestions", "causalInsights", "summary"} {
+		if !topProps[required] {
+			t.Errorf("AnalysisResponseSchema missing top-level property %q", required)
+		}
+	}
+
+	// Suggestion properties should match EnhancedSuggestion struct
+	suggestionsSchema := schema["properties"].(map[string]any)["suggestions"].(map[string]any)
+	suggestionItemSchema := suggestionsSchema["additionalProperties"].(map[string]any)
+	schemaFields := schemaProperties(suggestionItemSchema)
+	structFields := jsonTags(reflect.TypeFor[EnhancedSuggestion]())
+
+	for field := range structFields {
+		if !schemaFields[field] {
+			t.Errorf("EnhancedSuggestion JSON tag %q missing from AnalysisResponseSchema", field)
+		}
+	}
+	for field := range schemaFields {
+		if !structFields[field] {
+			t.Errorf("AnalysisResponseSchema has property %q not in EnhancedSuggestion struct", field)
+		}
+	}
+}
+
+func TestExplainResponseSchema_MatchesStruct(t *testing.T) {
+	schema := ExplainResponseSchema()
+
+	// Every schema property must exist in the struct
+	schemaFields := schemaProperties(schema)
+	structFields := jsonTags(reflect.TypeFor[ExplainResponse]())
+
+	for field := range schemaFields {
+		if !structFields[field] {
+			t.Errorf("ExplainResponseSchema has property %q not in ExplainResponse struct", field)
+		}
+	}
+	// Note: the struct may have extra internal fields (e.g. tokensUsed) that
+	// are intentionally absent from the AI response schema.
+	for field := range structFields {
+		if !schemaFields[field] {
+			t.Logf("ExplainResponse JSON tag %q not in schema (expected for internal fields)", field)
+		}
+	}
+}
+
+func TestAnalysisResponseSchema_CausalInsightFields(t *testing.T) {
+	schema := AnalysisResponseSchema()
+	causalSchema := schema["properties"].(map[string]any)["causalInsights"].(map[string]any)
+	itemSchema := causalSchema["items"].(map[string]any)
+	schemaFields := schemaProperties(itemSchema)
+	structFields := jsonTags(reflect.TypeFor[CausalGroupInsight]())
+
+	for field := range structFields {
+		if !schemaFields[field] {
+			t.Errorf("CausalGroupInsight JSON tag %q missing from schema", field)
+		}
+	}
+	for field := range schemaFields {
+		if !structFields[field] {
+			t.Errorf("Schema causalInsight has property %q not in CausalGroupInsight struct", field)
+		}
 	}
 }

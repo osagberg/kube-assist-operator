@@ -71,6 +71,57 @@ metrics:
     # Annotations to add to the metrics service (e.g. for Prometheus scraping).
     annotations: {}
 
+# ServiceMonitor for Prometheus Operator scrape configuration.
+serviceMonitor:
+  # Enable ServiceMonitor creation. Requires metrics.service.enabled=true.
+  enabled: false
+  # Namespace for the ServiceMonitor (defaults to release namespace).
+  namespace: ""
+  # Additional labels for the ServiceMonitor (e.g. for Prometheus selector matching).
+  labels: {}
+  # Scrape interval.
+  interval: 30s
+  # Scrape timeout.
+  scrapeTimeout: 10s
+
+# PrometheusRule for alerting rules.
+prometheusRule:
+  # Enable PrometheusRule creation.
+  enabled: false
+  # Namespace for the PrometheusRule (defaults to release namespace).
+  namespace: ""
+  # Additional labels for the PrometheusRule.
+  labels: {}
+  # Severity labels for built-in alerts. Override per-alert severity here.
+  alertSeverity:
+    aiDegraded: warning
+    reconcileErrors: warning
+    budgetNearLimit: info
+  # Additional custom alerting rules appended to the built-in rules group.
+  additionalRules: []
+  # - alert: MyCustomAlert
+  #   expr: kubeassist_issues_total > 100
+  #   for: 5m
+  #   labels:
+  #     severity: critical
+  #   annotations:
+  #     summary: "Too many issues"
+
+# Grafana dashboard ConfigMap for sidecar auto-discovery.
+grafana:
+  # Enable Grafana dashboard ConfigMap creation.
+  enabled: false
+  # Namespace for the ConfigMap (defaults to release namespace).
+  namespace: ""
+  # Additional labels for the ConfigMap.
+  labels: {}
+  # Annotations for the ConfigMap.
+  annotations: {}
+  # Grafana sidecar settings.
+  sidecar:
+    # Label the sidecar watches for dashboard auto-discovery.
+    label: grafana_dashboard
+
 # Dashboard settings for the Team Health web UI.
 dashboard:
   # Enable the Team Health Dashboard web server.
@@ -135,6 +186,13 @@ ai:
   budget:
     dailyTokenLimit: 0
     monthlyTokenLimit: 0
+  # Log/event context for AI analysis. When enabled, recent events and pod
+  # logs are included with issues sent to AI for richer root cause analysis.
+  logContext:
+    enabled: false
+    maxEventsPerIssue: 10
+    maxLogLines: 50
+    maxTotalChars: 30000
 
 # DataSource backend settings.
 # Use "kubernetes" (default) for local cluster or "console" for cross-cluster

@@ -238,9 +238,8 @@ func (s *Server) handleIssueStates(w http.ResponseWriter, r *http.Request) {
 	s.mu.RLock()
 	active := make(map[string]*IssueState)
 	if cs, ok := s.clusters[clusterID]; ok {
-		nowStates := time.Now()
 		for k, st := range cs.issueStates {
-			if st.Action == ActionSnoozed && st.SnoozedUntil != nil && st.SnoozedUntil.Before(nowStates) {
+			if st.IsExpired() {
 				continue
 			}
 			active[k] = st

@@ -41,10 +41,9 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		cp := *cs.latest
 		latest = &cp
 		// Merge non-expired per-cluster issue states into a fresh map
-		nowHealth := time.Now()
 		states := make(map[string]*IssueState, len(cs.issueStates))
 		for k, st := range cs.issueStates {
-			if st.Action == ActionSnoozed && st.SnoozedUntil != nil && st.SnoozedUntil.Before(nowHealth) {
+			if st.IsExpired() {
 				continue
 			}
 			states[k] = st

@@ -104,6 +104,10 @@ func main() {
 	var consoleURL string
 	var clusterID string
 	var consoleBearerToken string
+	var aiLogContext bool
+	var aiLogContextMaxEvents int
+	var aiLogContextMaxLines int
+	var aiLogContextMaxChars int
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
@@ -153,6 +157,14 @@ func main() {
 		"Cluster identifier for console backend.")
 	flag.StringVar(&consoleBearerToken, "console-bearer-token", "",
 		"Bearer token for authenticating with console backend.")
+	flag.BoolVar(&aiLogContext, "ai-log-context", false,
+		"Enable event/log context enrichment for AI analysis.")
+	flag.IntVar(&aiLogContextMaxEvents, "ai-log-context-max-events", 10,
+		"Maximum events per issue for AI context.")
+	flag.IntVar(&aiLogContextMaxLines, "ai-log-context-max-lines", 50,
+		"Maximum log lines per issue for AI context.")
+	flag.IntVar(&aiLogContextMaxChars, "ai-log-context-max-chars", 30000,
+		"Maximum total characters of log/event context for AI.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
@@ -374,6 +386,21 @@ func main() {
 		"dailyTokenLimit", aiDailyTokenLimit,
 		"monthlyTokenLimit", aiMonthlyTokenLimit)
 
+	// Build log context config if enabled
+	var logCtxConfig *checker.LogContextConfig
+	if aiLogContext {
+		logCtxConfig = &checker.LogContextConfig{
+			Enabled:           true,
+			MaxEventsPerIssue: aiLogContextMaxEvents,
+			MaxLogLines:       aiLogContextMaxLines,
+			MaxTotalChars:     aiLogContextMaxChars,
+		}
+		setupLog.Info("AI log context enrichment enabled",
+			"maxEvents", aiLogContextMaxEvents,
+			"maxLines", aiLogContextMaxLines,
+			"maxChars", aiLogContextMaxChars)
+	}
+
 	if err := (&controller.TroubleshootRequestReconciler{
 		Client:    mgr.GetClient(),
 		Scheme:    mgr.GetScheme(),
@@ -395,6 +422,8 @@ func main() {
 		NotifierRegistry: notifierRegistry,
 		NotifySem:        make(chan struct{}, notifySemCapacity),
 		Recorder:         mgr.GetEventRecorder("teamhealthrequest-controller"),
+		LogContextConfig: logCtxConfig,
+		Clientset:        clientset,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "TeamHealthRequest")
 		os.Exit(1)
@@ -446,7 +475,8 @@ func main() {
 			WithAIAnalysisTimeout(aiAnalysisTimeout).
 			WithMaxIssuesPerBatch(aiMaxIssues).
 			WithSSEBufferSize(sseBufferSize).
-			WithHistorySize(historySize)
+			WithHistorySize(historySize).
+			WithLogContext(logCtxConfig, clientset)
 		if datasourceType == "kubernetes" {
 			dashboardServer = dashboardServer.WithK8sWriter(mgr.GetClient(), mgr.GetScheme())
 		}

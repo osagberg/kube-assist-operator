@@ -29,6 +29,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -63,6 +64,8 @@ type TeamHealthRequestReconciler struct {
 	NotifierRegistry *notifier.Registry
 	NotifySem        chan struct{}
 	Recorder         events.EventRecorder
+	LogContextConfig *checker.LogContextConfig
+	Clientset        kubernetes.Interface
 }
 
 // +kubebuilder:rbac:groups=assist.cluster.local,resources=teamhealthrequests,verbs=get;list;watch;create;update;patch;delete
@@ -152,11 +155,13 @@ func (r *TeamHealthRequestReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	// Build check context — AI is disabled during RunAll so we can run
 	// causal correlation first, then enhance with AI using correlation data.
 	checkCtx := &checker.CheckContext{
-		DataSource: r.DataSource,
-		Namespaces: namespaces,
-		Config:     r.buildCheckerConfig(healthReq.Spec.Config),
-		AIProvider: r.AIProvider,
-		AIEnabled:  false, // AI runs after causal analysis
+		DataSource:       r.DataSource,
+		Namespaces:       namespaces,
+		Config:           r.buildCheckerConfig(healthReq.Spec.Config),
+		AIProvider:       r.AIProvider,
+		AIEnabled:        false, // AI runs after causal analysis
+		LogContextConfig: r.LogContextConfig,
+		Clientset:        r.Clientset,
 	}
 
 	// Create timeout context for checker execution

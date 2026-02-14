@@ -276,6 +276,14 @@ Common values:
 | `networkPolicy.ingressMode` | `strict` | Ingress policy mode |
 | `datasource.type` | `kubernetes` | `kubernetes` or `console` |
 | `datasource.consoleURL` | `""` | Console backend URL (required for console mode) |
+| `ai.logContext.enabled` | `false` | Enable log/event enrichment for AI context |
+| `ai.logContext.maxEventsPerIssue` | `10` | Max events per issue for AI context |
+| `ai.logContext.maxLogLines` | `50` | Max log lines per crash-looping pod |
+| `ai.logContext.maxTotalChars` | `30000` | Max total bytes for events+logs (~7500 tokens) |
+| `serviceMonitor.enabled` | `false` | Enable Prometheus ServiceMonitor |
+| `serviceMonitor.interval` | `30s` | Scrape interval |
+| `prometheusRule.enabled` | `false` | Enable Prometheus alert rules |
+| `grafana.enabled` | `false` | Enable Grafana dashboard ConfigMap |
 
 Full values reference:
 

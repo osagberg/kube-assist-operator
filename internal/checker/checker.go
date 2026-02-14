@@ -24,6 +24,7 @@ import (
 	"sort"
 	"strings"
 
+	"k8s.io/client-go/kubernetes"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/osagberg/kube-assist-operator/internal/ai"
@@ -107,6 +108,13 @@ type CheckContext struct {
 
 	// MinConfidence is the minimum AI confidence threshold (0 = use default 0.3)
 	MinConfidence float64
+
+	// LogContextConfig controls optional event/log enrichment for AI context.
+	LogContextConfig *LogContextConfig
+
+	// Clientset provides access to the Kubernetes API for pod log fetching.
+	// Nil when running against a Console datasource or when log context is disabled.
+	Clientset kubernetes.Interface
 }
 
 // Checker is the interface all health checkers must implement
@@ -169,6 +177,12 @@ func (r *CheckResult) EnhanceWithAI(ctx context.Context, checkCtx *CheckContext)
 			Message:          issue.Message,
 			StaticSuggestion: issue.Suggestion,
 		}
+	}
+
+	// Enrich with events/logs if log context is enabled
+	if checkCtx.LogContextConfig != nil && checkCtx.LogContextConfig.Enabled {
+		builder := NewContextBuilder(checkCtx.DataSource, checkCtx.Clientset, *checkCtx.LogContextConfig)
+		issueContexts = builder.Enrich(ctx, issueContexts)
 	}
 
 	request := ai.AnalysisRequest{
@@ -343,6 +357,12 @@ func EnhanceAllWithAI(ctx context.Context, results map[string]*CheckResult, chec
 	dedupContexts := make([]ai.IssueContext, len(dedupOrder))
 	for i, sig := range dedupOrder {
 		dedupContexts[i] = issueContexts[dedupMap[sig].representativeIdx]
+	}
+
+	// Enrich with events/logs if log context is enabled (after dedup to avoid redundant fetches)
+	if checkCtx.LogContextConfig != nil && checkCtx.LogContextConfig.Enabled {
+		builder := NewContextBuilder(checkCtx.DataSource, checkCtx.Clientset, *checkCtx.LogContextConfig)
+		dedupContexts = builder.Enrich(ctx, dedupContexts)
 	}
 
 	// Sanitize before sending to AI

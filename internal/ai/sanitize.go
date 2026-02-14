@@ -158,6 +158,8 @@ func (s *Sanitizer) SanitizeAnalysisRequest(req AnalysisRequest) AnalysisRequest
 		ClusterContext: req.ClusterContext, // Cluster context is generally safe
 		CausalContext:  req.CausalContext,  // Causal context is pre-sanitized
 		MaxTokens:      req.MaxTokens,
+		ExplainMode:    req.ExplainMode,
+		ExplainContext: req.ExplainContext,
 	}
 
 	sanitized.Issues = make([]IssueContext, len(req.Issues))

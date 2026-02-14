@@ -85,6 +85,12 @@ spec:
             {{- end }}
             - --ai-analysis-timeout={{ .Values.ai.analysisTimeout }}
             - --ai-max-issues={{ .Values.ai.maxIssuesPerBatch }}
+            {{- if .Values.ai.logContext.enabled }}
+            - --ai-log-context
+            - --ai-log-context-max-events={{ .Values.ai.logContext.maxEventsPerIssue }}
+            - --ai-log-context-max-lines={{ .Values.ai.logContext.maxLogLines }}
+            - --ai-log-context-max-chars={{ .Values.ai.logContext.maxTotalChars }}
+            {{- end }}
             {{- end }}
             {{- if and .Values.datasource (ne .Values.datasource.type "kubernetes") }}
             - --datasource={{ .Values.datasource.type }}

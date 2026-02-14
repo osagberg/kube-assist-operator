@@ -32,6 +32,7 @@ import (
 	"time"
 
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/kubernetes"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -167,6 +168,11 @@ type IssueState struct {
 	CreatedAt    time.Time  `json:"createdAt"`
 }
 
+// IsExpired returns true if the issue state is a snoozed entry that has expired.
+func (st *IssueState) IsExpired() bool {
+	return st.Action == ActionSnoozed && st.SnoozedUntil != nil && st.SnoozedUntil.Before(time.Now())
+}
+
 // AISettingsRequest is the JSON body for POST /api/settings/ai
 type AISettingsRequest struct {
 	Enabled      bool   `json:"enabled"`
@@ -207,6 +213,8 @@ type Server struct {
 	historySize       int           // health history ring buffer capacity
 	clusterWorkers    int
 	correlator        *causal.Correlator
+	logContextConfig  *checker.LogContextConfig
+	logContextClient  kubernetes.Interface
 	k8sWriter         client.Client // optional: for creating TroubleshootRequest CRs
 	scheme            *runtime.Scheme
 	mu                sync.RWMutex
@@ -351,41 +359,49 @@ func (s *Server) WithTLS(certFile, keyFile string) *Server {
 	return s
 }
 
+// validateToken checks the request for a valid auth token via Bearer header
+// or session cookie. Returns true if authenticated.
+func (s *Server) validateToken(r *http.Request) bool {
+	wantHash := sha256.Sum256([]byte(s.authToken))
+
+	// 1. Check Authorization header (programmatic clients / curl)
+	if auth := r.Header.Get("Authorization"); auth != "" && strings.HasPrefix(auth, "Bearer ") {
+		token := strings.TrimPrefix(auth, "Bearer ")
+		gotHash := sha256.Sum256([]byte(token))
+		return subtle.ConstantTimeCompare(gotHash[:], wantHash[:]) == 1
+	}
+
+	// 2. Check session cookie (browser clients)
+	if cookie, err := r.Cookie("__dashboard_session"); err == nil && cookie.Value != "" {
+		gotHash := sha256.Sum256([]byte(cookie.Value))
+		return subtle.ConstantTimeCompare(gotHash[:], wantHash[:]) == 1
+	}
+
+	return false
+}
+
+func hasCookie(r *http.Request, name string) bool {
+	_, err := r.Cookie(name)
+	return err == nil
+}
+
 func (s *Server) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if s.authToken == "" {
-			// No token configured — allow but warn (logged on startup)
 			next(w, r)
 			return
 		}
 
-		// 1. Check Authorization header (programmatic clients / curl)
-		auth := r.Header.Get("Authorization")
-		if auth != "" && strings.HasPrefix(auth, "Bearer ") {
-			token := strings.TrimPrefix(auth, "Bearer ")
-			gotHash := sha256.Sum256([]byte(token))
-			wantHash := sha256.Sum256([]byte(s.authToken))
-			if subtle.ConstantTimeCompare(gotHash[:], wantHash[:]) == 1 {
-				next(w, r)
-				return
-			}
-			http.Error(w, "Forbidden", http.StatusForbidden)
+		if s.validateToken(r) {
+			next(w, r)
 			return
 		}
 
-		// 2. Check session cookie (browser clients — token is never exposed to JS)
-		cookie, err := r.Cookie("__dashboard_session")
-		if err == nil && cookie.Value != "" {
-			gotHash := sha256.Sum256([]byte(cookie.Value))
-			wantHash := sha256.Sum256([]byte(s.authToken))
-			if subtle.ConstantTimeCompare(gotHash[:], wantHash[:]) == 1 {
-				next(w, r)
-				return
-			}
+		// Distinguish no-creds (401) from bad-creds (403)
+		if r.Header.Get("Authorization") != "" || hasCookie(r, "__dashboard_session") {
 			http.Error(w, "Forbidden", http.StatusForbidden)
 			return
 		}
-
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 	}
 }
@@ -397,34 +413,15 @@ func (s *Server) sseAuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
-		// 1. Check Authorization header first
-		auth := r.Header.Get("Authorization")
-		if auth != "" && strings.HasPrefix(auth, "Bearer ") {
-			token := strings.TrimPrefix(auth, "Bearer ")
-			gotHash := sha256.Sum256([]byte(token))
-			wantHash := sha256.Sum256([]byte(s.authToken))
-			if subtle.ConstantTimeCompare(gotHash[:], wantHash[:]) == 1 {
-				next(w, r)
-				return
-			}
-			http.Error(w, "Forbidden", http.StatusForbidden)
+		if s.validateToken(r) {
+			next(w, r)
 			return
 		}
 
-		// 2. Check session cookie (set when serving index.html)
-		cookie, err := r.Cookie("__dashboard_session")
-		if err == nil && cookie.Value != "" {
-			gotHash := sha256.Sum256([]byte(cookie.Value))
-			wantHash := sha256.Sum256([]byte(s.authToken))
-			if subtle.ConstantTimeCompare(gotHash[:], wantHash[:]) == 1 {
-				next(w, r)
-				return
-			}
+		if r.Header.Get("Authorization") != "" || hasCookie(r, "__dashboard_session") {
 			http.Error(w, "Forbidden", http.StatusForbidden)
 			return
 		}
-
-		// No valid auth method found
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 	}
 }
@@ -439,7 +436,6 @@ func (s *Server) WithAI(provider ai.Provider, enabled bool) *Server {
 	return s
 }
 
-// WithMaxSSEClients sets the maximum number of concurrent SSE connections.
 // WithMaxSSEClients sets the maximum number of concurrent SSE connections.
 // Pass 0 for unlimited.
 func (s *Server) WithMaxSSEClients(max int) *Server {
@@ -485,6 +481,13 @@ func (s *Server) WithSSEBufferSize(n int) *Server {
 	if n > 0 {
 		s.sseBufferSize = n
 	}
+	return s
+}
+
+// WithLogContext configures log/event context enrichment for AI analysis.
+func (s *Server) WithLogContext(config *checker.LogContextConfig, clientset kubernetes.Interface) *Server {
+	s.logContextConfig = config
+	s.logContextClient = clientset
 	return s
 }
 
