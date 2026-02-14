@@ -267,6 +267,11 @@ Common values:
 | `dashboard.checkInterval` | `"30s"` | Health check polling interval |
 | `dashboard.sseBufferSize` | `10` | SSE client channel buffer capacity |
 | `dashboard.historySize` | `100` | Health history ring buffer capacity |
+| `dashboard.chat.enabled` | `false` | Enable NLQ chat interface |
+| `dashboard.chat.maxTurns` | `10` | Max tool call iterations per chat turn |
+| `dashboard.chat.maxTokensPerSession` | `50000` | Token budget per chat session |
+| `dashboard.chat.sessionTTL` | `"30m"` | Idle session eviction timeout |
+| `dashboard.chat.maxSessions` | `100` | Max concurrent chat sessions |
 | `ai.enabled` | `false` | Enable AI suggestions |
 | `ai.provider` | `noop` | Provider: anthropic/openai/noop |
 | `ai.apiKeySecretRef.name` | `""` | Secret containing API key |

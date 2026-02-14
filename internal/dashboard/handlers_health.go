@@ -297,6 +297,7 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	resp := map[string]bool{
 		"troubleshootCreate": s.k8sWriter != nil,
+		"chat":               s.chatEnabled && s.aiEnabled,
 	}
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
 		log.Error(err, "Failed to encode capabilities response")

@@ -19,6 +19,7 @@ import { HistoryChart } from './components/HistoryChart'
 import { CausalTimeline } from './components/CausalTimeline'
 import { ClusterExplain } from './components/ClusterExplain'
 import { DiagnoseModal } from './components/DiagnoseModal'
+import { ChatPanel } from './components/ChatPanel'
 import { useKeyboardShortcuts, KeyboardShortcutsHelp } from './components/KeyboardShortcuts'
 import { ToastContainer, showToast } from './components/Toast'
 import { ErrorBoundary } from './components/ErrorBoundary'
@@ -40,6 +41,7 @@ function App() {
   const [showDiagnose, setShowDiagnose] = useState(false)
   const [diagnosePrefill, setDiagnosePrefill] = useState<{ namespace?: string; targetKind?: TargetKind; targetName?: string } | undefined>()
   const [showHelp, setShowHelp] = useState(false)
+  const [showChat, setShowChat] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
   const [issueStates, setIssueStates] = useState<Record<string, IssueState>>({})
   const searchRef = useRef<HTMLInputElement>(null)
@@ -47,8 +49,15 @@ function App() {
 
   const { settings, save: saveSettings } = useSettings()
   const [canDiagnose, setCanDiagnose] = useState(false)
+  const [canChat, setCanChat] = useState(false)
   useEffect(() => {
-    fetchCapabilities().then((c) => setCanDiagnose(c.troubleshootCreate)).catch(() => setCanDiagnose(false))
+    fetchCapabilities().then((c) => {
+      setCanDiagnose(c.troubleshootCreate)
+      setCanChat(c.chat ?? false)
+    }).catch(() => {
+      setCanDiagnose(false)
+      setCanChat(false)
+    })
   }, [])
   const { clusters } = useClusters()
   const showFleet = cluster === '' && clusters.length > 1
@@ -193,6 +202,9 @@ function App() {
             <button onClick={() => setShowSettings(true)} className="glass-button px-3 py-1.5 rounded-lg text-sm" style={{ color: 'var(--text-secondary)' }} aria-label="Open AI settings">
               AI Settings
             </button>
+            {canChat && <button onClick={() => setShowChat(true)} className="glass-button px-3 py-1.5 rounded-lg text-sm" style={{ color: 'var(--text-secondary)' }} aria-label="Open chat">
+              Chat
+            </button>}
             <button onClick={toggleTheme} className="glass-button px-3 py-1.5 rounded-lg text-sm" style={{ color: 'var(--text-secondary)' }} aria-label={dark ? 'Switch to light theme' : 'Switch to dark theme'}>
               {dark ? 'Light' : 'Dark'}
             </button>
@@ -225,6 +237,9 @@ function App() {
                 <button onClick={() => { setShowSettings(true); setMenuOpen(false) }} className="glass-button px-3 py-1.5 rounded-lg text-sm w-full text-left" style={{ color: 'var(--text-secondary)' }} aria-label="Open AI settings">
                   AI Settings
                 </button>
+                {canChat && <button onClick={() => { setShowChat(true); setMenuOpen(false) }} className="glass-button px-3 py-1.5 rounded-lg text-sm w-full text-left" style={{ color: 'var(--text-secondary)' }} aria-label="Open chat">
+                  Chat
+                </button>}
                 <button onClick={() => { setShowHelp(true); setMenuOpen(false) }} className="glass-button px-2.5 py-1.5 rounded-lg text-sm font-mono w-full text-left" style={{ color: 'var(--text-secondary)' }} aria-label="Show keyboard shortcuts">
                   ?
                 </button>
@@ -384,6 +399,7 @@ function App() {
         prefill={diagnosePrefill}
       />
       <KeyboardShortcutsHelp open={showHelp} onClose={() => setShowHelp(false)} />
+      {canChat && <ChatPanel open={showChat} onClose={() => setShowChat(false)} />}
       <ToastContainer />
     </div>
     </ErrorBoundary>

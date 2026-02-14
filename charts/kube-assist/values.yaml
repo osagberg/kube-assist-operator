@@ -154,6 +154,18 @@ dashboard:
     enabled: false
     # Name of a Secret containing tls.crt and tls.key.
     secretName: ""
+  # NLQ Chat interface settings.
+  chat:
+    # Enable the NLQ chat interface.
+    enabled: false
+    # Maximum tool call iterations per chat turn.
+    maxTurns: 10
+    # Maximum tokens per chat session.
+    maxTokensPerSession: 50000
+    # Session idle timeout (Go duration string).
+    sessionTTL: "30m"
+    # Maximum concurrent chat sessions.
+    maxSessions: 100
   # Dashboard service settings.
   service:
     # Service type: ClusterIP, NodePort, or LoadBalancer.

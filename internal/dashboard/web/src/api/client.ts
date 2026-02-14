@@ -224,6 +224,7 @@ export function listTroubleshootRequests(namespace?: string): Promise<Troublesho
 /** GET /api/capabilities — feature flags */
 export interface Capabilities {
   troubleshootCreate: boolean
+  chat: boolean
 }
 export function fetchCapabilities(): Promise<Capabilities> {
   return json<Capabilities>(`${BASE}/capabilities`)

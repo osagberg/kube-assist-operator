@@ -85,7 +85,7 @@ func TestAnthropic_ToolUse_Success(t *testing.T) {
 	if receivedReq.ToolChoice == nil {
 		t.Fatal("tool_choice should not be nil")
 	}
-	if receivedReq.ToolChoice.Type != "tool" {
+	if receivedReq.ToolChoice.Type != "tool" { //nolint:goconst // API value
 		t.Errorf("tool_choice.type = %q, want tool", receivedReq.ToolChoice.Type)
 	}
 	if receivedReq.ToolChoice.Name != testToolAnalyze {

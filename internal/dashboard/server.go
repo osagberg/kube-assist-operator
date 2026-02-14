@@ -226,6 +226,17 @@ type Server struct {
 	running           bool
 	checkInFlight     atomic.Bool
 	stopCh            chan struct{}
+	chatSessions      map[string]*ChatSession
+	chatMu            sync.RWMutex
+	chatEnabled       bool
+	chatMaxTurns      int
+	chatTokenBudget   int
+	chatSessionTTL    time.Duration
+	chatMaxSessions   int
+	chatAIKey         string // API key for chat agent
+	chatAIModel       string // Model for chat agent
+	chatProviderName  string // Provider name for chat agent
+	chatEndpoint      string // Endpoint for chat agent
 }
 
 // NewServer creates a new dashboard server
@@ -499,6 +510,28 @@ func (s *Server) WithHistorySize(n int) *Server {
 	return s
 }
 
+// WithChat configures the NLQ chat interface.
+func (s *Server) WithChat(enabled bool, maxTurns, tokenBudget, maxSessions int, sessionTTL time.Duration) *Server {
+	s.chatEnabled = enabled
+	s.chatMaxTurns = maxTurns
+	s.chatTokenBudget = tokenBudget
+	s.chatMaxSessions = maxSessions
+	s.chatSessionTTL = sessionTTL
+	if enabled {
+		s.chatSessions = make(map[string]*ChatSession)
+	}
+	return s
+}
+
+// WithChatAIConfig sets the provider config for the chat agent.
+func (s *Server) WithChatAIConfig(providerName, apiKey, model, endpoint string) *Server {
+	s.chatProviderName = providerName
+	s.chatAIKey = apiKey
+	s.chatAIModel = model
+	s.chatEndpoint = endpoint
+	return s
+}
+
 // buildHandler constructs the full HTTP handler tree (API routes + SPA serving +
 // security headers). Extracted from Start() to enable black-box testing of the
 // live handler without starting a real server.
@@ -522,6 +555,7 @@ func (s *Server) buildHandler() http.Handler {
 	mux.HandleFunc("/api/issues/snooze", s.authMiddleware(s.rateLimitMiddleware(s.handleIssueSnooze)))
 	mux.HandleFunc("/api/issue-states", s.authMiddleware(s.handleIssueStates))
 	mux.HandleFunc("/api/capabilities", s.authMiddleware(s.handleCapabilities))
+	mux.HandleFunc("/api/chat", s.authMiddleware(s.rateLimitMiddleware(s.handleChat)))
 	// React SPA dashboard
 	spaFS, err := fs.Sub(webAssets, "web/dist")
 	if err != nil {
@@ -598,6 +632,11 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 
 	s.running = true
+
+	// Start chat session cleanup if chat is enabled
+	if s.chatEnabled {
+		go s.cleanupChatSessions(ctx)
+	}
 
 	// Run initial health check synchronously so the first HTTP request
 	// never sees {"status": "initializing"}.

@@ -108,6 +108,11 @@ func main() {
 	var aiLogContextMaxEvents int
 	var aiLogContextMaxLines int
 	var aiLogContextMaxChars int
+	var chatEnabled bool
+	var chatMaxTurns int
+	var chatTokenBudget int
+	var chatSessionTTL time.Duration
+	var chatMaxSessions int
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
@@ -165,6 +170,16 @@ func main() {
 		"Maximum log lines per issue for AI context.")
 	flag.IntVar(&aiLogContextMaxChars, "ai-log-context-max-chars", 30000,
 		"Maximum total characters of log/event context for AI.")
+	flag.BoolVar(&chatEnabled, "chat-enabled", false,
+		"Enable NLQ chat interface.")
+	flag.IntVar(&chatMaxTurns, "chat-max-turns", 10,
+		"Maximum tool call iterations per chat turn.")
+	flag.IntVar(&chatTokenBudget, "chat-token-budget", 50000,
+		"Maximum tokens per chat session.")
+	flag.DurationVar(&chatSessionTTL, "chat-session-ttl", 30*time.Minute,
+		"Chat session idle timeout.")
+	flag.IntVar(&chatMaxSessions, "chat-max-sessions", 100,
+		"Maximum concurrent chat sessions.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
@@ -479,6 +494,14 @@ func main() {
 			WithLogContext(logCtxConfig, clientset)
 		if datasourceType == "kubernetes" {
 			dashboardServer = dashboardServer.WithK8sWriter(mgr.GetClient(), mgr.GetScheme())
+		}
+		if chatEnabled {
+			dashboardServer = dashboardServer.WithChat(
+				true, chatMaxTurns, chatTokenBudget, chatMaxSessions, chatSessionTTL,
+			)
+			dashboardServer = dashboardServer.WithChatAIConfig(
+				aiConfig.Provider, aiConfig.APIKey, aiConfig.Model, aiConfig.Endpoint,
+			)
 		}
 		if dashboardTLSCertFile != "" && dashboardTLSKeyFile != "" {
 			dashboardServer.WithTLS(dashboardTLSCertFile, dashboardTLSKeyFile)

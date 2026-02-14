@@ -203,3 +203,22 @@ export interface HealthSnapshot {
   byChecker: Record<string, number>
   healthScore: number
 }
+
+// Chat types for NLQ chat interface
+export interface ChatMessage {
+  role: 'user' | 'assistant'
+  content: string
+  toolCalls?: { name: string; args: Record<string, unknown> }[]
+  toolResults?: { name: string; summary: string }[]
+  streaming?: boolean
+}
+
+export interface ChatEvent {
+  type: 'thinking' | 'tool_call' | 'tool_result' | 'content' | 'done' | 'error'
+  text?: string
+  toolName?: string
+  toolArgs?: Record<string, unknown>
+  summary?: string
+  tokensUsed?: number
+  error?: string
+}

@@ -67,6 +67,13 @@ spec:
             - --check-interval={{ .Values.dashboard.checkInterval }}
             - --sse-buffer-size={{ .Values.dashboard.sseBufferSize }}
             - --history-size={{ .Values.dashboard.historySize }}
+            {{- if .Values.dashboard.chat.enabled }}
+            - --chat-enabled
+            - --chat-max-turns={{ .Values.dashboard.chat.maxTurns }}
+            - --chat-token-budget={{ .Values.dashboard.chat.maxTokensPerSession }}
+            - --chat-session-ttl={{ .Values.dashboard.chat.sessionTTL }}
+            - --chat-max-sessions={{ .Values.dashboard.chat.maxSessions }}
+            {{- end }}
             {{- end }}
             {{- if .Values.ai.enabled }}
             - --enable-ai
