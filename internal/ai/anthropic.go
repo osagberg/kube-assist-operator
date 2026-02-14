@@ -101,10 +101,12 @@ type cacheControl struct {
 
 // anthropicRequest represents an Anthropic API request
 type anthropicRequest struct {
-	Model     string             `json:"model"`
-	MaxTokens int                `json:"max_tokens"`
-	System    []systemBlock      `json:"system,omitempty"`
-	Messages  []anthropicMessage `json:"messages"`
+	Model      string               `json:"model"`
+	MaxTokens  int                  `json:"max_tokens"`
+	System     []systemBlock        `json:"system,omitempty"`
+	Messages   []anthropicMessage   `json:"messages"`
+	Tools      []anthropicTool      `json:"tools,omitempty"`
+	ToolChoice *anthropicToolChoice `json:"tool_choice,omitempty"`
 }
 
 type anthropicMessage struct {
@@ -112,15 +114,31 @@ type anthropicMessage struct {
 	Content string `json:"content"`
 }
 
+type anthropicTool struct {
+	Name        string         `json:"name"`
+	Description string         `json:"description"`
+	InputSchema map[string]any `json:"input_schema"`
+}
+
+type anthropicToolChoice struct {
+	Type string `json:"type"`
+	Name string `json:"name"`
+}
+
+type anthropicContentBlock struct {
+	Type  string          `json:"type"`
+	Text  string          `json:"text,omitempty"`
+	ID    string          `json:"id,omitempty"`
+	Name  string          `json:"name,omitempty"`
+	Input json.RawMessage `json:"input,omitempty"`
+}
+
 type anthropicResponse struct {
-	ID         string `json:"id"`
-	Type       string `json:"type"`
-	StopReason string `json:"stop_reason"`
-	Content    []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
-	} `json:"content"`
-	Usage struct {
+	ID         string                  `json:"id"`
+	Type       string                  `json:"type"`
+	StopReason string                  `json:"stop_reason"`
+	Content    []anthropicContentBlock `json:"content"`
+	Usage      struct {
 		InputTokens  int `json:"input_tokens"`
 		OutputTokens int `json:"output_tokens"`
 	} `json:"usage"`
@@ -128,6 +146,91 @@ type anthropicResponse struct {
 		Type    string `json:"type"`
 		Message string `json:"message"`
 	} `json:"error,omitempty"`
+}
+
+// anthropicResult holds the parsed result from doAnthropicRequest.
+type anthropicResult struct {
+	Content    string
+	TokensUsed int
+	Truncated  bool
+}
+
+// doAnthropicRequest performs the HTTP call and extracts content from the Anthropic response.
+// It returns the text content (or tool_use input) from the first matching block.
+func (p *AnthropicProvider) doAnthropicRequest(ctx context.Context, req anthropicRequest) (*anthropicResult, error) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.endpoint, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("x-api-key", p.apiKey)
+	httpReq.Header.Set("anthropic-version", anthropicAPIVersion)
+	httpReq.Header.Set("anthropic-beta", "prompt-caching-2024-07-31")
+
+	resp, err := p.client.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("failed to send request: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		errBody := string(respBody)
+		if len(errBody) > 500 {
+			errBody = errBody[:500] + "...(truncated)"
+		}
+		return nil, fmt.Errorf("API error (status %d): %s", resp.StatusCode, errBody)
+	}
+
+	var anthropicResp anthropicResponse
+	if err := json.Unmarshal(respBody, &anthropicResp); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	if anthropicResp.Error != nil {
+		return nil, fmt.Errorf("API error: %s", anthropicResp.Error.Message)
+	}
+
+	if len(anthropicResp.Content) == 0 {
+		return nil, fmt.Errorf("no response from API")
+	}
+
+	tokensUsed := anthropicResp.Usage.InputTokens + anthropicResp.Usage.OutputTokens
+	truncated := anthropicResp.StopReason == "max_tokens"
+
+	// Look for tool_use content block first (structured output mode)
+	for _, block := range anthropicResp.Content {
+		if block.Type == "tool_use" && len(block.Input) > 0 {
+			return &anthropicResult{
+				Content:    string(block.Input),
+				TokensUsed: tokensUsed,
+				Truncated:  truncated,
+			}, nil
+		}
+	}
+
+	// Fall back to text content
+	for _, block := range anthropicResp.Content {
+		if block.Type == "text" {
+			return &anthropicResult{
+				Content:    block.Text,
+				TokensUsed: tokensUsed,
+				Truncated:  truncated,
+			}, nil
+		}
+	}
+
+	return nil, fmt.Errorf("no text or tool_use content in response")
 }
 
 // Analyze sends issues to Anthropic for enhanced analysis
@@ -156,70 +259,44 @@ func (p *AnthropicProvider) Analyze(ctx context.Context, request AnalysisRequest
 		},
 	}
 
-	body, err := json.Marshal(anthropicReq)
+	// Set tool use for schema-enforced structured output
+	schema := AnalysisResponseSchema()
+	toolName := "analyze_issues"
+	toolDesc := "Provide structured analysis of Kubernetes health check issues"
+	if request.ExplainMode {
+		schema = ExplainResponseSchema()
+		toolName = "explain_cluster"
+		toolDesc = "Provide structured explanation of cluster health"
+	}
+	anthropicReq.Tools = []anthropicTool{
+		{
+			Name:        toolName,
+			Description: toolDesc,
+			InputSchema: schema,
+		},
+	}
+	anthropicReq.ToolChoice = &anthropicToolChoice{
+		Type: "tool",
+		Name: toolName,
+	}
+
+	result, err := p.doAnthropicRequest(ctx, anthropicReq)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.endpoint, bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-api-key", p.apiKey)
-	req.Header.Set("anthropic-version", anthropicAPIVersion)
-	req.Header.Set("anthropic-beta", "prompt-caching-2024-07-31")
-
-	resp, err := p.client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to send request: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		body := string(respBody)
-		if len(body) > 500 {
-			body = body[:500] + "...(truncated)"
-		}
-		return nil, fmt.Errorf("API error (status %d): %s", resp.StatusCode, body)
-	}
-
-	var anthropicResp anthropicResponse
-	if err := json.Unmarshal(respBody, &anthropicResp); err != nil {
-		return nil, fmt.Errorf("failed to parse response: %w", err)
-	}
-
-	if anthropicResp.Error != nil {
-		return nil, fmt.Errorf("API error: %s", anthropicResp.Error.Message)
-	}
-
-	if len(anthropicResp.Content) == 0 {
-		return nil, fmt.Errorf("no response from API")
-	}
-
-	// Get text content
-	var textContent string
-	for _, content := range anthropicResp.Content {
-		if content.Type == "text" {
-			textContent = content.Text
-			break
+		// Retry without tools on failure (model may not support tool use)
+		log.Info("Tool use mode failed, retrying with prompt-based JSON", "error", err)
+		anthropicReq.Tools = nil
+		anthropicReq.ToolChoice = nil
+		result, err = p.doAnthropicRequest(ctx, anthropicReq)
+		if err != nil {
+			return nil, err
 		}
 	}
 
-	tokensUsed := anthropicResp.Usage.InputTokens + anthropicResp.Usage.OutputTokens
-
-	if anthropicResp.StopReason == "max_tokens" {
-		log.Info("Anthropic response truncated by max_tokens", "outputTokens", anthropicResp.Usage.OutputTokens)
-		resp := ParseResponse(textContent, tokensUsed, ProviderNameAnthropic)
-		resp.Truncated = true
-		return resp, nil
+	if result.Truncated {
+		log.Info("Anthropic response truncated by max_tokens", "tokensUsed", result.TokensUsed)
 	}
 
-	return ParseResponse(textContent, tokensUsed, ProviderNameAnthropic), nil
+	resp := ParseResponse(result.Content, result.TokensUsed, ProviderNameAnthropic)
+	resp.Truncated = result.Truncated
+	return resp, nil
 }

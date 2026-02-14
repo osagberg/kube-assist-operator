@@ -93,10 +93,22 @@ func (p *OpenAIProvider) Available() bool {
 
 // openAIRequest represents an OpenAI API request
 type openAIRequest struct {
-	Model       string          `json:"model"`
-	Messages    []openAIMessage `json:"messages"`
-	MaxTokens   int             `json:"max_tokens,omitempty"`
-	Temperature float64         `json:"temperature"`
+	Model          string          `json:"model"`
+	Messages       []openAIMessage `json:"messages"`
+	MaxTokens      int             `json:"max_tokens,omitempty"`
+	Temperature    float64         `json:"temperature"`
+	ResponseFormat *responseFormat `json:"response_format,omitempty"`
+}
+
+type responseFormat struct {
+	Type       string      `json:"type"`
+	JSONSchema *jsonSchema `json:"json_schema,omitempty"`
+}
+
+type jsonSchema struct {
+	Name   string         `json:"name"`
+	Strict bool           `json:"strict"`
+	Schema map[string]any `json:"schema"`
 }
 
 type openAIMessage struct {
@@ -118,6 +130,67 @@ type openAIResponse struct {
 	Error *struct {
 		Message string `json:"message"`
 	} `json:"error,omitempty"`
+}
+
+// openAIResult holds the parsed result from doOpenAIRequest.
+type openAIResult struct {
+	Content    string
+	TokensUsed int
+	Truncated  bool
+}
+
+// doOpenAIRequest performs the HTTP call and extracts content from the OpenAI response.
+func (p *OpenAIProvider) doOpenAIRequest(ctx context.Context, req openAIRequest) (*openAIResult, error) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.endpoint, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
+
+	resp, err := p.client.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("failed to send request: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		errBody := string(respBody)
+		if len(errBody) > 500 {
+			errBody = errBody[:500] + "...(truncated)"
+		}
+		return nil, fmt.Errorf("API error (status %d): %s", resp.StatusCode, errBody)
+	}
+
+	var openAIResp openAIResponse
+	if err := json.Unmarshal(respBody, &openAIResp); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	if openAIResp.Error != nil {
+		return nil, fmt.Errorf("API error: %s", openAIResp.Error.Message)
+	}
+
+	if len(openAIResp.Choices) == 0 {
+		return nil, fmt.Errorf("no response from API")
+	}
+
+	return &openAIResult{
+		Content:    openAIResp.Choices[0].Message.Content,
+		TokensUsed: openAIResp.Usage.TotalTokens,
+		Truncated:  openAIResp.Choices[0].FinishReason == "length",
+	}, nil
 }
 
 // Analyze sends issues to OpenAI for enhanced analysis
@@ -144,61 +217,40 @@ func (p *OpenAIProvider) Analyze(ctx context.Context, request AnalysisRequest) (
 		Temperature: 0.3, // Lower temperature for more consistent outputs
 	}
 
-	body, err := json.Marshal(openAIReq)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	// Set response_format for schema-enforced JSON output
+	schema := AnalysisResponseSchema()
+	schemaName := "analysis_response"
+	if request.ExplainMode {
+		schema = ExplainResponseSchema()
+		schemaName = "explain_response"
+	}
+	openAIReq.ResponseFormat = &responseFormat{
+		Type: "json_schema",
+		JSONSchema: &jsonSchema{
+			Name:   schemaName,
+			Strict: true,
+			Schema: schema,
+		},
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.endpoint, bytes.NewReader(body))
+	result, err := p.doOpenAIRequest(ctx, openAIReq)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+p.apiKey)
-
-	resp, err := p.client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to send request: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		body := string(respBody)
-		if len(body) > 500 {
-			body = body[:500] + "...(truncated)"
+		// Retry without schema on failure (model may not support structured outputs)
+		log.Info("Schema mode failed, retrying with prompt-based JSON", "error", err)
+		openAIReq.ResponseFormat = nil
+		result, err = p.doOpenAIRequest(ctx, openAIReq)
+		if err != nil {
+			return nil, err
 		}
-		return nil, fmt.Errorf("API error (status %d): %s", resp.StatusCode, body)
 	}
 
-	var openAIResp openAIResponse
-	if err := json.Unmarshal(respBody, &openAIResp); err != nil {
-		return nil, fmt.Errorf("failed to parse response: %w", err)
+	if result.Truncated {
+		log.Info("OpenAI response truncated by max_tokens", "totalTokens", result.TokensUsed)
 	}
 
-	if openAIResp.Error != nil {
-		return nil, fmt.Errorf("API error: %s", openAIResp.Error.Message)
-	}
-
-	if len(openAIResp.Choices) == 0 {
-		return nil, fmt.Errorf("no response from API")
-	}
-
-	tokensUsed := openAIResp.Usage.TotalTokens
-
-	if openAIResp.Choices[0].FinishReason == "length" {
-		log.Info("OpenAI response truncated by max_tokens", "totalTokens", tokensUsed)
-		resp := ParseResponse(openAIResp.Choices[0].Message.Content, tokensUsed, ProviderNameOpenAI)
-		resp.Truncated = true
-		return resp, nil
-	}
-
-	return ParseResponse(openAIResp.Choices[0].Message.Content, tokensUsed, ProviderNameOpenAI), nil
+	resp := ParseResponse(result.Content, result.TokensUsed, ProviderNameOpenAI)
+	resp.Truncated = result.Truncated
+	return resp, nil
 }
 
 // extractJSON strips markdown code fences from AI responses.

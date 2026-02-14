@@ -22,6 +22,8 @@ import (
 	"testing"
 )
 
+const testRiskLow = "low"
+
 func TestBuildExplainPrompt_Basic(t *testing.T) {
 	healthResults := map[string]any{
 		"workloads": map[string]any{
@@ -128,7 +130,7 @@ func TestParseExplainResponse_ValidJSON(t *testing.T) {
 	if resp.Narrative != "The cluster is healthy with no critical issues." {
 		t.Errorf("Narrative = %q, want expected value", resp.Narrative)
 	}
-	if resp.RiskLevel != "low" {
+	if resp.RiskLevel != testRiskLow {
 		t.Errorf("RiskLevel = %q, want low", resp.RiskLevel)
 	}
 	if len(resp.TopIssues) != 1 {
