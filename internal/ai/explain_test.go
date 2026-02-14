@@ -172,10 +172,10 @@ func TestParseExplainResponse_InvalidJSON(t *testing.T) {
 	if resp.Narrative != content {
 		t.Errorf("Narrative = %q, want raw content", resp.Narrative)
 	}
-	if resp.RiskLevel != "unknown" {
+	if resp.RiskLevel != explainUnknown {
 		t.Errorf("RiskLevel = %q, want unknown", resp.RiskLevel)
 	}
-	if resp.TrendDirection != "unknown" {
+	if resp.TrendDirection != explainUnknown {
 		t.Errorf("TrendDirection = %q, want unknown", resp.TrendDirection)
 	}
 	if resp.TokensUsed != 100 {

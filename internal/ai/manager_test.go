@@ -20,12 +20,25 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
 
+// failingProvider always returns an error from Analyze.
+type failingProvider struct {
+	callCount atomic.Int32
+}
+
+func (f *failingProvider) Name() string { return "failing" }
+func (f *failingProvider) Analyze(_ context.Context, _ AnalysisRequest) (*AnalysisResponse, error) {
+	f.callCount.Add(1)
+	return nil, errors.New("provider unavailable")
+}
+func (f *failingProvider) Available() bool { return true }
+
 func TestNewManager_NilProvider(t *testing.T) {
-	m := NewManager(nil, nil, false, nil, nil)
+	m := NewManager(nil, nil, false, nil, nil, nil)
 	if m.Name() != ProviderNameNoop {
 		t.Errorf("NewManager(nil) Name() = %s, want %s", m.Name(), ProviderNameNoop)
 	}
@@ -36,7 +49,7 @@ func TestNewManager_NilProvider(t *testing.T) {
 
 func TestNewManager_WithProvider(t *testing.T) {
 	provider := NewNoOpProvider()
-	m := NewManager(provider, nil, true, nil, nil)
+	m := NewManager(provider, nil, true, nil, nil, nil)
 
 	if m.Name() != ProviderNameNoop {
 		t.Errorf("Name() = %s, want %s", m.Name(), ProviderNameNoop)
@@ -50,7 +63,7 @@ func TestNewManager_WithProvider(t *testing.T) {
 }
 
 func TestManager_SetEnabled(t *testing.T) {
-	m := NewManager(NewNoOpProvider(), nil, false, nil, nil)
+	m := NewManager(NewNoOpProvider(), nil, false, nil, nil, nil)
 
 	if m.Enabled() {
 		t.Error("should start disabled")
@@ -68,7 +81,7 @@ func TestManager_SetEnabled(t *testing.T) {
 }
 
 func TestManager_Analyze(t *testing.T) {
-	m := NewManager(NewNoOpProvider(), nil, true, nil, nil)
+	m := NewManager(NewNoOpProvider(), nil, true, nil, nil, nil)
 
 	request := AnalysisRequest{
 		Issues: []IssueContext{
@@ -95,7 +108,7 @@ func TestManager_Analyze(t *testing.T) {
 
 func TestManager_Provider(t *testing.T) {
 	provider := NewNoOpProvider()
-	m := NewManager(provider, nil, true, nil, nil)
+	m := NewManager(provider, nil, true, nil, nil, nil)
 
 	got := m.Provider()
 	if got != provider {
@@ -104,7 +117,7 @@ func TestManager_Provider(t *testing.T) {
 }
 
 func TestManager_Reconfigure_Noop(t *testing.T) {
-	m := NewManager(NewNoOpProvider(), nil, true, nil, nil)
+	m := NewManager(NewNoOpProvider(), nil, true, nil, nil, nil)
 
 	err := m.Reconfigure(ProviderNameNoop, "", "", "")
 	if err != nil {
@@ -121,7 +134,7 @@ func TestManager_Reconfigure_Noop(t *testing.T) {
 }
 
 func TestManager_Reconfigure_OpenAI(t *testing.T) {
-	m := NewManager(NewNoOpProvider(), nil, false, nil, nil)
+	m := NewManager(NewNoOpProvider(), nil, false, nil, nil, nil)
 
 	err := m.Reconfigure(ProviderNameOpenAI, "test-key", "gpt-4", "")
 	if err != nil {
@@ -140,7 +153,7 @@ func TestManager_Reconfigure_OpenAI(t *testing.T) {
 }
 
 func TestManager_Reconfigure_Anthropic(t *testing.T) {
-	m := NewManager(NewNoOpProvider(), nil, false, nil, nil)
+	m := NewManager(NewNoOpProvider(), nil, false, nil, nil, nil)
 
 	err := m.Reconfigure(ProviderNameAnthropic, "test-key", "claude-sonnet-4-5-20250929", "")
 	if err != nil {
@@ -156,7 +169,7 @@ func TestManager_Reconfigure_Anthropic(t *testing.T) {
 }
 
 func TestManager_Reconfigure_InvalidProvider(t *testing.T) {
-	m := NewManager(NewNoOpProvider(), nil, true, nil, nil)
+	m := NewManager(NewNoOpProvider(), nil, true, nil, nil, nil)
 
 	err := m.Reconfigure("unknown-provider", "", "", "")
 	if err == nil {
@@ -170,7 +183,7 @@ func TestManager_Reconfigure_InvalidProvider(t *testing.T) {
 }
 
 func TestManager_Reconfigure_EmptyProvider(t *testing.T) {
-	m := NewManager(NewNoOpProvider(), nil, true, nil, nil)
+	m := NewManager(NewNoOpProvider(), nil, true, nil, nil, nil)
 
 	err := m.Reconfigure("", "", "", "")
 	if err != nil {
@@ -184,7 +197,7 @@ func TestManager_Reconfigure_EmptyProvider(t *testing.T) {
 }
 
 func TestManager_ConcurrentAccess(t *testing.T) {
-	m := NewManager(NewNoOpProvider(), nil, true, nil, nil)
+	m := NewManager(NewNoOpProvider(), nil, true, nil, nil, nil)
 
 	var wg sync.WaitGroup
 	const goroutines = 50
@@ -237,7 +250,7 @@ func TestManager_ConcurrentAccess(t *testing.T) {
 }
 
 func TestManager_ReconfigurePreservesThread(t *testing.T) {
-	m := NewManager(NewNoOpProvider(), nil, false, nil, nil)
+	m := NewManager(NewNoOpProvider(), nil, false, nil, nil, nil)
 
 	// Reconfigure to openai
 	err := m.Reconfigure(ProviderNameOpenAI, "key1", "gpt-4", "")
@@ -266,7 +279,7 @@ func TestManager_BudgetBlocking(t *testing.T) {
 		{Name: "daily", Duration: 24 * time.Hour, Limit: 10000},
 	})
 
-	m := NewManager(NewNoOpProvider(), nil, true, budget, nil)
+	m := NewManager(NewNoOpProvider(), nil, true, budget, nil, nil)
 
 	// First call should succeed
 	_, err := m.Analyze(context.Background(), AnalysisRequest{
@@ -297,7 +310,7 @@ func TestManager_BudgetBlocking(t *testing.T) {
 
 func TestManager_CacheHitMiss(t *testing.T) {
 	cache := NewCache(10, 5*time.Minute, true)
-	m := NewManager(NewNoOpProvider(), nil, true, nil, cache)
+	m := NewManager(NewNoOpProvider(), nil, true, nil, cache, nil)
 
 	request := AnalysisRequest{
 		Issues: []IssueContext{
@@ -339,7 +352,7 @@ func TestManager_TieredRouting(t *testing.T) {
 	primary := NewNoOpProvider()
 	explain := NewNoOpProvider()
 
-	m := NewManager(primary, explain, true, nil, nil)
+	m := NewManager(primary, explain, true, nil, nil, nil)
 
 	// Normal analyze should use primary
 	normalReq := AnalysisRequest{
@@ -369,7 +382,7 @@ func TestManager_TieredRouting(t *testing.T) {
 }
 
 func TestManager_Reconfigure_WithExplainModel(t *testing.T) {
-	m := NewManager(NewNoOpProvider(), nil, false, nil, nil)
+	m := NewManager(NewNoOpProvider(), nil, false, nil, nil, nil)
 
 	// Reconfigure with different explain model
 	err := m.Reconfigure(ProviderNameAnthropic, "test-key", "claude-sonnet-4-5-20250929", "claude-haiku-4-5-20251001")
@@ -386,7 +399,7 @@ func TestManager_Reconfigure_WithExplainModel(t *testing.T) {
 }
 
 func TestManager_Reconfigure_SameExplainModel(t *testing.T) {
-	m := NewManager(NewNoOpProvider(), nil, false, nil, nil)
+	m := NewManager(NewNoOpProvider(), nil, false, nil, nil, nil)
 
 	// When explainModel equals model, explain should be same as primary
 	err := m.Reconfigure(ProviderNameAnthropic, "test-key", "claude-haiku-4-5-20251001", "claude-haiku-4-5-20251001")
@@ -400,7 +413,7 @@ func TestManager_Reconfigure_SameExplainModel(t *testing.T) {
 }
 
 func TestManager_Available_IncorporatesEnabled(t *testing.T) {
-	m := NewManager(NewNoOpProvider(), nil, false, nil, nil)
+	m := NewManager(NewNoOpProvider(), nil, false, nil, nil, nil)
 
 	// Disabled + available provider = not available
 	if m.Available() {
@@ -418,8 +431,132 @@ func TestManager_Available_IncorporatesEnabled(t *testing.T) {
 	}
 }
 
+func TestManager_CircuitBreaker_Integration(t *testing.T) {
+	fp := &failingProvider{}
+	cb := NewCircuitBreaker(3, 5*time.Minute)
+	m := NewManager(fp, nil, true, nil, nil, cb)
+
+	req := AnalysisRequest{
+		Issues: []IssueContext{
+			{Type: "test", Resource: "deployment/test", Namespace: "default", Message: "msg"},
+		},
+	}
+
+	// First 3 calls should hit the provider and fail
+	for i := range 3 {
+		_, err := m.Analyze(context.Background(), req)
+		if err == nil {
+			t.Fatalf("call %d should have failed", i+1)
+		}
+	}
+
+	// Circuit should be open now
+	if cb.State() != CircuitOpen {
+		t.Errorf("circuit state = %s, want open", cb.State())
+	}
+
+	// 4th call should be rejected by circuit breaker without hitting provider
+	_, err := m.Analyze(context.Background(), req)
+	if err == nil {
+		t.Fatal("4th call should have failed")
+	}
+	if !errors.Is(err, ErrCircuitOpen) {
+		t.Errorf("4th call error should wrap ErrCircuitOpen, got: %v", err)
+	}
+
+	// Provider should only have been called 3 times
+	if got := fp.callCount.Load(); got != 3 {
+		t.Errorf("provider call count = %d, want 3", got)
+	}
+}
+
+func TestManager_CircuitBreaker_Recovery(t *testing.T) {
+	now := time.Now()
+	fp := &failingProvider{}
+	cb := NewCircuitBreaker(3, 5*time.Minute, WithNowFunc(func() time.Time {
+		return now
+	}))
+	m := NewManager(fp, nil, true, nil, nil, cb)
+
+	req := AnalysisRequest{
+		Issues: []IssueContext{
+			{Type: "test", Resource: "deployment/test", Namespace: "default", Message: "msg"},
+		},
+	}
+
+	// Trip the circuit with 3 failures
+	for range 3 {
+		_, _ = m.Analyze(context.Background(), req)
+	}
+	if cb.State() != CircuitOpen {
+		t.Fatalf("circuit state = %s, want open", cb.State())
+	}
+
+	// Advance past timeout — switch to a succeeding provider
+	now = now.Add(6 * time.Minute)
+	m.mu.Lock()
+	m.provider = NewNoOpProvider()
+	m.mu.Unlock()
+
+	// Half-open probe should succeed → circuit closes
+	resp, err := m.Analyze(context.Background(), req)
+	if err != nil {
+		t.Fatalf("half-open probe should succeed, got: %v", err)
+	}
+	if resp == nil {
+		t.Fatal("response should not be nil")
+	}
+	if cb.State() != CircuitClosed {
+		t.Errorf("circuit state = %s, want closed after successful probe", cb.State())
+	}
+
+	// Subsequent calls should work normally
+	resp, err = m.Analyze(context.Background(), req)
+	if err != nil {
+		t.Fatalf("post-recovery call failed: %v", err)
+	}
+	if resp == nil {
+		t.Fatal("response should not be nil")
+	}
+}
+
+func TestManager_CircuitBreaker_CacheBypassesCB(t *testing.T) {
+	cache := NewCache(10, 5*time.Minute, true)
+	cb := NewCircuitBreaker(3, 5*time.Minute)
+	m := NewManager(NewNoOpProvider(), nil, true, nil, cache, cb)
+
+	req := AnalysisRequest{
+		Issues: []IssueContext{
+			{Type: "CrashLoopBackOff", Severity: "critical", Resource: "deployment/test", Namespace: "default", Message: "crash", StaticSuggestion: "fix"},
+		},
+	}
+
+	// First call populates cache
+	_, err := m.Analyze(context.Background(), req)
+	if err != nil {
+		t.Fatalf("first call error: %v", err)
+	}
+
+	// Trip the circuit
+	for range 3 {
+		cb.RecordFailure()
+	}
+	if cb.State() != CircuitOpen {
+		t.Fatalf("circuit state = %s, want open", cb.State())
+	}
+
+	// Cached response should still be served even though circuit is open
+	resp, err := m.Analyze(context.Background(), req)
+	if err != nil {
+		t.Fatalf("cached call should succeed despite open circuit, got: %v", err)
+	}
+	if resp == nil {
+		t.Fatal("cached response should not be nil")
+	}
+}
+
 func TestManager_ProviderAvailable_IgnoresEnabled(t *testing.T) {
-	m := NewManager(NewNoOpProvider(), nil, false, nil, nil)
+	m := NewManager(NewNoOpProvider(), nil, false, nil, nil, nil)
 
 	// Disabled but provider is available
 	if !m.ProviderAvailable() {

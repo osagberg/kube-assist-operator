@@ -32,15 +32,31 @@ type Manager struct {
 	enabled         bool
 	budget          *Budget
 	cache           *Cache
+	cb              *CircuitBreaker
 }
 
-// NewManager creates a new AI Manager with the given providers, enabled state, budget, and cache.
-func NewManager(provider, explainProvider Provider, enabled bool, budget *Budget, cache *Cache) *Manager {
+// NewManager creates a new AI Manager with the given providers, enabled state, budget, cache,
+// and optional circuit breaker. Pass nil for cb to disable circuit breaking.
+func NewManager(provider, explainProvider Provider, enabled bool, budget *Budget, cache *Cache, cb *CircuitBreaker) *Manager {
 	if provider == nil {
 		provider = NewNoOpProvider()
 	}
 	if explainProvider == nil {
 		explainProvider = provider
+	}
+	if cb != nil {
+		prev := cb.onStateChange
+		cb.onStateChange = func(from, to CircuitState) {
+			switch to {
+			case CircuitOpen, CircuitHalfOpen:
+				SetAIDegraded(true)
+			case CircuitClosed:
+				SetAIDegraded(false)
+			}
+			if prev != nil {
+				prev(from, to)
+			}
+		}
 	}
 	return &Manager{
 		provider:        provider,
@@ -48,6 +64,7 @@ func NewManager(provider, explainProvider Provider, enabled bool, budget *Budget
 		enabled:         enabled,
 		budget:          budget,
 		cache:           cache,
+		cb:              cb,
 	}
 }
 
@@ -85,18 +102,31 @@ func (m *Manager) Analyze(ctx context.Context, request AnalysisRequest) (*Analys
 		return nil, fmt.Errorf("AI budget exceeded: %w", err)
 	}
 
+	// Check circuit breaker after budget so a half-open probe slot is not
+	// wasted on a call that would be rejected by the budget anyway.
+	if m.cb != nil && !m.cb.Allow() {
+		return nil, fmt.Errorf("AI provider unavailable: %w", ErrCircuitOpen)
+	}
+
 	// Call provider
 	start := time.Now()
 	resp, err := provider.Analyze(ctx, request)
 	duration := time.Since(start)
 
 	if err != nil {
+		if m.cb != nil {
+			m.cb.RecordFailure()
+		}
 		mode := "analyze"
 		if request.ExplainMode {
 			mode = "explain"
 		}
 		RecordAICall(provider.Name(), mode, "error", 0, duration)
 		return nil, fmt.Errorf("AI analysis failed (%s): %w", provider.Name(), err)
+	}
+
+	if m.cb != nil {
+		m.cb.RecordSuccess()
 	}
 
 	// Record usage

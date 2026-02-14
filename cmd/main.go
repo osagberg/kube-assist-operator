@@ -364,7 +364,8 @@ func main() {
 		os.Exit(1)
 	}
 	cache := ai.NewCache(100, 5*time.Minute, enableAI)
-	aiManager := ai.NewManager(fast, explain, enableAI, budget, cache)
+	cb := ai.NewCircuitBreaker(3, 5*time.Minute)
+	aiManager := ai.NewManager(fast, explain, enableAI, budget, cache, cb)
 	setupLog.Info("AI provider initialized",
 		"provider", aiManager.Name(),
 		"enabled", enableAI,

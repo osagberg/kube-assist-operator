@@ -101,6 +101,11 @@ var (
 		},
 		[]string{"window"},
 	)
+
+	aiDegraded = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "kubeassist_ai_degraded",
+		Help: "Whether AI analysis is degraded (circuit breaker open): 0=healthy, 1=degraded",
+	})
 )
 
 func init() {
@@ -115,6 +120,7 @@ func init() {
 		aiCacheSize,
 		aiBudgetTokensUsed,
 		aiBudgetTokensLimit,
+		aiDegraded,
 	)
 }
 
@@ -150,6 +156,15 @@ func RecordIssuesFiltered(reason string, count int) {
 // UpdateCacheSize updates the cache size gauge.
 func UpdateCacheSize(size int) {
 	aiCacheSize.Set(float64(size))
+}
+
+// SetAIDegraded sets the AI degraded gauge (1=degraded, 0=healthy).
+func SetAIDegraded(degraded bool) {
+	if degraded {
+		aiDegraded.Set(1)
+	} else {
+		aiDegraded.Set(0)
+	}
 }
 
 // UpdateBudgetMetrics updates budget usage gauges from current Budget state.
