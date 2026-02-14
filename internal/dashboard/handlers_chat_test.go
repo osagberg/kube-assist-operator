@@ -315,6 +315,40 @@ func TestHandleChat_InvalidJSON(t *testing.T) {
 	}
 }
 
+func TestHandleChat_SanitizesUserMessage(t *testing.T) {
+	s := newChatTestServer(t)
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", chatBody("", "token: super-secret-value"))
+	rr := httptest.NewRecorder()
+	s.handleChat(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("handleChat(sanitize) status = %d, want %d", rr.Code, http.StatusOK)
+	}
+
+	var session *ChatSession
+	s.chatMu.RLock()
+	for _, sess := range s.chatSessions {
+		session = sess
+		break
+	}
+	s.chatMu.RUnlock()
+	if session == nil {
+		t.Fatal("expected a chat session to be created")
+	}
+
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	if len(session.Messages) == 0 {
+		t.Fatal("expected at least one message in chat session")
+	}
+	got := session.Messages[0].Content
+	if strings.Contains(got, "super-secret-value") {
+		t.Fatalf("expected sensitive value to be redacted, got %q", got)
+	}
+	if !strings.Contains(got, ai.RedactionPlaceholder) {
+		t.Fatalf("expected redaction placeholder in sanitized message, got %q", got)
+	}
+}
+
 func TestHandleChat_SessionTTLCleanup(t *testing.T) {
 	s := newChatTestServer(t, func(s *Server) {
 		s.chatSessionTTL = 1 * time.Millisecond
@@ -734,15 +768,17 @@ func TestCleanupChatSessions_TOCTOU(t *testing.T) {
 	s.chatMu.Unlock()
 
 	// Pass 1: identify expired sessions under RLock (simulating what cleanup does)
-	var expired []string
+	type snapshot struct {
+		id      string
+		session *ChatSession
+	}
+	var expired []snapshot
 	s.chatMu.RLock()
 	now := time.Now()
 	for id, sess := range s.chatSessions {
-		sess.mu.Lock()
-		if now.Sub(sess.LastAccessedAt) > s.chatSessionTTL {
-			expired = append(expired, id)
+		if now.Sub(sess.lastAccessed()) > s.chatSessionTTL {
+			expired = append(expired, snapshot{id: id, session: sess})
 		}
-		sess.mu.Unlock()
 	}
 	s.chatMu.RUnlock()
 
@@ -752,20 +788,18 @@ func TestCleanupChatSessions_TOCTOU(t *testing.T) {
 
 	// Between pass 1 and pass 2, the session gets accessed (simulating TOCTOU race)
 	session.mu.Lock()
-	session.LastAccessedAt = time.Now()
+	session.setLastAccessed(time.Now())
 	session.mu.Unlock()
 
 	// Pass 2: with the TOCTOU fix, it should re-check and NOT delete
 	if len(expired) > 0 {
 		now = time.Now()
 		s.chatMu.Lock()
-		for _, id := range expired {
-			if sess, ok := s.chatSessions[id]; ok {
-				sess.mu.Lock()
-				if now.Sub(sess.LastAccessedAt) > s.chatSessionTTL {
-					delete(s.chatSessions, id)
+		for _, candidate := range expired {
+			if sess, ok := s.chatSessions[candidate.id]; ok && sess == candidate.session {
+				if now.Sub(sess.lastAccessed()) > s.chatSessionTTL {
+					delete(s.chatSessions, candidate.id)
 				}
-				sess.mu.Unlock()
 			}
 		}
 		s.chatMu.Unlock()

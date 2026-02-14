@@ -133,10 +133,12 @@ kubectl get clusterrole kube-assist-manager-role -o yaml
 
 Required permissions for core checkers:
 - `pods`, `deployments`, `statefulsets`, `daemonsets` - workload checker
-- `secrets` - secret expiration checker
 - `persistentvolumeclaims` - PVC checker
 - `resourcequotas` - quota checker
 - `networkpolicies` - network policy checker
+
+Optional checker permissions:
+- `secrets` - required only when `checkers.secrets.enabled=true`
 
 For Flux checkers:
 - `helmreleases.helm.toolkit.fluxcd.io`
@@ -237,12 +239,7 @@ kubectl get deployment kube-assist-controller-manager -n kube-assist-system -o y
 
 **3. Configure API key**
 
-Option A - Command line flag:
-```bash
---enable-ai --ai-provider=anthropic --ai-api-key=$KUBE_ASSIST_AI_API_KEY
-```
-
-Option B - Environment variable:
+Environment variable:
 ```yaml
 env:
   - name: KUBE_ASSIST_AI_API_KEY

@@ -19,6 +19,9 @@ package controller
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -146,6 +149,56 @@ var _ = Describe("TeamHealthRequest Controller", func() {
 			result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result).To(Equal(reconcile.Result{}))
+		})
+	})
+
+	Context("When reconciling a running resource", func() {
+		const resourceName = "running-health"
+		ctx := context.Background()
+		nn := types.NamespacedName{Name: resourceName, Namespace: "default"}
+
+		BeforeEach(func() {
+			hr := &assistv1alpha1.TeamHealthRequest{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      resourceName,
+					Namespace: "default",
+				},
+				Spec: assistv1alpha1.TeamHealthRequestSpec{},
+			}
+			Expect(k8sClient.Create(ctx, hr)).To(Succeed())
+
+			fetched := &assistv1alpha1.TeamHealthRequest{}
+			Expect(k8sClient.Get(ctx, nn, fetched)).To(Succeed())
+			now := metav1.Now()
+			fetched.Status.Phase = assistv1alpha1.TeamHealthPhaseRunning
+			fetched.Status.StartedAt = &now
+			Expect(k8sClient.Status().Update(ctx, fetched)).To(Succeed())
+		})
+
+		AfterEach(func() {
+			hr := &assistv1alpha1.TeamHealthRequest{}
+			if err := k8sClient.Get(ctx, nn, hr); err == nil {
+				Expect(k8sClient.Delete(ctx, hr)).To(Succeed())
+			}
+		})
+
+		It("should skip duplicate execution and requeue", func() {
+			registry := checker.NewRegistry()
+			reconciler := &TeamHealthRequestReconciler{
+				Client:     k8sClient,
+				Scheme:     k8sClient.Scheme(),
+				Registry:   registry,
+				DataSource: datasource.NewKubernetes(k8sClient),
+			}
+
+			result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(BeNumerically(">", 0))
+
+			fetched := &assistv1alpha1.TeamHealthRequest{}
+			Expect(k8sClient.Get(ctx, nn, fetched)).To(Succeed())
+			Expect(fetched.Status.Phase).To(Equal(assistv1alpha1.TeamHealthPhaseRunning))
+			Expect(fetched.Status.StartedAt).NotTo(BeNil())
 		})
 	})
 
@@ -1153,6 +1206,54 @@ var _ = Describe("TeamHealthRequest Controller", func() {
 
 			// Should not panic, and attempt to send
 			r.dispatchNotifications(ctx, hr, 5, 1, 1, 0)
+		})
+
+		It("should skip secretRef notifications outside configured secret namespace", func() {
+			ctx := context.Background()
+			var callCount atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				callCount.Add(1)
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer srv.Close()
+
+			// Secret exists in request namespace, but controller is restricted to kube-assist-system.
+			secret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "webhook-secret-default",
+					Namespace: "default",
+				},
+				Data: map[string][]byte{
+					"url": []byte(srv.URL),
+				},
+			}
+			Expect(k8sClient.Create(ctx, secret)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, secret) }()
+
+			r := &TeamHealthRequestReconciler{
+				Client:                      k8sClient,
+				NotificationSecretNamespace: "kube-assist-system",
+			}
+			hr := &assistv1alpha1.TeamHealthRequest{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "secret-ref-default",
+					Namespace: "default",
+				},
+				Spec: assistv1alpha1.TeamHealthRequestSpec{
+					Notify: []assistv1alpha1.NotificationTarget{
+						{
+							Type:         assistv1alpha1.NotificationTypeWebhook,
+							OnCompletion: true,
+							SecretRef: &assistv1alpha1.SecretKeyRef{
+								Name: "webhook-secret-default",
+								Key:  "url",
+							},
+						},
+					},
+				},
+			}
+			r.dispatchNotifications(ctx, hr, 5, 1, 1, 0)
+			Expect(callCount.Load()).To(Equal(int32(0)))
 		})
 	})
 

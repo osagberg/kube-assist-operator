@@ -368,7 +368,13 @@ func (s *Server) tlsConfigured() bool {
 }
 
 func (s *Server) validateSecurityConfig() error {
-	if s.authToken == "" || s.tlsConfigured() || s.allowInsecureHTTP {
+	if s.authToken == "" {
+		if parseBoolEnv("DASHBOARD_ALLOW_UNAUTHENTICATED_DASHBOARD") {
+			return nil
+		}
+		return fmt.Errorf("dashboard auth is not configured; set DASHBOARD_AUTH_TOKEN or set DASHBOARD_ALLOW_UNAUTHENTICATED_DASHBOARD=true for local development only")
+	}
+	if s.tlsConfigured() || s.allowInsecureHTTP {
 		return nil
 	}
 	return fmt.Errorf("dashboard auth is configured but TLS is not enabled; configure dashboard TLS cert/key or set DASHBOARD_ALLOW_INSECURE_HTTP=true for local development only")
@@ -672,10 +678,10 @@ func (s *Server) Start(ctx context.Context) error {
 		WriteTimeout: 30 * time.Second,
 	}
 
-	if s.authToken == "" {
-		log.Info("WARNING: Dashboard authentication not configured. Mutating endpoints (POST/PUT/DELETE) will return 503. Set DASHBOARD_AUTH_TOKEN to enable.")
-	} else {
+	if s.authToken != "" {
 		log.Info("Dashboard authentication enabled for all data endpoints")
+	} else if parseBoolEnv("DASHBOARD_ALLOW_UNAUTHENTICATED_DASHBOARD") {
+		log.Info("WARNING: Running dashboard without authentication due to explicit override", "env", "DASHBOARD_ALLOW_UNAUTHENTICATED_DASHBOARD")
 	}
 	if err := s.validateSecurityConfig(); err != nil {
 		return err

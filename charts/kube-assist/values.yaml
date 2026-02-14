@@ -33,10 +33,9 @@ serviceAccount:
 checkers:
   secrets:
     # Enable the SecretChecker, which inspects TLS certificates for expiry.
-    # When enabled, the operator is granted read-only access to Secrets via RBAC.
-    # Security implication: the operator can read all Secrets cluster-wide.
-    # Disable this if you do not need TLS certificate expiry checks.
-    enabled: true
+    # Security default is false: avoids cluster-wide Secret read privileges.
+    # Set to true only when you need TLS certificate expiry checks.
+    enabled: false
 
 # Pod disruption budget for high-availability deployments.
 podDisruptionBudget:
@@ -144,10 +143,12 @@ dashboard:
   enabled: false
   # Dashboard bind address (port the dashboard listens on).
   bindAddress: ":9090"
-  # Bearer token for authenticating mutating API requests.
-  # If empty, mutating endpoints are unprotected (a warning is logged).
+  # Bearer token for authenticating dashboard API requests.
+  # If empty, dashboard startup is blocked unless allowUnauthenticated=true.
   # If set, TLS cert/key is required unless allowInsecureHttp=true.
   authToken: ""
+  # Explicit opt-in for unauthenticated dashboard mode (local/dev only).
+  allowUnauthenticated: false
   # Allow auth over plain HTTP (local/dev only). Ignored when authToken is empty.
   allowInsecureHttp: false
   # Maximum number of concurrent SSE client connections.
@@ -245,6 +246,10 @@ datasource:
 notifications:
   # Maximum number of concurrent notification dispatches (goroutine semaphore).
   semaphoreCapacity: 5
+  # SecretRef resolution for TeamHealthRequest notifications.
+  secretRef:
+    # Grant namespaced secret read RBAC to resolve notify[].secretRef entries.
+    enabled: true
 
 resources:
   limits:

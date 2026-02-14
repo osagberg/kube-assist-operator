@@ -9,6 +9,8 @@ resources:
 - role_binding.yaml
 - leader_election_role.yaml
 - leader_election_role_binding.yaml
+- notification_secret_reader_role.yaml
+- notification_secret_reader_role_binding.yaml
 # The following RBAC configurations are used to protect
 # the metrics endpoint with authn/authz. These configurations
 # ensure that only authorized users and service accounts
@@ -25,4 +27,3 @@ resources:
 - troubleshootrequest_admin_role.yaml
 - troubleshootrequest_editor_role.yaml
 - troubleshootrequest_viewer_role.yaml
-

@@ -345,6 +345,34 @@ func TestServer_ValidateSecurityConfig_RequiresTLSWhenAuthEnabled(t *testing.T) 
 	}
 }
 
+func TestServer_ValidateSecurityConfig_RequiresAuthByDefault(t *testing.T) {
+	t.Setenv("DASHBOARD_ALLOW_UNAUTHENTICATED_DASHBOARD", "")
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	err := server.validateSecurityConfig()
+	if err == nil {
+		t.Fatal("validateSecurityConfig() expected error when auth token is missing")
+	}
+	if !strings.Contains(err.Error(), "DASHBOARD_AUTH_TOKEN") {
+		t.Errorf("validateSecurityConfig() error = %q, want auth guidance", err.Error())
+	}
+}
+
+func TestServer_ValidateSecurityConfig_AllowsUnauthenticatedOverride(t *testing.T) {
+	t.Setenv("DASHBOARD_ALLOW_UNAUTHENTICATED_DASHBOARD", "true")
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+
+	if err := server.validateSecurityConfig(); err != nil {
+		t.Fatalf("validateSecurityConfig() unexpected error with explicit unauthenticated override: %v", err)
+	}
+}
+
 func TestServer_ValidateSecurityConfig_AllowsInsecureOverride(t *testing.T) {
 	scheme := runtime.NewScheme()
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()

@@ -22,6 +22,7 @@ import (
 	"log/slog"
 	"math"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -67,6 +68,9 @@ type TeamHealthRequestReconciler struct {
 	Recorder         record.EventRecorder
 	LogContextConfig *checker.LogContextConfig
 	Clientset        kubernetes.Interface
+	// NotificationSecretNamespace constrains secretRef reads to a single namespace.
+	// When empty, secretRef reads default to the TeamHealthRequest namespace.
+	NotificationSecretNamespace string
 }
 
 // +kubebuilder:rbac:groups=assist.cluster.local,resources=teamhealthrequests,verbs=get;list;watch;create;update;patch;delete
@@ -75,8 +79,6 @@ type TeamHealthRequestReconciler struct {
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
 // +kubebuilder:rbac:groups=apps,resources=deployments;statefulsets;daemonsets;replicasets,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=pods;events,verbs=get;list;watch
-// TODO(agent-5): restrict secret RBAC in Helm chart clusterrole
-// +kubebuilder:rbac:groups="",resources=secrets,verbs=get
 // +kubebuilder:rbac:groups=helm.toolkit.fluxcd.io,resources=helmreleases,verbs=get;list;watch
 // +kubebuilder:rbac:groups=kustomize.toolkit.fluxcd.io,resources=kustomizations,verbs=get;list;watch
 // +kubebuilder:rbac:groups=source.toolkit.fluxcd.io,resources=gitrepositories,verbs=get;list;watch
@@ -101,9 +103,6 @@ func (r *TeamHealthRequestReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		return ctrl.Result{}, fmt.Errorf("failed to fetch TeamHealthRequest: %w", err)
 	}
 
-	// Save original for patch later
-	original := healthReq.DeepCopy()
-
 	// Set observed generation on every reconcile path
 	healthReq.Status.ObservedGeneration = healthReq.Generation
 
@@ -123,12 +122,26 @@ func (r *TeamHealthRequestReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		return ctrl.Result{}, nil
 	}
 
-	// Initialize status
+	// Idempotent guard: avoid duplicate work when a reconcile is already running.
+	if healthReq.Status.Phase == assistv1alpha1.TeamHealthPhaseRunning && healthReq.Status.StartedAt != nil {
+		log.Info("TeamHealthRequest already running; skipping duplicate execution", "name", healthReq.Name)
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+	}
+
+	// Persist Running phase early so concurrent reconciles see in-flight state.
+	runningBase := healthReq.DeepCopy()
 	healthReq.Status.Phase = assistv1alpha1.TeamHealthPhaseRunning
 	if healthReq.Status.StartedAt == nil {
 		now := metav1.Now()
 		healthReq.Status.StartedAt = &now
 	}
+	if err := r.Status().Patch(ctx, healthReq, client.MergeFrom(runningBase)); err != nil {
+		log.Error(err, "Failed to patch TeamHealthRequest running status")
+		return ctrl.Result{}, fmt.Errorf("failed to patch TeamHealthRequest running status: %w", err)
+	}
+
+	// Save original for final status patch.
+	original := healthReq.DeepCopy()
 
 	log.Info("Processing TeamHealthRequest", "name", healthReq.Name)
 
@@ -460,6 +473,10 @@ func (r *TeamHealthRequestReconciler) dispatchNotifications(
 	totalHealthy, totalIssues, criticalCount, warningCount int,
 ) {
 	log := logf.FromContext(ctx).WithValues("name", hr.Name, "namespace", hr.Namespace)
+	secretNamespace := strings.TrimSpace(r.NotificationSecretNamespace)
+	if secretNamespace == "" {
+		secretNamespace = hr.Namespace
+	}
 
 	// Build notification once — values are identical for every target
 	score := float64(100)
@@ -489,9 +506,14 @@ func (r *TeamHealthRequestReconciler) dispatchNotifications(
 
 		webhookURL := target.URL
 		if webhookURL == "" && target.SecretRef != nil {
+			if r.NotificationSecretNamespace != "" && hr.Namespace != secretNamespace {
+				log.Info("Skipping secretRef notification target outside configured secret namespace",
+					"requestNamespace", hr.Namespace, "secretNamespace", secretNamespace)
+				continue
+			}
 			var secret corev1.Secret
-			if err := r.Get(ctx, client.ObjectKey{Name: target.SecretRef.Name, Namespace: hr.Namespace}, &secret); err != nil {
-				log.Error(err, "Failed to read notification secret", "secret", target.SecretRef.Name)
+			if err := r.Get(ctx, client.ObjectKey{Name: target.SecretRef.Name, Namespace: secretNamespace}, &secret); err != nil {
+				log.Error(err, "Failed to read notification secret", "secret", target.SecretRef.Name, "secretNamespace", secretNamespace)
 				continue
 			}
 			webhookURL = string(secret.Data[target.SecretRef.Key])

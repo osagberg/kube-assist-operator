@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -46,7 +47,20 @@ type ChatSession struct {
 	CreatedAt      time.Time
 	LastAccessedAt time.Time
 	inFlight       bool
+	lastAccessUnix atomic.Int64
 	mu             sync.Mutex
+}
+
+func (cs *ChatSession) setLastAccessed(t time.Time) {
+	cs.LastAccessedAt = t
+	cs.lastAccessUnix.Store(t.UnixNano())
+}
+
+func (cs *ChatSession) lastAccessed() time.Time {
+	if ts := cs.lastAccessUnix.Load(); ts > 0 {
+		return time.Unix(0, ts)
+	}
+	return cs.LastAccessedAt
 }
 
 // chatRequest is the JSON body for POST /api/chat.
@@ -86,6 +100,8 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("message exceeds maximum length of %d characters", maxChatMessageLen), http.StatusBadRequest)
 		return
 	}
+	// SECURITY-004: sanitize user-provided chat input before provider calls.
+	msg = ai.NewSanitizer().SanitizeString(msg)
 
 	// CONCURRENCY-006: read chatEnabled/aiEnabled under lock
 	s.mu.RLock()
@@ -132,7 +148,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	// Lock session briefly to check budget, append user message, and snapshot.
 	// Keep I/O (SSE writes) outside the lock to avoid blocking on slow clients.
 	session.mu.Lock()
-	session.LastAccessedAt = time.Now()
+	session.setLastAccessed(time.Now())
 	budgetExceeded := session.TokensUsed >= session.TokenBudget
 	var msgsCopy []ai.ChatMessage
 	if !budgetExceeded {
@@ -313,12 +329,12 @@ func (s *Server) getOrCreateChatSession(sessionID string) (*ChatSession, bool, e
 		id = uuid.New().String()
 	}
 	session := &ChatSession{
-		ID:             id,
-		Messages:       make([]ai.ChatMessage, 0),
-		TokenBudget:    s.chatTokenBudget,
-		CreatedAt:      time.Now(),
-		LastAccessedAt: time.Now(),
+		ID:          id,
+		Messages:    make([]ai.ChatMessage, 0),
+		TokenBudget: s.chatTokenBudget,
+		CreatedAt:   time.Now(),
 	}
+	session.setLastAccessed(time.Now())
 	s.chatSessions[id] = session
 	return session, true, nil
 }
@@ -500,16 +516,17 @@ func (s *Server) cleanupChatSessions(ctx context.Context) {
 		case <-s.stopCh:
 			return
 		case <-ticker.C:
-			// Pass 1: identify expired sessions under RLock.
-			var expired []string
+			type snapshot struct {
+				id      string
+				session *ChatSession
+			}
+			var expired []snapshot
 			now := time.Now()
 			s.chatMu.RLock()
 			for id, session := range s.chatSessions {
-				session.mu.Lock()
-				if now.Sub(session.LastAccessedAt) > s.chatSessionTTL {
-					expired = append(expired, id)
+				if now.Sub(session.lastAccessed()) > s.chatSessionTTL {
+					expired = append(expired, snapshot{id: id, session: session})
 				}
-				session.mu.Unlock()
 			}
 			s.chatMu.RUnlock()
 
@@ -517,13 +534,13 @@ func (s *Server) cleanupChatSessions(ctx context.Context) {
 			if len(expired) > 0 {
 				now = time.Now()
 				s.chatMu.Lock()
-				for _, id := range expired {
-					if session, ok := s.chatSessions[id]; ok {
-						session.mu.Lock()
-						if now.Sub(session.LastAccessedAt) > s.chatSessionTTL {
-							delete(s.chatSessions, id)
-						}
-						session.mu.Unlock()
+				for _, candidate := range expired {
+					session, ok := s.chatSessions[candidate.id]
+					if !ok || session != candidate.session {
+						continue
+					}
+					if now.Sub(session.lastAccessed()) > s.chatSessionTTL {
+						delete(s.chatSessions, candidate.id)
 					}
 				}
 				s.chatMu.Unlock()

@@ -56,6 +56,7 @@ spec:
             {{- if .Values.operator.metricsBindAddress }}
             - --metrics-bind-address={{ .Values.operator.metricsBindAddress }}
             {{- end }}
+            - --enable-secret-checker={{ .Values.checkers.secrets.enabled }}
             {{- if .Values.dashboard.enabled }}
             - --enable-dashboard
             - --dashboard-bind-address={{ .Values.dashboard.bindAddress }}
@@ -112,6 +113,10 @@ spec:
             - --notify-sem-capacity={{ .Values.notifications.semaphoreCapacity }}
             {{- end }}
           env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
             {{- if and .Values.datasource .Values.datasource.bearerTokenSecretRef.name }}
             - name: CONSOLE_BEARER_TOKEN
               valueFrom:
@@ -141,6 +146,10 @@ spec:
             {{- end }}
             {{- if and .Values.dashboard.enabled .Values.dashboard.allowInsecureHttp }}
             - name: DASHBOARD_ALLOW_INSECURE_HTTP
+              value: "true"
+            {{- end }}
+            {{- if and .Values.dashboard.enabled .Values.dashboard.allowUnauthenticated }}
+            - name: DASHBOARD_ALLOW_UNAUTHENTICATED_DASHBOARD
               value: "true"
             {{- end }}
             {{- with .Values.env }}

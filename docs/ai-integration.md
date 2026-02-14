@@ -34,15 +34,13 @@ Changes take effect immediately. The dashboard uses the `POST /api/settings/ai` 
 ./manager \
   --enable-ai \
   --ai-provider=anthropic \
-  --ai-model=claude-haiku-4-5-20251001 \
-  --ai-api-key=$KUBE_ASSIST_AI_API_KEY
+  --ai-model=claude-haiku-4-5-20251001
 ```
 
 | Flag | Description | Default |
 |------|-------------|---------|
 | `--enable-ai` | Enable AI-powered suggestions | `false` |
 | `--ai-provider` | Provider: `anthropic`, `openai`, `noop` | `noop` |
-| `--ai-api-key` | API key (prefer env var or secret) | - |
 | `--ai-model` | Model name (uses provider default if empty) | - |
 
 ### 3. Environment Variables
@@ -54,7 +52,7 @@ export KUBE_ASSIST_AI_MODEL=claude-haiku-4-5-20251001
 export KUBE_ASSIST_AI_ENDPOINT=https://api.anthropic.com/v1/messages  # optional
 ```
 
-The operator checks `KUBE_ASSIST_AI_API_KEY` if no API key is provided via flag.
+The operator reads `KUBE_ASSIST_AI_API_KEY` from environment or Kubernetes Secret-backed env vars.
 
 ### 4. Helm Values
 

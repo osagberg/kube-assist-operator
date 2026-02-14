@@ -20,6 +20,7 @@ import (
 	"crypto/tls"
 	"flag"
 	"os"
+	"strings"
 	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
@@ -88,11 +89,11 @@ func main() {
 	var dashboardTLSKeyFile string
 	var enableAI bool
 	var aiProvider string
-	var aiAPIKey string
 	var aiModel string
 	var aiExplainModel string
 	var aiDailyTokenLimit int
 	var aiMonthlyTokenLimit int
+	var enableSecretChecker bool
 	var maxSSEClients int
 	var checkInterval time.Duration
 	var aiAnalysisTimeout time.Duration
@@ -103,7 +104,6 @@ func main() {
 	var datasourceType string
 	var consoleURL string
 	var clusterID string
-	var consoleBearerToken string
 	var aiLogContext bool
 	var aiLogContextMaxEvents int
 	var aiLogContextMaxLines int
@@ -130,9 +130,6 @@ func main() {
 		"Enable AI-powered suggestions for health check issues.")
 	flag.StringVar(&aiProvider, "ai-provider", "noop",
 		"AI provider to use: anthropic, openai, or noop (default: noop).")
-	// Deprecated: use KUBE_ASSIST_AI_API_KEY env var instead.
-	flag.StringVar(&aiAPIKey, "ai-api-key", "",
-		"API key for AI provider (DEPRECATED: use KUBE_ASSIST_AI_API_KEY env var).")
 	flag.StringVar(&aiModel, "ai-model", "",
 		"AI model to use (provider default if empty).")
 	flag.StringVar(&aiExplainModel, "ai-explain-model", "",
@@ -141,6 +138,8 @@ func main() {
 		"Max AI tokens per day (0 = unlimited).")
 	flag.IntVar(&aiMonthlyTokenLimit, "ai-monthly-token-limit", 0,
 		"Max AI tokens per month (0 = unlimited).")
+	flag.BoolVar(&enableSecretChecker, "enable-secret-checker", true,
+		"Enable the Secret checker (requires read access to Secrets).")
 	flag.IntVar(&maxSSEClients, "max-sse-clients", 100,
 		"Maximum concurrent SSE dashboard connections (0 = unlimited).")
 	flag.DurationVar(&checkInterval, "check-interval", 30*time.Second,
@@ -161,9 +160,6 @@ func main() {
 		"Console backend URL (required when --datasource=console).")
 	flag.StringVar(&clusterID, "cluster-id", "",
 		"Cluster identifier for console backend.")
-	// Deprecated: use CONSOLE_BEARER_TOKEN env var instead.
-	flag.StringVar(&consoleBearerToken, "console-bearer-token", "",
-		"Bearer token for console backend (DEPRECATED: use CONSOLE_BEARER_TOKEN env var).")
 	flag.BoolVar(&aiLogContext, "ai-log-context", false,
 		"Enable event/log context enrichment for AI analysis.")
 	flag.IntVar(&aiLogContextMaxEvents, "ai-log-context-max-events", 10,
@@ -204,18 +200,6 @@ func main() {
 	flag.Parse()
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
-
-	// Warn about deprecated CLI flags that expose secrets in process listings
-	if aiAPIKey != "" {
-		ctrl.Log.WithName("setup").Info(
-			"WARNING: --ai-api-key flag is deprecated; use KUBE_ASSIST_AI_API_KEY env var instead",
-		)
-	}
-	if consoleBearerToken != "" {
-		ctrl.Log.WithName("setup").Info(
-			"WARNING: --console-bearer-token is deprecated; use CONSOLE_BEARER_TOKEN env var",
-		)
-	}
 
 	// if the enable-http2 flag is false (the default), http/2 should be disabled
 	// due to its vulnerabilities. More specifically, disabling http/2 will
@@ -336,10 +320,7 @@ func main() {
 			os.Exit(1)
 		}
 		var consoleOpts []datasource.ConsoleOption
-		// Flag takes precedence; fall back to env var (set by Helm secret ref).
-		if consoleBearerToken == "" {
-			consoleBearerToken = os.Getenv("CONSOLE_BEARER_TOKEN")
-		}
+		consoleBearerToken := os.Getenv("CONSOLE_BEARER_TOKEN")
 		if consoleBearerToken != "" {
 			consoleOpts = append(consoleOpts, datasource.WithBearerToken(consoleBearerToken))
 		}
@@ -368,7 +349,9 @@ func main() {
 	registry.MustRegister(flux.NewHelmReleaseChecker())
 	registry.MustRegister(flux.NewKustomizationChecker())
 	registry.MustRegister(flux.NewGitRepositoryChecker())
-	registry.MustRegister(resource.NewSecretChecker())
+	if enableSecretChecker {
+		registry.MustRegister(resource.NewSecretChecker())
+	}
 	registry.MustRegister(resource.NewPVCChecker())
 	registry.MustRegister(resource.NewQuotaChecker())
 	registry.MustRegister(resource.NewNetworkPolicyChecker())
@@ -382,7 +365,6 @@ func main() {
 	if enableAI {
 		aiConfig = ai.Config{
 			Provider:          aiProvider,
-			APIKey:            aiAPIKey,
 			Model:             aiModel,
 			ExplainModel:      aiExplainModel,
 			DailyTokenLimit:   aiDailyTokenLimit,
@@ -453,6 +435,13 @@ func main() {
 		Recorder:         mgr.GetEventRecorderFor("teamhealthrequest-controller"), //nolint:staticcheck
 		LogContextConfig: logCtxConfig,
 		Clientset:        clientset,
+		NotificationSecretNamespace: func() string {
+			ns := resolvePodNamespace()
+			if ns == "" {
+				setupLog.Info("POD_NAMESPACE not detected; TeamHealthRequest secretRef will default to request namespace")
+			}
+			return ns
+		}(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "TeamHealthRequest")
 		os.Exit(1)
@@ -533,4 +522,17 @@ func main() {
 		setupLog.Error(err, "problem running manager")
 		os.Exit(1)
 	}
+}
+
+func resolvePodNamespace() string {
+	if ns := strings.TrimSpace(os.Getenv("POD_NAMESPACE")); ns != "" {
+		return ns
+	}
+	// Fallback for in-cluster execution when downward API env is not set.
+	const saNSFile = "/var/run/secrets/kubernetes.io/serviceaccount/namespace"
+	raw, err := os.ReadFile(saNSFile)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(raw))
 }

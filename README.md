@@ -142,6 +142,8 @@ Built-in checkers:
 
 For exact checker logic and thresholds, see the implementations under `internal/checker/`.
 
+Note: the Secret checker is available in code but disabled by default in Helm (`checkers.secrets.enabled=false`) to avoid cluster-wide Secret read RBAC by default.
+
 ## Dashboard
 
 The dashboard is embedded in the operator binary (`go:embed`) and served from the same process.
@@ -168,6 +170,9 @@ helm install kube-assist charts/kube-assist \
 kubectl port-forward -n kube-assist-system svc/kube-assist-dashboard 9090:9090
 open http://localhost:9090
 ```
+
+Dashboard authentication is required by default. Set `dashboard.authToken` (or `dashboard.authTokenSecretRef`) for normal operation.  
+If you intentionally want an unauthenticated local dashboard, set `dashboard.allowUnauthenticated=true`.
 
 If `dashboard.authToken` is set, TLS must also be configured unless `dashboard.allowInsecureHttp=true` is explicitly set for local development.
 
@@ -261,6 +266,7 @@ Common values:
 |-----------|---------|-------------|
 | `dashboard.enabled` | `false` | Enable dashboard |
 | `dashboard.authToken` | `""` | Auth token for dashboard API |
+| `dashboard.allowUnauthenticated` | `false` | Explicitly allow unauthenticated dashboard mode (dev only) |
 | `dashboard.allowInsecureHttp` | `false` | Permit auth without TLS (dev only) |
 | `dashboard.tls.enabled` | `false` | Enable dashboard TLS |
 | `dashboard.maxSSEClients` | `100` | Max concurrent SSE clients |
@@ -281,6 +287,8 @@ Common values:
 | `networkPolicy.ingressMode` | `strict` | Ingress policy mode |
 | `datasource.type` | `kubernetes` | `kubernetes` or `console` |
 | `datasource.consoleURL` | `""` | Console backend URL (required for console mode) |
+| `checkers.secrets.enabled` | `false` | Enable Secret checker and its cluster-wide Secret read RBAC |
+| `notifications.secretRef.enabled` | `true` | Create namespaced RBAC for TeamHealthRequest `notify[].secretRef` resolution |
 | `ai.logContext.enabled` | `false` | Enable log/event enrichment for AI context |
 | `ai.logContext.maxEventsPerIssue` | `10` | Max events per issue for AI context |
 | `ai.logContext.maxLogLines` | `50` | Max log lines per crash-looping pod |
@@ -302,6 +310,7 @@ Full values reference:
 - Security headers enabled on dashboard responses
 - TLS required when auth token is set (unless explicitly overridden for local dev)
 - Configurable session TTL and request rate limiting
+- Notification `secretRef` lookups use namespace-scoped RBAC (operator namespace)
 - NetworkPolicy defaults enabled in chart
 
 ### Supply Chain and Release Artifacts
