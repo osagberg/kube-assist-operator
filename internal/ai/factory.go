@@ -38,7 +38,25 @@ func createSingleProvider(config Config) (Provider, error) {
 	resolvedConfig := config
 	resolvedConfig.APIKey = apiKey
 
-	switch strings.ToLower(config.Provider) {
+	providerName := strings.ToLower(config.Provider)
+
+	// Validate model against catalog if a model is specified
+	if resolvedConfig.Model != "" && providerName != ProviderNameNoop && providerName != "" {
+		catalog := DefaultCatalog()
+		models := catalog.ForProvider(providerName)
+		found := false
+		for _, m := range models {
+			if m.ID == resolvedConfig.Model {
+				found = true
+				break
+			}
+		}
+		if !found {
+			log.Info("Model not found in catalog, proceeding anyway", "provider", providerName, "model", resolvedConfig.Model)
+		}
+	}
+
+	switch providerName {
 	case ProviderNameOpenAI:
 		return NewOpenAIProvider(resolvedConfig), nil
 	case ProviderNameAnthropic:

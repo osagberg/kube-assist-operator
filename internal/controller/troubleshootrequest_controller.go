@@ -33,10 +33,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/tools/events"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+
+	"github.com/go-logr/logr"
 
 	assistv1alpha1 "github.com/osagberg/kube-assist-operator/api/v1alpha1"
 	"github.com/osagberg/kube-assist-operator/internal/checker"
@@ -56,14 +58,14 @@ type TroubleshootRequestReconciler struct {
 
 	// Registry is the checker registry (optional, for future use)
 	Registry *checker.Registry
-	Recorder events.EventRecorder
+	Recorder record.EventRecorder
 }
 
 // +kubebuilder:rbac:groups=assist.cluster.local,resources=troubleshootrequests,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=assist.cluster.local,resources=troubleshootrequests/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=assist.cluster.local,resources=troubleshootrequests/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=deployments;statefulsets;daemonsets;replicasets,verbs=get;list;watch
-// +kubebuilder:rbac:groups="",resources=pods;pods/log;events;configmaps,verbs=get;list;watch;create;update;patch
+// +kubebuilder:rbac:groups="",resources=pods;pods/log;events;configmaps,verbs=get;list;watch;create;update
 // +kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;watch
 
 func (r *TroubleshootRequestReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -89,31 +91,29 @@ func (r *TroubleshootRequestReconciler) Reconcile(ctx context.Context, req ctrl.
 		}).Inc()
 		return ctrl.Result{}, fmt.Errorf("failed to fetch TroubleshootRequest: %w", err)
 	}
-	// Save original for patch later
-	original := troubleshoot.DeepCopy()
+	// Set observed generation on every reconcile path
+	troubleshoot.Status.ObservedGeneration = troubleshoot.Generation
 
 	// Handle TTL cleanup for completed/failed requests
 	if troubleshoot.Status.Phase == assistv1alpha1.PhaseCompleted ||
 		troubleshoot.Status.Phase == assistv1alpha1.PhaseFailed {
-		if troubleshoot.Spec.TTLSecondsAfterFinished != nil && troubleshoot.Status.CompletedAt != nil {
-			ttl := time.Duration(*troubleshoot.Spec.TTLSecondsAfterFinished) * time.Second
-			deadline := troubleshoot.Status.CompletedAt.Add(ttl)
-			remaining := time.Until(deadline)
-			if remaining <= 0 {
-				log.Info("TTL expired, deleting TroubleshootRequest", "name", troubleshoot.Name)
-				return ctrl.Result{}, r.Delete(ctx, troubleshoot)
-			}
-			return ctrl.Result{RequeueAfter: remaining}, nil
-		}
-		return ctrl.Result{}, nil
+		return r.handleTTLCleanup(ctx, log, troubleshoot)
 	}
 
-	// Initialize timestamps if needed (will be saved at end)
-	if troubleshoot.Status.StartedAt == nil {
-		now := metav1.Now()
-		troubleshoot.Status.StartedAt = &now
+	// Idempotent: if already Running with StartedAt set, skip re-execution and requeue
+	if troubleshoot.Status.Phase == assistv1alpha1.PhaseRunning && troubleshoot.Status.StartedAt != nil {
+		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 	}
+
+	// Set phase to Running and persist immediately before running diagnostics
 	troubleshoot.Status.Phase = assistv1alpha1.PhaseRunning
+	now := metav1.Now()
+	troubleshoot.Status.StartedAt = &now
+	if err := r.Status().Update(ctx, troubleshoot); err != nil {
+		return ctrl.Result{}, err
+	}
+	// Save original for MergeFrom patch (after status update changed resourceVersion)
+	original := troubleshoot.DeepCopy()
 
 	log.Info("Troubleshooting workload",
 		"target", troubleshoot.Spec.Target.Name,
@@ -139,7 +139,7 @@ func (r *TroubleshootRequestReconciler) Reconcile(ctx context.Context, req ctrl.
 	r.setCondition(troubleshoot, assistv1alpha1.ConditionTargetFound, metav1.ConditionTrue,
 		"Found", fmt.Sprintf("Found %d pod(s)", len(pods)))
 	if r.Recorder != nil {
-		r.Recorder.Eventf(troubleshoot, nil, corev1.EventTypeNormal, "TargetFound", "TargetFound", "Found %d pod(s) for %s/%s", len(pods), troubleshoot.Spec.Target.Kind, troubleshoot.Spec.Target.Name)
+		r.Recorder.Eventf(troubleshoot, corev1.EventTypeNormal, "TargetFound", "Found %d pod(s) for %s/%s", len(pods), troubleshoot.Spec.Target.Kind, troubleshoot.Spec.Target.Name)
 	}
 
 	// Perform diagnostics
@@ -197,7 +197,7 @@ func (r *TroubleshootRequestReconciler) Reconcile(ctx context.Context, req ctrl.
 		troubleshoot.Status.Summary += " (partial data)"
 	}
 	troubleshoot.Status.Phase = assistv1alpha1.PhaseCompleted
-	now := metav1.Now()
+	now = metav1.Now()
 	troubleshoot.Status.CompletedAt = &now
 
 	r.setCondition(troubleshoot, assistv1alpha1.ConditionDiagnosed, metav1.ConditionTrue,
@@ -226,7 +226,7 @@ func (r *TroubleshootRequestReconciler) Reconcile(ctx context.Context, req ctrl.
 	r.updateIssuesMetrics(troubleshoot.Namespace, issues)
 
 	if r.Recorder != nil {
-		r.Recorder.Eventf(troubleshoot, nil, corev1.EventTypeNormal, "TroubleshootCompleted", "TroubleshootCompleted", "Found %d issue(s)", len(issues))
+		r.Recorder.Eventf(troubleshoot, corev1.EventTypeNormal, "TroubleshootCompleted", "Found %d issue(s)", len(issues))
 	}
 
 	log.Info("Troubleshooting completed", "issues", len(issues), "summary", troubleshoot.Status.Summary)
@@ -708,6 +708,20 @@ func (r *TroubleshootRequestReconciler) generateSummary(pods []corev1.Pod, issue
 	return fmt.Sprintf("%d warning issue(s) found", warning)
 }
 
+func (r *TroubleshootRequestReconciler) handleTTLCleanup(ctx context.Context, log logr.Logger, tr *assistv1alpha1.TroubleshootRequest) (ctrl.Result, error) {
+	if tr.Spec.TTLSecondsAfterFinished != nil && tr.Status.CompletedAt != nil {
+		ttl := time.Duration(*tr.Spec.TTLSecondsAfterFinished) * time.Second
+		deadline := tr.Status.CompletedAt.Add(ttl)
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			log.Info("TTL expired, deleting TroubleshootRequest", "name", tr.Name)
+			return ctrl.Result{}, r.Delete(ctx, tr)
+		}
+		return ctrl.Result{RequeueAfter: remaining}, nil
+	}
+	return ctrl.Result{}, nil
+}
+
 func (r *TroubleshootRequestReconciler) setFailed(ctx context.Context, original, tr *assistv1alpha1.TroubleshootRequest, message string) error {
 	log := logf.FromContext(ctx)
 	log.Info("Troubleshooting failed", "reason", message, "target", tr.Spec.Target.Name)
@@ -717,7 +731,7 @@ func (r *TroubleshootRequestReconciler) setFailed(ctx context.Context, original,
 	now := metav1.Now()
 	tr.Status.CompletedAt = &now
 	if r.Recorder != nil {
-		r.Recorder.Eventf(tr, nil, corev1.EventTypeWarning, "TroubleshootFailed", "TroubleshootFailed", "%s", message)
+		r.Recorder.Eventf(tr, corev1.EventTypeWarning, "TroubleshootFailed", "%s", message)
 	}
 
 	r.setCondition(tr, assistv1alpha1.ConditionComplete, metav1.ConditionFalse,
@@ -770,6 +784,7 @@ func (r *TroubleshootRequestReconciler) updateIssuesMetrics(namespace string, is
 func (r *TroubleshootRequestReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&assistv1alpha1.TroubleshootRequest{}).
+		Owns(&corev1.ConfigMap{}).
 		Named("troubleshootrequest").
 		Complete(r)
 }

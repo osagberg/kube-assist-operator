@@ -53,6 +53,33 @@ var validCheckerNames = map[CheckerName]bool{
 
 // ValidateCreate validates the TeamHealthRequest on creation.
 func (v *TeamHealthRequestCustomValidator) ValidateCreate(_ context.Context, hr *TeamHealthRequest) (admission.Warnings, error) {
+	allErrs := v.validateSpec(hr)
+	if len(allErrs) > 0 {
+		return nil, allErrs.ToAggregate()
+	}
+	return nil, nil
+}
+
+// ValidateUpdate validates the TeamHealthRequest on update.
+// Scope's currentNamespaceOnly is immutable after creation.
+func (v *TeamHealthRequestCustomValidator) ValidateUpdate(_ context.Context, oldHR, newHR *TeamHealthRequest) (admission.Warnings, error) {
+	allErrs := v.validateSpec(newHR)
+
+	specPath := field.NewPath("spec")
+
+	// Check scope immutability
+	if newHR.Spec.Scope.CurrentNamespaceOnly != oldHR.Spec.Scope.CurrentNamespaceOnly {
+		allErrs = append(allErrs, field.Forbidden(specPath.Child("scope", "currentNamespaceOnly"), "field is immutable"))
+	}
+
+	if len(allErrs) > 0 {
+		return nil, allErrs.ToAggregate()
+	}
+	return nil, nil
+}
+
+// validateSpec performs common validation for TeamHealthRequest spec.
+func (v *TeamHealthRequestCustomValidator) validateSpec(hr *TeamHealthRequest) field.ErrorList {
 	var allErrs field.ErrorList
 	specPath := field.NewPath("spec")
 
@@ -105,27 +132,18 @@ func (v *TeamHealthRequestCustomValidator) ValidateCreate(_ context.Context, hr 
 		}
 	}
 
-	if len(allErrs) > 0 {
-		return nil, allErrs.ToAggregate()
-	}
-	return nil, nil
-}
-
-// ValidateUpdate validates the TeamHealthRequest on update.
-// Scope's currentNamespaceOnly is immutable after creation.
-func (v *TeamHealthRequestCustomValidator) ValidateUpdate(_ context.Context, oldHR, newHR *TeamHealthRequest) (admission.Warnings, error) {
-	var allErrs field.ErrorList
-	specPath := field.NewPath("spec")
-
-	// Check scope immutability
-	if newHR.Spec.Scope.CurrentNamespaceOnly != oldHR.Spec.Scope.CurrentNamespaceOnly {
-		allErrs = append(allErrs, field.Forbidden(specPath.Child("scope", "currentNamespaceOnly"), "field is immutable"))
+	// Detect duplicate namespaces
+	if len(hr.Spec.Scope.Namespaces) > 0 {
+		seen := make(map[string]bool, len(hr.Spec.Scope.Namespaces))
+		for i, ns := range hr.Spec.Scope.Namespaces {
+			if seen[ns] {
+				allErrs = append(allErrs, field.Duplicate(specPath.Child("scope", "namespaces").Index(i), ns))
+			}
+			seen[ns] = true
+		}
 	}
 
-	if len(allErrs) > 0 {
-		return nil, allErrs.ToAggregate()
-	}
-	return nil, nil
+	return allErrs
 }
 
 // ValidateDelete validates the TeamHealthRequest on deletion.

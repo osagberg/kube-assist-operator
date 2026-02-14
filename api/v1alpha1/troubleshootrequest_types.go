@@ -105,6 +105,10 @@ type DiagnosticIssue struct {
 
 // TroubleshootRequestStatus defines the observed state of TroubleshootRequest
 type TroubleshootRequestStatus struct {
+	// observedGeneration is the most recent generation observed by the controller
+	// +optional
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
 	// phase indicates the current phase of the troubleshooting request
 	// +optional
 	Phase TroubleshootPhase `json:"phase,omitempty"`

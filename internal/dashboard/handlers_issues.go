@@ -174,7 +174,7 @@ func (s *Server) handleIssueSnooze(w http.ResponseWriter, r *http.Request) {
 		}
 		dur, err := time.ParseDuration(req.Duration)
 		if err != nil {
-			http.Error(w, "invalid duration: "+err.Error(), http.StatusBadRequest)
+			http.Error(w, "invalid duration format", http.StatusBadRequest)
 			return
 		}
 		if dur <= 0 {
@@ -235,17 +235,19 @@ func (s *Server) handleIssueStates(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	clusterID := r.URL.Query().Get("clusterId")
 
-	s.mu.RLock()
+	// PERF-004: delete expired entries in-place during reads
+	s.mu.Lock()
 	active := make(map[string]*IssueState)
 	if cs, ok := s.clusters[clusterID]; ok {
 		for k, st := range cs.issueStates {
 			if st.IsExpired() {
+				delete(cs.issueStates, k)
 				continue
 			}
 			active[k] = st
 		}
 	}
-	s.mu.RUnlock()
+	s.mu.Unlock()
 
 	if err := json.NewEncoder(w).Encode(active); err != nil {
 		log.Error(err, "Failed to encode response", "handler", "handleIssueStates")
@@ -413,8 +415,8 @@ func (s *Server) handlePostTroubleshoot(w http.ResponseWriter, r *http.Request) 
 	}
 
 	if err := s.k8sWriter.Create(r.Context(), cr); err != nil {
-		log.Error(err, "Failed to create TroubleshootRequest")
-		http.Error(w, "Failed to create TroubleshootRequest: "+err.Error(), http.StatusInternalServerError)
+		log.Error(err, "Failed to create TroubleshootRequest", "namespace", cr.Namespace, "target", cr.Spec.Target.Name)
+		http.Error(w, "Failed to create TroubleshootRequest", http.StatusInternalServerError)
 		return
 	}
 
@@ -447,8 +449,8 @@ func (s *Server) handleListTroubleshoot(w http.ResponseWriter, r *http.Request) 
 	}
 
 	if err := s.k8sWriter.List(r.Context(), &list, opts...); err != nil {
-		log.Error(err, "Failed to list TroubleshootRequests")
-		http.Error(w, "Failed to list TroubleshootRequests: "+err.Error(), http.StatusInternalServerError)
+		log.Error(err, "Failed to list TroubleshootRequests", "namespace", ns)
+		http.Error(w, "Failed to list TroubleshootRequests", http.StatusInternalServerError)
 		return
 	}
 

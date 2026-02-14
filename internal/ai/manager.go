@@ -18,6 +18,7 @@ package ai
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -86,18 +87,23 @@ func (m *Manager) Analyze(ctx context.Context, request AnalysisRequest) (*Analys
 	cache := m.cache
 	m.mu.RUnlock()
 
+	if provider == nil {
+		return nil, ErrNotConfigured
+	}
+
 	// Check cache
+	providerName := provider.Name()
 	if cache != nil {
-		if cached, ok := cache.Get(request); ok {
+		if cached, ok := cache.Get(request, providerName, ""); ok {
 			RecordCacheHit()
 			return cached, nil
 		}
 		RecordCacheMiss()
 	}
 
-	// Check budget (estimate ~2000 tokens per issue, minimum 500)
+	// Atomically check and reserve budget (estimate ~2000 tokens per issue, minimum 500)
 	estimatedTokens := max(len(request.Issues)*2000, 500)
-	if err := budget.CheckAllowance(estimatedTokens); err != nil {
+	if err := budget.TryConsume(estimatedTokens); err != nil {
 		RecordBudgetExceeded(err.Error())
 		return nil, fmt.Errorf("AI budget exceeded: %w", err)
 	}
@@ -114,29 +120,56 @@ func (m *Manager) Analyze(ctx context.Context, request AnalysisRequest) (*Analys
 	duration := time.Since(start)
 
 	if err != nil {
-		if m.cb != nil {
-			m.cb.RecordFailure()
+		// Handle 429 rate-limit: retry once after delay, don't count toward circuit breaker
+		var rle *rateLimitError
+		if errors.As(err, &rle) {
+			if m.cb != nil {
+				m.cb.RecordRateLimit()
+			}
+			delay := rle.retryAfter
+			log.Info("Rate limited by AI provider, retrying", "delay", delay, "provider", provider.Name())
+			select {
+			case <-time.After(delay):
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+			start = time.Now()
+			resp, err = provider.Analyze(ctx, request)
+			duration = time.Since(start)
 		}
-		mode := "analyze"
-		if request.ExplainMode {
-			mode = "explain"
+		if err != nil {
+			if m.cb != nil && !errors.As(err, &rle) {
+				m.cb.RecordFailure()
+			}
+			// Release reserved budget on failure
+			if budget != nil {
+				budget.ReleaseUnused(estimatedTokens)
+			}
+			mode := "analyze"
+			if request.ExplainMode {
+				mode = "explain"
+			}
+			RecordAICall(provider.Name(), mode, "error", 0, duration)
+			return nil, fmt.Errorf("AI analysis failed (%s): %w", provider.Name(), err)
 		}
-		RecordAICall(provider.Name(), mode, "error", 0, duration)
-		return nil, fmt.Errorf("AI analysis failed (%s): %w", provider.Name(), err)
 	}
 
 	if m.cb != nil {
 		m.cb.RecordSuccess()
 	}
 
-	// Record usage
+	// Adjust budget: release the difference between estimated and actual tokens.
+	// TryConsume already reserved estimatedTokens, so return the unused portion.
 	if budget != nil && resp != nil {
-		budget.RecordUsage(resp.TokensUsed)
+		unused := estimatedTokens - resp.TokensUsed
+		if unused > 0 {
+			budget.ReleaseUnused(unused)
+		}
 	}
 
 	// Cache result
 	if cache != nil && resp != nil {
-		cache.Put(request, resp)
+		cache.Put(request, resp, providerName, "")
 	}
 
 	// Record metrics

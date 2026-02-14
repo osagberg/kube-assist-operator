@@ -18,11 +18,20 @@ limitations under the License.
 package plugin
 
 import (
+	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/google/cel-go/cel"
 )
+
+// celCostLimit is the maximum runtime cost for CEL program evaluation.
+// This prevents denial-of-service via expensive expressions.
+const celCostLimit = 1_000_000
+
+// celEvalTimeout is the maximum duration for a single CEL evaluation.
+const celEvalTimeout = 30 * time.Second
 
 // CompiledRule holds a pre-compiled CEL program ready for evaluation.
 type CompiledRule struct {
@@ -53,7 +62,7 @@ func (e *Evaluator) Compile(expr string) (*CompiledRule, error) {
 		return nil, fmt.Errorf("CEL compilation error: %w", issues.Err())
 	}
 
-	prg, err := e.env.Program(ast)
+	prg, err := e.env.Program(ast, cel.CostLimit(celCostLimit))
 	if err != nil {
 		return nil, fmt.Errorf("CEL program creation error: %w", err)
 	}
@@ -64,7 +73,10 @@ func (e *Evaluator) Compile(expr string) (*CompiledRule, error) {
 // Evaluate runs a compiled CEL expression against an unstructured object
 // and returns whether the condition is true.
 func (e *Evaluator) Evaluate(compiled *CompiledRule, object map[string]any) (bool, error) {
-	out, _, err := compiled.program.Eval(map[string]any{
+	ctx, cancel := context.WithTimeout(context.Background(), celEvalTimeout)
+	defer cancel()
+
+	out, _, err := compiled.program.ContextEval(ctx, map[string]any{
 		"object": object,
 	})
 	if err != nil {
@@ -80,7 +92,10 @@ func (e *Evaluator) Evaluate(compiled *CompiledRule, object map[string]any) (boo
 
 // EvaluateString runs a compiled CEL expression and returns the string result.
 func (e *Evaluator) EvaluateString(compiled *CompiledRule, object map[string]any) (string, error) {
-	out, _, err := compiled.program.Eval(map[string]any{"object": object})
+	ctx, cancel := context.WithTimeout(context.Background(), celEvalTimeout)
+	defer cancel()
+
+	out, _, err := compiled.program.ContextEval(ctx, map[string]any{"object": object})
 	if err != nil {
 		return "", fmt.Errorf("CEL evaluation error: %w", err)
 	}
@@ -105,12 +120,15 @@ func (e *Evaluator) EvaluateMessage(msgExpr string, object map[string]any) (stri
 		return "", fmt.Errorf("CEL message compilation error: %w", issues.Err())
 	}
 
-	prg, err := e.env.Program(ast)
+	prg, err := e.env.Program(ast, cel.CostLimit(celCostLimit))
 	if err != nil {
 		return "", fmt.Errorf("CEL message program error: %w", err)
 	}
 
-	out, _, err := prg.Eval(map[string]any{
+	ctx, cancel := context.WithTimeout(context.Background(), celEvalTimeout)
+	defer cancel()
+
+	out, _, err := prg.ContextEval(ctx, map[string]any{
 		"object": object,
 	})
 	if err != nil {

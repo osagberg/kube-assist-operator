@@ -27,9 +27,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	appsv1 "k8s.io/api/apps/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/metrics"
 
 	assistv1alpha1 "github.com/osagberg/kube-assist-operator/api/v1alpha1"
 	"github.com/osagberg/kube-assist-operator/internal/ai"
@@ -39,6 +41,17 @@ import (
 	"github.com/osagberg/kube-assist-operator/internal/history"
 	"github.com/osagberg/kube-assist-operator/internal/scope"
 )
+
+// PERF-006: health check duration histogram
+var healthCheckDuration = prometheus.NewHistogram(prometheus.HistogramOpts{
+	Name:    "kubeassist_dashboard_health_check_duration_seconds",
+	Help:    "Duration of dashboard health check polling cycles",
+	Buckets: prometheus.DefBuckets,
+})
+
+func init() {
+	metrics.Registry.MustRegister(healthCheckDuration)
+}
 
 // runHealthChecker periodically runs health checks.
 // The first check is already performed synchronously in Start().
@@ -63,26 +76,32 @@ func (s *Server) runHealthChecker(ctx context.Context) {
 
 // broadcastPhase sends a lightweight SSE update with just the current check phase
 // for a specific cluster, so the frontend can show a pipeline progress indicator.
+// CONCURRENCY-013: brief write lock for state update, then RLock for broadcast.
 func (s *Server) broadcastPhase(clusterID, phase string) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	cs, ok := s.clusters[clusterID]
 	if !ok || cs.latest == nil {
+		s.mu.Unlock()
 		return
 	}
 	if cs.latest.AIStatus == nil {
 		cs.latest.AIStatus = &AIStatus{}
 	}
 	cs.latest.AIStatus.CheckPhase = phase
+	update := *cs.latest
+	s.mu.Unlock()
+
+	s.mu.RLock()
 	for clientCh, subscribedID := range s.clients {
 		if subscribedID != "" && subscribedID != clusterID {
 			continue
 		}
 		select {
-		case clientCh <- *cs.latest:
+		case clientCh <- update:
 		default:
 		}
 	}
+	s.mu.RUnlock()
 }
 
 // runAIAnalysisForCluster handles AI caching, throttling, and enhancement of check results
@@ -105,13 +124,14 @@ func (s *Server) runAIAnalysisForCluster(
 		return nil
 	}
 
-	// Read cached state under lock
+	// AI-012: read model name under lock for cost estimation
 	s.mu.Lock()
 	cs.checkCounter++
 	hashChanged := issueHash != cs.lastIssueHash
 	cachedResult := cs.lastAIResult
 	cachedEnhancements := cs.lastAIEnhancements
 	cachedInsights := cs.lastCausalInsights
+	aiModel := s.aiConfig.Model
 	s.mu.Unlock()
 
 	if !hashChanged && cachedResult != nil {
@@ -145,7 +165,7 @@ func (s *Server) runAIAnalysisForCluster(
 			Provider:         provider.Name(),
 			IssuesEnhanced:   enhanced,
 			TokensUsed:       tokens,
-			EstimatedCostUSD: estimateCost(provider.Name(), tokens),
+			EstimatedCostUSD: estimateCost(provider.Name(), aiModel, tokens),
 			IssuesCapped:     totalCount > enhanced && totalCount > 0,
 			TotalIssueCount:  totalCount,
 			CheckPhase:       "done",
@@ -292,7 +312,12 @@ func (s *Server) runCheck(ctx context.Context) {
 					return
 				}
 				defer func() { <-sem }()
-				s.runCheckForCluster(ctx, clusterID, cds.ForCluster(clusterID))
+				clusterDS, err := cds.ForCluster(clusterID)
+				if err != nil {
+					log.Error(err, "Failed to get datasource for cluster", "cluster", clusterID)
+					return
+				}
+				s.runCheckForCluster(ctx, clusterID, clusterDS)
 			})
 		}
 		wg.Wait()
@@ -303,6 +328,10 @@ func (s *Server) runCheck(ctx context.Context) {
 
 // runCheckForCluster performs a health check for a single cluster and broadcasts results.
 func (s *Server) runCheckForCluster(ctx context.Context, clusterID string, ds datasource.DataSource) {
+	checkStart := time.Now()
+	defer func() {
+		healthCheckDuration.Observe(time.Since(checkStart).Seconds())
+	}()
 	resolver := scope.NewResolver(ds, "default")
 	namespaces, err := resolver.ResolveNamespaces(ctx, assistv1alpha1.ScopeConfig{
 		NamespaceSelector: &metav1.LabelSelector{},
@@ -706,11 +735,11 @@ func applyCausalInsights(cc *causal.CausalContext, insights []ai.CausalGroupInsi
 	}
 }
 
-// estimateCost estimates the USD cost of an AI call based on provider and tokens.
-func estimateCost(provider string, tokens int) float64 {
+// estimateCost estimates the USD cost of an AI call based on provider, model, and tokens.
+func estimateCost(provider, model string, tokens int) float64 {
 	if tokens <= 0 {
 		return 0
 	}
-	costPer1K := ai.CostPer1KTokens(provider, "")
+	costPer1K := ai.CostPer1KTokens(provider, model)
 	return float64(tokens) / 1000.0 * costPer1K
 }

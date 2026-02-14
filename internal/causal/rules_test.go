@@ -25,6 +25,7 @@ import (
 )
 
 func TestOOMQuotaRule(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 2, 6, 12, 0, 0, 0, time.UTC)
 	rules := []CrossCheckerRule{oomQuotaRule()}
 
@@ -91,6 +92,7 @@ func TestOOMQuotaRule(t *testing.T) {
 }
 
 func TestCrashImagePullRule(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 2, 6, 12, 0, 0, 0, time.UTC)
 	rules := []CrossCheckerRule{crashImagePullRule()}
 
@@ -149,6 +151,7 @@ func TestCrashImagePullRule(t *testing.T) {
 }
 
 func TestFluxChainRule(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 2, 6, 12, 0, 0, 0, time.UTC)
 	rules := []CrossCheckerRule{fluxChainRule()}
 
@@ -212,6 +215,7 @@ func TestFluxChainRule(t *testing.T) {
 }
 
 func TestPVCWorkloadRule(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 2, 6, 12, 0, 0, 0, time.UTC)
 	rules := []CrossCheckerRule{pvcWorkloadRule()}
 
@@ -257,6 +261,7 @@ func TestPVCWorkloadRule(t *testing.T) {
 }
 
 func TestDefaultRules_Count(t *testing.T) {
+	t.Parallel()
 	rules := DefaultRules()
 	if len(rules) != 4 {
 		t.Errorf("DefaultRules() = %d rules, want 4", len(rules))

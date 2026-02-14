@@ -14,13 +14,24 @@ rules:
       - pods
       - pods/log
       - namespaces
-      - secrets
       - persistentvolumeclaims
       - resourcequotas
     verbs:
       - get
       - list
       - watch
+  {{- if .Values.checkers.secrets.enabled }}
+  # SecretChecker: read-only secrets access for TLS certificate expiry checks.
+  # Only metadata and tls.crt are inspected; secret values are never logged or stored.
+  - apiGroups:
+      - ""
+    resources:
+      - secrets
+    verbs:
+      - get
+      - list
+      - watch
+  {{- end }}
   - apiGroups:
       - ""
     resources:
@@ -84,7 +95,8 @@ rules:
       - get
       - list
       - watch
-  # TroubleshootRequest CRD
+  # TroubleshootRequest CRD — full CRUD follows standard kubebuilder controller convention
+  # (the controller owns and reconciles these resources).
   - apiGroups:
       - assist.cluster.local
     resources:

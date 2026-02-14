@@ -74,6 +74,10 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 
+	// CONCURRENCY-010: disable write timeout for long-lived SSE connections
+	rc := http.NewResponseController(w)
+	_ = rc.SetWriteDeadline(time.Time{})
+
 	clusterID := r.URL.Query().Get("clusterId")
 	clientCh := make(chan HealthUpdate, s.sseBufferSize)
 
@@ -102,7 +106,10 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 			s.mu.RUnlock()
 			return
 		}
-		_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
+		if _, err := fmt.Fprintf(w, "data: %s\n\n", data); err != nil {
+			s.mu.RUnlock()
+			return
+		}
 		if f, ok := w.(http.Flusher); ok {
 			f.Flush()
 		}
@@ -115,7 +122,9 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 					log.Error(err, "Failed to marshal SSE initial state")
 					break
 				}
-				_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
+				if _, err := fmt.Fprintf(w, "data: %s\n\n", data); err != nil {
+					break
+				}
 				if f, ok := w.(http.Flusher); ok {
 					f.Flush()
 				}
@@ -136,7 +145,10 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 				log.Error(err, "Failed to marshal SSE update")
 				continue
 			}
-			_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
+			// CONCURRENCY-012: break on write error
+			if _, err := fmt.Fprintf(w, "data: %s\n\n", data); err != nil {
+				return
+			}
 			if f, ok := w.(http.Flusher); ok {
 				f.Flush()
 			}
@@ -160,6 +172,11 @@ func (s *Server) handleTriggerCheck(w http.ResponseWriter, r *http.Request) {
 	}
 
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Error(fmt.Errorf("panic: %v", r), "recovered panic in trigger check goroutine")
+			}
+		}()
 		defer s.checkInFlight.Store(false)
 		ctx, cancel := context.WithTimeout(context.Background(), s.checkTimeout)
 		defer cancel()
@@ -293,11 +310,15 @@ func (s *Server) handleFleetSummary(w http.ResponseWriter, _ *http.Request) {
 }
 
 // handleCapabilities returns feature flags so the frontend can hide unsupported actions.
-func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleCapabilities(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
+	// CONCURRENCY-006: read chatEnabled/aiEnabled under lock
+	s.mu.RLock()
+	chatOn := s.chatEnabled && s.aiEnabled
+	s.mu.RUnlock()
 	resp := map[string]bool{
 		"troubleshootCreate": s.k8sWriter != nil,
-		"chat":               s.chatEnabled && s.aiEnabled,
+		"chat":               chatOn,
 	}
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
 		log.Error(err, "Failed to encode capabilities response")

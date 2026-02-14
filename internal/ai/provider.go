@@ -306,6 +306,19 @@ func ParseResponse(content string, tokensUsed int, providerName string) *Analysi
 
 	cleaned := fixInvalidJSONEscapes(extractJSON(content))
 	if err := json.Unmarshal([]byte(cleaned), &result); err != nil {
+		// Attempt partial JSON parse for truncated responses
+		partial := tryPartialParse(cleaned)
+		if len(partial.Suggestions) > 0 {
+			log.Info("Using partial AI response parse", "provider", providerName, "issueCount", len(partial.Suggestions))
+			return &AnalysisResponse{
+				EnhancedSuggestions: partial.Suggestions,
+				CausalInsights:      partial.CausalInsights,
+				Summary:             partial.Summary,
+				RawContent:          content,
+				TokensUsed:          tokensUsed,
+				Truncated:           true,
+			}
+		}
 		preview := content
 		if len(preview) > 200 {
 			preview = preview[:200] + "..."
@@ -363,6 +376,41 @@ func ParseResponse(content string, tokensUsed int, providerName string) *Analysi
 		RawContent:          content,
 		TokensUsed:          tokensUsed,
 	}
+}
+
+// partialResult holds what we could parse from a truncated response.
+type partialResult struct {
+	Suggestions    map[string]EnhancedSuggestion
+	CausalInsights []CausalGroupInsight
+	Summary        string
+}
+
+// tryPartialParse attempts to extract partial JSON from a truncated response
+// using json.Decoder to read as far as possible.
+func tryPartialParse(content string) partialResult {
+	result := partialResult{Suggestions: make(map[string]EnhancedSuggestion)}
+
+	// Try progressively shorter suffixes to find valid JSON
+	// by closing unclosed braces/brackets
+	for _, suffix := range []string{"}", "}}", "}}}", "]}", "]}}"} {
+		var raw struct {
+			Suggestions    map[string]EnhancedSuggestion `json:"suggestions"`
+			CausalInsights []CausalGroupInsight          `json:"causalInsights"`
+			Summary        string                        `json:"summary"`
+		}
+		attempt := content + suffix
+		dec := json.NewDecoder(strings.NewReader(attempt))
+		if err := dec.Decode(&raw); err == nil {
+			if len(raw.Suggestions) > 0 {
+				result.Suggestions = raw.Suggestions
+				result.CausalInsights = raw.CausalInsights
+				result.Summary = raw.Summary
+				return result
+			}
+		}
+	}
+
+	return result
 }
 
 // ExplainResponse contains an AI-generated narrative cluster health summary.

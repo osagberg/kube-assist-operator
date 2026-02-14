@@ -267,7 +267,7 @@ func TestOpenAI_DoRequest_StatusCodes(t *testing.T) {
 			name:       "429 Rate Limited",
 			statusCode: http.StatusTooManyRequests,
 			body:       `{"error":{"message":"rate limited"}}`,
-			wantErr:    "API error (status 429)",
+			wantErr:    "rate limited (status 429)",
 		},
 		{
 			name:       "500 Internal Error",

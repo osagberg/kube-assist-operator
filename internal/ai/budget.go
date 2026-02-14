@@ -19,6 +19,7 @@ package ai
 import (
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -77,6 +78,50 @@ func (b *Budget) CheckAllowance(estimatedTokens int) error {
 	return nil
 }
 
+// TryConsume atomically checks allowance and reserves tokens under a single
+// write lock, eliminating the check-then-act race in CheckAllowance+RecordUsage.
+func (b *Budget) TryConsume(estimatedTokens int) error {
+	if b == nil {
+		return nil
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	now := time.Now()
+	// First pass: check all windows
+	for i, w := range b.windows {
+		u := b.usage[i]
+		if now.Sub(u.startedAt) >= w.Duration {
+			continue
+		}
+		if u.tokens+estimatedTokens > w.Limit {
+			return fmt.Errorf("%w: %s window (%d/%d tokens)", ErrBudgetExceeded, w.Name, u.tokens, w.Limit)
+		}
+	}
+	// Second pass: reserve tokens, resetting expired windows
+	for i, w := range b.windows {
+		if now.Sub(b.usage[i].startedAt) >= w.Duration {
+			b.usage[i] = windowUsage{startedAt: now}
+		}
+		b.usage[i].tokens += estimatedTokens
+	}
+	return nil
+}
+
+// ReleaseUnused returns unused reserved tokens back to the budget.
+func (b *Budget) ReleaseUnused(tokens int) {
+	if b == nil || tokens <= 0 {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for i := range b.usage {
+		b.usage[i].tokens -= tokens
+		if b.usage[i].tokens < 0 {
+			b.usage[i].tokens = 0
+		}
+	}
+}
+
 // RecordUsage records token consumption, resetting expired windows.
 func (b *Budget) RecordUsage(tokens int) {
 	if b == nil {
@@ -122,4 +167,45 @@ type WindowUsage struct {
 	Name  string
 	Limit int
 	Used  int
+}
+
+// ChatBudget tracks aggregate token consumption across all chat sessions.
+// It uses an atomic counter for lock-free reads and a configurable maximum.
+type ChatBudget struct {
+	used atomic.Int64
+	max  int64
+}
+
+// NewChatBudget creates an aggregate chat token budget. Pass 0 for unlimited.
+func NewChatBudget(maxTokens int64) *ChatBudget {
+	if maxTokens <= 0 {
+		return nil
+	}
+	return &ChatBudget{max: maxTokens}
+}
+
+// TryChatConsume checks the aggregate chat budget and reserves tokens.
+// Returns an error if the aggregate limit would be exceeded.
+func (cb *ChatBudget) TryChatConsume(tokens int) error {
+	if cb == nil {
+		return nil
+	}
+	for {
+		cur := cb.used.Load()
+		next := cur + int64(tokens)
+		if next > cb.max {
+			return fmt.Errorf("%w: chat aggregate (%d/%d tokens)", ErrBudgetExceeded, cur, cb.max)
+		}
+		if cb.used.CompareAndSwap(cur, next) {
+			return nil
+		}
+	}
+}
+
+// ChatUsed returns the current aggregate chat token usage.
+func (cb *ChatBudget) ChatUsed() int64 {
+	if cb == nil {
+		return 0
+	}
+	return cb.used.Load()
 }

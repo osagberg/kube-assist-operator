@@ -21,19 +21,23 @@ package console
 
 import (
 	"fmt"
-	"log/slog"
 	"sort"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/clientcmd"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/osagberg/kube-assist-operator/internal/datasource"
 )
 
+var log = logf.Log.WithName("console-aggregator")
+
 // Aggregator manages multiple Kubernetes client.Reader instances,
 // one per cluster, keyed by cluster ID.
 type Aggregator struct {
+	// clusters is set during construction and MUST NOT be modified after NewAggregator returns.
+	// All reads are safe without synchronization because the map is immutable after init.
 	clusters map[string]client.Reader
 	scheme   *runtime.Scheme
 }
@@ -62,7 +66,7 @@ func NewAggregator(configs []ClusterConfig) (*Aggregator, error) {
 		}
 
 		clusters[cfg.ID] = c
-		slog.Info("Registered cluster", "id", cfg.ID, "kubeconfig", cfg.KubeconfigPath)
+		log.Info("Registered cluster", "id", cfg.ID, "kubeconfig", cfg.KubeconfigPath)
 	}
 
 	return &Aggregator{clusters: clusters, scheme: s}, nil

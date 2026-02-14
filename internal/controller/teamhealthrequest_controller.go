@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"math"
 	"net/url"
 	"time"
@@ -30,7 +31,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/tools/events"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -63,7 +64,7 @@ type TeamHealthRequestReconciler struct {
 	Correlator       *causal.Correlator
 	NotifierRegistry *notifier.Registry
 	NotifySem        chan struct{}
-	Recorder         events.EventRecorder
+	Recorder         record.EventRecorder
 	LogContextConfig *checker.LogContextConfig
 	Clientset        kubernetes.Interface
 }
@@ -74,6 +75,7 @@ type TeamHealthRequestReconciler struct {
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
 // +kubebuilder:rbac:groups=apps,resources=deployments;statefulsets;daemonsets;replicasets,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=pods;events,verbs=get;list;watch
+// TODO(agent-5): restrict secret RBAC in Helm chart clusterrole
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get
 // +kubebuilder:rbac:groups=helm.toolkit.fluxcd.io,resources=helmreleases,verbs=get;list;watch
 // +kubebuilder:rbac:groups=kustomize.toolkit.fluxcd.io,resources=kustomizations,verbs=get;list;watch
@@ -102,6 +104,9 @@ func (r *TeamHealthRequestReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	// Save original for patch later
 	original := healthReq.DeepCopy()
 
+	// Set observed generation on every reconcile path
+	healthReq.Status.ObservedGeneration = healthReq.Generation
+
 	// Handle TTL cleanup for completed/failed requests
 	if healthReq.Status.Phase == assistv1alpha1.TeamHealthPhaseCompleted ||
 		healthReq.Status.Phase == assistv1alpha1.TeamHealthPhaseFailed {
@@ -120,6 +125,10 @@ func (r *TeamHealthRequestReconciler) Reconcile(ctx context.Context, req ctrl.Re
 
 	// Initialize status
 	healthReq.Status.Phase = assistv1alpha1.TeamHealthPhaseRunning
+	if healthReq.Status.StartedAt == nil {
+		now := metav1.Now()
+		healthReq.Status.StartedAt = &now
+	}
 
 	log.Info("Processing TeamHealthRequest", "name", healthReq.Name)
 
@@ -238,7 +247,7 @@ func (r *TeamHealthRequestReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	}
 
 	if r.Recorder != nil {
-		r.Recorder.Eventf(healthReq, nil, corev1.EventTypeNormal, "HealthCheckCompleted", "HealthCheckCompleted", "Checked %d namespace(s): %d healthy, %d issue(s)", len(namespaces), agg.totalHealthy, agg.totalIssues)
+		r.Recorder.Eventf(healthReq, corev1.EventTypeNormal, "HealthCheckCompleted", "Checked %d namespace(s): %d healthy, %d issue(s)", len(namespaces), agg.totalHealthy, agg.totalIssues)
 	}
 
 	log.Info("TeamHealthRequest completed",
@@ -375,7 +384,7 @@ func (r *TeamHealthRequestReconciler) setFailed(
 	hr.Status.LastCheckTime = &now
 	hr.Status.CompletedAt = &now
 	if r.Recorder != nil {
-		r.Recorder.Eventf(hr, nil, corev1.EventTypeWarning, "HealthCheckFailed", "HealthCheckFailed", "%s", message)
+		r.Recorder.Eventf(hr, corev1.EventTypeWarning, "HealthCheckFailed", "%s", message)
 	}
 
 	r.setCondition(hr, assistv1alpha1.TeamHealthConditionComplete, metav1.ConditionFalse,
@@ -415,6 +424,11 @@ func (r *TeamHealthRequestReconciler) launchNotifications(
 		case r.NotifySem <- struct{}{}:
 			go func() {
 				defer func() { <-r.NotifySem }()
+				defer func() {
+					if r := recover(); r != nil {
+						slog.Error("recovered panic in notification goroutine", "panic", r)
+					}
+				}()
 				notifyCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 				defer cancel()
 				notifyCtx = logf.IntoContext(notifyCtx, logf.FromContext(ctx))
@@ -426,6 +440,11 @@ func (r *TeamHealthRequestReconciler) launchNotifications(
 		}
 	} else {
 		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					slog.Error("recovered panic in notification goroutine", "panic", r)
+				}
+			}()
 			notifyCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			notifyCtx = logf.IntoContext(notifyCtx, logf.FromContext(ctx))

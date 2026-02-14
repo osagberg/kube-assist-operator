@@ -100,20 +100,27 @@ func NewCircuitBreaker(threshold int, timeout time.Duration, opts ...CircuitBrea
 // call. In HalfOpen, subsequent calls are rejected until the probe result is recorded.
 func (cb *CircuitBreaker) Allow() bool {
 	cb.mu.Lock()
-	defer cb.mu.Unlock()
-
+	var transition *stateTransition
 	switch cb.state {
 	case CircuitClosed:
+		cb.mu.Unlock()
 		return true
 	case CircuitOpen:
 		if cb.nowFunc().Sub(cb.lastFailureTime) >= cb.resetTimeout {
-			cb.setState(CircuitHalfOpen)
+			transition = cb.setStateLocked(CircuitHalfOpen)
+			cb.mu.Unlock()
+			if transition != nil {
+				transition.callback(transition.from, transition.to)
+			}
 			return true
 		}
+		cb.mu.Unlock()
 		return false
 	case CircuitHalfOpen:
+		cb.mu.Unlock()
 		return false
 	}
+	cb.mu.Unlock()
 	return false
 }
 
@@ -121,11 +128,14 @@ func (cb *CircuitBreaker) Allow() bool {
 // and closes the circuit if it was half-open.
 func (cb *CircuitBreaker) RecordSuccess() {
 	cb.mu.Lock()
-	defer cb.mu.Unlock()
-
 	cb.consecutiveFailures = 0
+	var transition *stateTransition
 	if cb.state == CircuitHalfOpen {
-		cb.setState(CircuitClosed)
+		transition = cb.setStateLocked(CircuitClosed)
+	}
+	cb.mu.Unlock()
+	if transition != nil {
+		transition.callback(transition.from, transition.to)
 	}
 }
 
@@ -133,14 +143,25 @@ func (cb *CircuitBreaker) RecordSuccess() {
 // the circuit when the threshold is reached, or re-opens it if half-open.
 func (cb *CircuitBreaker) RecordFailure() {
 	cb.mu.Lock()
-	defer cb.mu.Unlock()
-
 	cb.consecutiveFailures++
 	cb.lastFailureTime = cb.nowFunc()
-
+	var transition *stateTransition
 	if cb.state == CircuitHalfOpen || cb.consecutiveFailures >= cb.failureThreshold {
-		cb.setState(CircuitOpen)
+		transition = cb.setStateLocked(CircuitOpen)
 	}
+	cb.mu.Unlock()
+	if transition != nil {
+		transition.callback(transition.from, transition.to)
+	}
+}
+
+// RecordRateLimit records a 429 rate-limit response. It resets the half-open
+// timer so the provider gets another chance after resetTimeout, but does NOT
+// increment the failure counter.
+func (cb *CircuitBreaker) RecordRateLimit() {
+	cb.mu.Lock()
+	cb.lastFailureTime = cb.nowFunc()
+	cb.mu.Unlock()
 }
 
 // State returns the current circuit state (thread-safe).
@@ -150,10 +171,20 @@ func (cb *CircuitBreaker) State() CircuitState {
 	return cb.state
 }
 
-func (cb *CircuitBreaker) setState(newState CircuitState) {
+// stateTransition captures a pending callback to invoke outside the lock.
+type stateTransition struct {
+	from, to CircuitState
+	callback func(from, to CircuitState)
+}
+
+// setStateLocked records the state change under lock and returns a transition
+// to call after the lock is released. Returns nil if no callback is needed.
+// Caller MUST hold cb.mu.
+func (cb *CircuitBreaker) setStateLocked(newState CircuitState) *stateTransition {
 	old := cb.state
 	cb.state = newState
 	if cb.onStateChange != nil && old != newState {
-		cb.onStateChange(old, newState)
+		return &stateTransition{from: old, to: newState, callback: cb.onStateChange}
 	}
+	return nil
 }

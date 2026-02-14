@@ -156,10 +156,31 @@ func (s *Sanitizer) SanitizeResourceName(name string) string {
 func (s *Sanitizer) SanitizeAnalysisRequest(req AnalysisRequest) AnalysisRequest {
 	sanitized := AnalysisRequest{
 		ClusterContext: req.ClusterContext, // Cluster context is generally safe
-		CausalContext:  req.CausalContext,  // Causal context is pre-sanitized
 		MaxTokens:      req.MaxTokens,
 		ExplainMode:    req.ExplainMode,
-		ExplainContext: req.ExplainContext,
+		ExplainContext: s.SanitizeString(req.ExplainContext),
+	}
+
+	// Sanitize causal context fields
+	if req.CausalContext != nil {
+		cc := *req.CausalContext
+		sanitizedGroups := make([]CausalGroupSummary, len(cc.Groups))
+		for i, g := range cc.Groups {
+			sanitizedResources := make([]string, len(g.Resources))
+			for j, r := range g.Resources {
+				sanitizedResources[j] = s.SanitizeString(r)
+			}
+			sanitizedGroups[i] = CausalGroupSummary{
+				Rule:       g.Rule,
+				Title:      s.SanitizeString(g.Title),
+				RootCause:  s.SanitizeString(g.RootCause),
+				Severity:   g.Severity,
+				Confidence: g.Confidence,
+				Resources:  sanitizedResources,
+			}
+		}
+		cc.Groups = sanitizedGroups
+		sanitized.CausalContext = &cc
 	}
 
 	sanitized.Issues = make([]IssueContext, len(req.Issues))

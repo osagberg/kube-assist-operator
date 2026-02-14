@@ -223,6 +223,10 @@ const (
 
 // TeamHealthRequestStatus defines the observed state of TeamHealthRequest
 type TeamHealthRequestStatus struct {
+	// observedGeneration is the most recent generation observed by the controller
+	// +optional
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
 	// phase indicates the current phase of the health check
 	// +optional
 	Phase TeamHealthPhase `json:"phase,omitempty"`
@@ -242,6 +246,10 @@ type TeamHealthRequestStatus struct {
 	// lastCheckTime is when the health check was last performed
 	// +optional
 	LastCheckTime *metav1.Time `json:"lastCheckTime,omitempty"`
+
+	// startedAt is when the health check started
+	// +optional
+	StartedAt *metav1.Time `json:"startedAt,omitempty"`
 
 	// completedAt is when the health check completed or failed
 	// +optional
@@ -273,7 +281,8 @@ type TeamHealthRequest struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   TeamHealthRequestSpec   `json:"spec,omitempty"`
+	// +required
+	Spec   TeamHealthRequestSpec   `json:"spec"`
 	Status TeamHealthRequestStatus `json:"status,omitempty"`
 }
 

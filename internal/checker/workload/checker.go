@@ -25,6 +25,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -72,7 +73,22 @@ func (c *Checker) Check(ctx context.Context, checkCtx *checker.CheckContext) (*c
 
 	restartThreshold := getRestartThreshold(checkCtx.Config)
 
+	// PERF-003: Namespace-level pod cache — fetch all pods once per namespace
+	// and filter by label selector locally, avoiding redundant API calls.
+	podCache := make(map[string]*corev1.PodList)
+
 	for _, ns := range checkCtx.Namespaces {
+		// Pre-fetch all pods in this namespace once for reuse across workloads.
+		if _, ok := podCache[ns]; !ok {
+			allPods := &corev1.PodList{}
+			if err := checkCtx.DataSource.List(ctx, allPods, client.InNamespace(ns)); err != nil {
+				log.Error(err, "Failed to list pods", "namespace", ns)
+				podCache[ns] = &corev1.PodList{}
+			} else {
+				podCache[ns] = allPods
+			}
+		}
+
 		// Check Deployments
 		deployments := &appsv1.DeploymentList{}
 		if err := checkCtx.DataSource.List(ctx, deployments, client.InNamespace(ns)); err != nil {
@@ -81,9 +97,9 @@ func (c *Checker) Check(ctx context.Context, checkCtx *checker.CheckContext) (*c
 		}
 
 		for _, deploy := range deployments.Items {
-			pods, err := c.getPodsForWorkload(ctx, checkCtx.DataSource, ns, deploy.Spec.Selector)
+			pods, err := filterPodsForWorkload(podCache[ns], deploy.Spec.Selector)
 			if err != nil {
-				log.Error(err, "Failed to get pods for deployment", "namespace", ns, "deployment", deploy.Name)
+				log.Error(err, "Failed to filter pods for deployment", "namespace", ns, "deployment", deploy.Name)
 				continue
 			}
 
@@ -105,9 +121,9 @@ func (c *Checker) Check(ctx context.Context, checkCtx *checker.CheckContext) (*c
 		}
 
 		for _, sts := range statefulsets.Items {
-			pods, err := c.getPodsForWorkload(ctx, checkCtx.DataSource, ns, sts.Spec.Selector)
+			pods, err := filterPodsForWorkload(podCache[ns], sts.Spec.Selector)
 			if err != nil {
-				log.Error(err, "Failed to get pods for statefulset", "namespace", ns, "statefulset", sts.Name)
+				log.Error(err, "Failed to filter pods for statefulset", "namespace", ns, "statefulset", sts.Name)
 				continue
 			}
 
@@ -129,9 +145,9 @@ func (c *Checker) Check(ctx context.Context, checkCtx *checker.CheckContext) (*c
 		}
 
 		for _, ds := range daemonsets.Items {
-			pods, err := c.getPodsForWorkload(ctx, checkCtx.DataSource, ns, ds.Spec.Selector)
+			pods, err := filterPodsForWorkload(podCache[ns], ds.Spec.Selector)
 			if err != nil {
-				log.Error(err, "Failed to get pods for daemonset", "namespace", ns, "daemonset", ds.Name)
+				log.Error(err, "Failed to filter pods for daemonset", "namespace", ns, "daemonset", ds.Name)
 				continue
 			}
 
@@ -149,21 +165,20 @@ func (c *Checker) Check(ctx context.Context, checkCtx *checker.CheckContext) (*c
 	return result, nil
 }
 
-// getPodsForWorkload returns pods matching a label selector
-func (c *Checker) getPodsForWorkload(ctx context.Context, ds datasource.DataSource, namespace string, selector *metav1.LabelSelector) ([]corev1.Pod, error) {
+// filterPodsForWorkload filters cached pods by a label selector.
+func filterPodsForWorkload(podList *corev1.PodList, selector *metav1.LabelSelector) ([]corev1.Pod, error) {
 	labelSelector, err := metav1.LabelSelectorAsSelector(selector)
 	if err != nil {
 		return nil, err
 	}
 
-	podList := &corev1.PodList{}
-	if err := ds.List(ctx, podList,
-		client.InNamespace(namespace),
-		client.MatchingLabelsSelector{Selector: labelSelector}); err != nil {
-		return nil, err
+	var matched []corev1.Pod
+	for _, pod := range podList.Items {
+		if labelSelector.Matches(labels.Set(pod.Labels)) {
+			matched = append(matched, pod)
+		}
 	}
-
-	return podList.Items, nil
+	return matched, nil
 }
 
 // diagnosePods analyzes a set of pods and returns issues found

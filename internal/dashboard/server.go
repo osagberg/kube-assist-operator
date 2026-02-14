@@ -19,8 +19,11 @@ package dashboard
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/hex"
 	"fmt"
 	"io/fs"
 	"net/http"
@@ -223,8 +226,10 @@ type Server struct {
 	maxSSEClients     int
 	sessionTTL        time.Duration
 	mutationLimiter   *rate.Limiter
-	running           bool
+	running           atomic.Bool
 	checkInFlight     atomic.Bool
+	sessions          sync.Map // sessionID (string) -> authToken (string)
+	sessionHMACKey    []byte   // HMAC key for signing session IDs
 	stopCh            chan struct{}
 	chatSessions      map[string]*ChatSession
 	chatMu            sync.RWMutex
@@ -242,6 +247,10 @@ type Server struct {
 
 // NewServer creates a new dashboard server
 func NewServer(ds datasource.DataSource, registry *checker.Registry, addr string) *Server {
+	hmacKey := make([]byte, 32)
+	if _, err := rand.Read(hmacKey); err != nil {
+		panic("failed to generate session HMAC key: " + err.Error())
+	}
 	return &Server{
 		client:    ds,
 		registry:  registry,
@@ -264,6 +273,7 @@ func NewServer(ds datasource.DataSource, registry *checker.Registry, addr string
 		sessionTTL:        parseSessionTTL(),
 		mutationLimiter:   newMutationLimiter(),
 		stopCh:            make(chan struct{}),
+		sessionHMACKey:    hmacKey,
 	}
 }
 
@@ -371,6 +381,24 @@ func (s *Server) WithTLS(certFile, keyFile string) *Server {
 	return s
 }
 
+// createSession generates a random session ID, stores the mapping server-side,
+// and returns the opaque session ID to set as a cookie.
+func (s *Server) createSession() string {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		log.Error(err, "Failed to generate session ID")
+		return ""
+	}
+	sessionID := hex.EncodeToString(b)
+	// Sign the session ID with HMAC so we can verify integrity on lookup
+	mac := hmac.New(sha256.New, s.sessionHMACKey)
+	mac.Write([]byte(sessionID))
+	sig := hex.EncodeToString(mac.Sum(nil))
+	signedID := sessionID + "." + sig
+	s.sessions.Store(sessionID, s.authToken)
+	return signedID
+}
+
 // validateToken checks the request for a valid auth token via Bearer header
 // or session cookie. Returns true if authenticated.
 func (s *Server) validateToken(r *http.Request) bool {
@@ -383,10 +411,24 @@ func (s *Server) validateToken(r *http.Request) bool {
 		return subtle.ConstantTimeCompare(gotHash[:], wantHash[:]) == 1
 	}
 
-	// 2. Check session cookie (browser clients)
+	// 2. Check session cookie (browser clients) — opaque session ID lookup
 	if cookie, err := r.Cookie("__dashboard_session"); err == nil && cookie.Value != "" {
-		gotHash := sha256.Sum256([]byte(cookie.Value))
-		return subtle.ConstantTimeCompare(gotHash[:], wantHash[:]) == 1
+		parts := strings.SplitN(cookie.Value, ".", 2)
+		if len(parts) != 2 {
+			return false
+		}
+		sessionID, sig := parts[0], parts[1]
+		// Verify HMAC signature
+		mac := hmac.New(sha256.New, s.sessionHMACKey)
+		mac.Write([]byte(sessionID))
+		expectedSig := hex.EncodeToString(mac.Sum(nil))
+		if subtle.ConstantTimeCompare([]byte(sig), []byte(expectedSig)) != 1 {
+			return false
+		}
+		// Look up session in store
+		if _, ok := s.sessions.Load(sessionID); ok {
+			return true
+		}
 	}
 
 	return false
@@ -397,9 +439,18 @@ func hasCookie(r *http.Request, name string) bool {
 	return err == nil
 }
 
+func isMutatingMethod(method string) bool {
+	return method == http.MethodPost || method == http.MethodPut || method == http.MethodDelete
+}
+
 func (s *Server) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if s.authToken == "" {
+			// SECURITY-006: block mutating requests when auth is not configured
+			if isMutatingMethod(r.Method) {
+				http.Error(w, "Authentication not configured", http.StatusServiceUnavailable)
+				return
+			}
 			next(w, r)
 			return
 		}
@@ -572,17 +623,20 @@ func (s *Server) buildHandler() http.Handler {
 
 		serveIndex := func(w http.ResponseWriter, _ *http.Request) {
 			if s.authToken != "" {
-				// Set HttpOnly session cookie — the sole browser auth mechanism.
-				// Token is never exposed to JavaScript (no meta tag, no JS-readable value).
-				http.SetCookie(w, &http.Cookie{
-					Name:     "__dashboard_session",
-					Value:    s.authToken,
-					Path:     "/",
-					HttpOnly: true,
-					Secure:   s.tlsConfigured(),
-					SameSite: http.SameSiteStrictMode,
-					MaxAge:   int(s.sessionTTL.Seconds()),
-				})
+				// Set HttpOnly session cookie with opaque session ID.
+				// Token is never exposed to the browser.
+				sessionID := s.createSession()
+				if sessionID != "" {
+					http.SetCookie(w, &http.Cookie{
+						Name:     "__dashboard_session",
+						Value:    sessionID,
+						Path:     "/",
+						HttpOnly: true,
+						Secure:   s.tlsConfigured(),
+						SameSite: http.SameSiteStrictMode,
+						MaxAge:   int(s.sessionTTL.Seconds()),
+					})
+				}
 				w.Header().Set("Cache-Control", "no-store")
 			}
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -619,7 +673,7 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 
 	if s.authToken == "" {
-		log.Info("WARNING: Dashboard authentication not configured. Set DASHBOARD_AUTH_TOKEN to secure mutating endpoints.")
+		log.Info("WARNING: Dashboard authentication not configured. Mutating endpoints (POST/PUT/DELETE) will return 503. Set DASHBOARD_AUTH_TOKEN to enable.")
 	} else {
 		log.Info("Dashboard authentication enabled for all data endpoints")
 	}
@@ -631,7 +685,7 @@ func (s *Server) Start(ctx context.Context) error {
 			"env", "DASHBOARD_ALLOW_INSECURE_HTTP")
 	}
 
-	s.running = true
+	s.running.Store(true)
 
 	// Start chat session cleanup if chat is enabled
 	if s.chatEnabled {
@@ -644,6 +698,9 @@ func (s *Server) Start(ctx context.Context) error {
 
 	// Start background health checker (skips initial check since we just ran it)
 	go s.runHealthChecker(ctx)
+
+	// PERF-004: periodic cleanup of expired issueStates
+	go s.cleanupExpiredIssueStates(ctx)
 
 	log.Info("Starting dashboard server", "addr", s.addr)
 
@@ -665,7 +722,7 @@ func (s *Server) Start(ctx context.Context) error {
 	select {
 	case <-ctx.Done():
 		log.Info("Shutting down dashboard server")
-		s.running = false
+		s.running.Store(false)
 		close(s.stopCh)
 		return server.Shutdown(context.Background())
 	case err := <-errCh:
@@ -685,4 +742,29 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// cleanupExpiredIssueStates periodically prunes expired snooze entries from
+// all cluster issueStates maps. Runs every 10 minutes.
+func (s *Server) cleanupExpiredIssueStates(ctx context.Context) {
+	ticker := time.NewTicker(10 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-s.stopCh:
+			return
+		case <-ticker.C:
+			s.mu.Lock()
+			for _, cs := range s.clusters {
+				for k, st := range cs.issueStates {
+					if st.IsExpired() {
+						delete(cs.issueStates, k)
+					}
+				}
+			}
+			s.mu.Unlock()
+		}
+	}
 }

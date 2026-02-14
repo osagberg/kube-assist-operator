@@ -48,6 +48,25 @@ const (
 	testOriginal      = "original"
 )
 
+// waitForSSEClients polls until the server has exactly n SSE clients, or the timeout is reached.
+func waitForSSEClients(t *testing.T, s *Server, n int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		s.mu.RLock()
+		count := len(s.clients)
+		s.mu.RUnlock()
+		if count == n {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	s.mu.RLock()
+	count := len(s.clients)
+	s.mu.RUnlock()
+	t.Fatalf("timed out waiting for %d SSE clients, got %d", n, count)
+}
+
 func TestServer_SPAEmbed(t *testing.T) {
 	// Verify that the embedded SPA assets exist and can be accessed
 	entries, err := webAssets.ReadDir("web/dist")
@@ -593,11 +612,12 @@ func TestServer_HandlePostAISettings_WithModel(t *testing.T) {
 	registry := checker.NewRegistry()
 
 	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+	// Pre-set API key directly (SECURITY-002 rejects apiKey in POST body)
+	server.aiConfig.APIKey = "sk-test-key"
 
 	body := AISettingsRequest{
 		Enabled:  true,
 		Provider: providerAnthropic,
-		APIKey:   "sk-test-key",
 		Model:    "claude-sonnet-4-5-20250929",
 	}
 	data, _ := json.Marshal(body)
@@ -657,10 +677,10 @@ func TestServer_HandlePostAISettings_InputValidation(t *testing.T) {
 		wantCode int
 	}{
 		{
-			name: "oversized APIKey returns 400",
+			name: "apiKey in body returns 400",
 			body: AISettingsRequest{
 				Provider: providerNoop,
-				APIKey:   strings.Repeat("k", maxAPIKeyLen+1),
+				APIKey:   "sk-any-key",
 			},
 			wantCode: http.StatusBadRequest,
 		},
@@ -684,7 +704,6 @@ func TestServer_HandlePostAISettings_InputValidation(t *testing.T) {
 			name: "valid lengths accepted",
 			body: AISettingsRequest{
 				Provider: providerNoop,
-				APIKey:   strings.Repeat("k", maxAPIKeyLen),
 				Model:    strings.Repeat("m", maxModelLen),
 			},
 			wantCode: http.StatusOK,
@@ -1068,8 +1087,8 @@ func TestServer_HandleSSE_InitialState(t *testing.T) {
 		server.handleSSE(rr, req)
 	}()
 
-	// Give handler time to write initial state
-	time.Sleep(100 * time.Millisecond)
+	// Wait for handler to register, then cancel and drain
+	waitForSSEClients(t, server, 1)
 	cancel()
 	<-done
 
@@ -1106,7 +1125,7 @@ func TestServer_HandleSSE_ClientDisconnect(t *testing.T) {
 	}()
 
 	// Wait for client to register
-	time.Sleep(100 * time.Millisecond)
+	waitForSSEClients(t, server, 1)
 
 	server.mu.RLock()
 	clientsBefore := len(server.clients)
@@ -1213,7 +1232,7 @@ func TestServer_HandleSSE_Headers(t *testing.T) {
 		server.handleSSE(rr, req)
 	}()
 
-	time.Sleep(50 * time.Millisecond)
+	waitForSSEClients(t, server, 1)
 	cancel()
 	<-done
 
@@ -1665,8 +1684,8 @@ func TestServer_HandleSSE_ClusterFiltering(t *testing.T) {
 		server.handleSSE(rr, req)
 	}()
 
-	// Give handler time to register and send initial state
-	time.Sleep(100 * time.Millisecond)
+	// Wait for handler to register, then cancel and drain
+	waitForSSEClients(t, server, 1)
 	cancel()
 	<-done
 
@@ -1743,7 +1762,7 @@ func TestHandleSSE_UnlimitedClients(t *testing.T) {
 		server.handleSSE(rr, req)
 	}()
 
-	time.Sleep(50 * time.Millisecond)
+	waitForSSEClients(t, server, 201)
 	cancel()
 	<-done
 
@@ -2319,8 +2338,10 @@ func TestServeIndex_SetsCookieWithoutMetaTag(t *testing.T) {
 	for _, c := range cookies {
 		if c.Name == "__dashboard_session" {
 			found = true
-			if c.Value != testAuthToken {
-				t.Errorf("cookie value = %q, want %q", c.Value, testAuthToken)
+			// Cookie value should be an opaque HMAC-signed session ID (hex.hex format)
+			parts := strings.SplitN(c.Value, ".", 2)
+			if len(parts) != 2 || len(parts[0]) == 0 || len(parts[1]) == 0 {
+				t.Errorf("cookie value should be signed session ID (id.sig), got %q", c.Value)
 			}
 			if !c.HttpOnly {
 				t.Error("cookie should be HttpOnly")
@@ -2342,6 +2363,9 @@ func TestAuthMiddleware_AcceptsCookie(t *testing.T) {
 	server := NewServer(datasource.NewKubernetes(cl), registry, ":8080")
 	server.authToken = testAuthToken
 
+	// Create a valid session via the server's session store
+	sessionID := server.createSession()
+
 	called := false
 	handler := server.authMiddleware(func(w http.ResponseWriter, _ *http.Request) {
 		called = true
@@ -2349,7 +2373,7 @@ func TestAuthMiddleware_AcceptsCookie(t *testing.T) {
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/health", nil)
-	req.AddCookie(&http.Cookie{Name: "__dashboard_session", Value: testAuthToken})
+	req.AddCookie(&http.Cookie{Name: "__dashboard_session", Value: sessionID})
 	rr := httptest.NewRecorder()
 	handler(rr, req)
 
@@ -2389,6 +2413,9 @@ func TestSSEAuth_CookieAuth(t *testing.T) {
 	server := NewServer(datasource.NewKubernetes(cl), registry, ":8080")
 	server.authToken = testAuthToken
 
+	// Create a valid session via the server's session store
+	sessionID := server.createSession()
+
 	called := false
 	handler := server.sseAuthMiddleware(func(w http.ResponseWriter, _ *http.Request) {
 		called = true
@@ -2396,7 +2423,7 @@ func TestSSEAuth_CookieAuth(t *testing.T) {
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/events", nil)
-	req.AddCookie(&http.Cookie{Name: "__dashboard_session", Value: testAuthToken})
+	req.AddCookie(&http.Cookie{Name: "__dashboard_session", Value: sessionID})
 	rr := httptest.NewRecorder()
 	handler(rr, req)
 
@@ -2415,6 +2442,9 @@ func TestSSEAuth_CookiePrecedence(t *testing.T) {
 	server := NewServer(datasource.NewKubernetes(cl), registry, ":8080")
 	server.authToken = testAuthToken
 
+	// Create a valid session via the server's session store
+	sessionID := server.createSession()
+
 	called := false
 	handler := server.sseAuthMiddleware(func(w http.ResponseWriter, _ *http.Request) {
 		called = true
@@ -2423,7 +2453,7 @@ func TestSSEAuth_CookiePrecedence(t *testing.T) {
 
 	// Valid cookie but no query param or header
 	req := httptest.NewRequest(http.MethodGet, "/api/events", nil)
-	req.AddCookie(&http.Cookie{Name: "__dashboard_session", Value: testAuthToken})
+	req.AddCookie(&http.Cookie{Name: "__dashboard_session", Value: sessionID})
 	rr := httptest.NewRecorder()
 	handler(rr, req)
 
@@ -3197,19 +3227,10 @@ func TestServer_HandlePostAISettings_ClearAPIKey(t *testing.T) {
 	registry := checker.NewRegistry()
 	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
 
-	// First, set an API key
-	setBody, _ := json.Marshal(AISettingsRequest{
-		Enabled:  true,
-		Provider: providerNoop,
-		APIKey:   "sk-test-key-to-clear",
-	})
-	req := httptest.NewRequest(http.MethodPost, "/api/settings/ai", bytes.NewReader(setBody))
-	req.Header.Set("Content-Type", "application/json")
-	rr := httptest.NewRecorder()
-	server.handleAISettings(rr, req)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("setup POST status = %d, want %d", rr.Code, http.StatusOK)
-	}
+	// Pre-set API key directly (SECURITY-002 rejects apiKey in POST body)
+	server.aiConfig.APIKey = "sk-test-key-to-clear"
+	server.aiConfig.Provider = providerNoop
+	server.aiEnabled = true
 
 	// Now clear it with clearApiKey: true
 	clearBody, _ := json.Marshal(AISettingsRequest{
@@ -3249,26 +3270,16 @@ func TestServer_HandlePostAISettings_ClearAPIKeyIgnoresValue(t *testing.T) {
 	registry := checker.NewRegistry()
 	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
 
-	// Set an initial key
-	setBody, _ := json.Marshal(AISettingsRequest{
-		Enabled:  true,
-		Provider: providerNoop,
-		APIKey:   "sk-initial-key",
-	})
-	req := httptest.NewRequest(http.MethodPost, "/api/settings/ai", bytes.NewReader(setBody))
-	req.Header.Set("Content-Type", "application/json")
-	rr := httptest.NewRecorder()
-	server.handleAISettings(rr, req)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("setup POST status = %d, want %d", rr.Code, http.StatusOK)
-	}
+	// Pre-set API key directly (SECURITY-002 rejects apiKey in POST body)
+	server.aiConfig.APIKey = "sk-initial-key"
+	server.aiConfig.Provider = providerNoop
+	server.aiEnabled = true
 
-	// Send clearApiKey: true AND apiKey: "new-key" — clear should win
+	// Send clearApiKey: true — SECURITY-002 rejects apiKey in body, so we only test clearApiKey
 	clearBody, _ := json.Marshal(AISettingsRequest{
 		Enabled:     true,
 		Provider:    providerNoop,
 		ClearAPIKey: true,
-		APIKey:      "sk-should-be-ignored",
 	})
 	req2 := httptest.NewRequest(http.MethodPost, "/api/settings/ai", bytes.NewReader(clearBody))
 	req2.Header.Set("Content-Type", "application/json")
@@ -3294,19 +3305,10 @@ func TestServer_HandlePostAISettings_OmittedKeyPreserved(t *testing.T) {
 	registry := checker.NewRegistry()
 	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
 
-	// Set an initial key
-	setBody, _ := json.Marshal(AISettingsRequest{
-		Enabled:  true,
-		Provider: providerNoop,
-		APIKey:   "sk-preserve-me",
-	})
-	req := httptest.NewRequest(http.MethodPost, "/api/settings/ai", bytes.NewReader(setBody))
-	req.Header.Set("Content-Type", "application/json")
-	rr := httptest.NewRecorder()
-	server.handleAISettings(rr, req)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("setup POST status = %d, want %d", rr.Code, http.StatusOK)
-	}
+	// Pre-set API key directly (SECURITY-002 rejects apiKey in POST body)
+	server.aiConfig.APIKey = "sk-preserve-me"
+	server.aiConfig.Provider = providerNoop
+	server.aiEnabled = true
 
 	// POST without apiKey or clearApiKey — key should be preserved
 	updateBody, _ := json.Marshal(AISettingsRequest{
@@ -3340,55 +3342,28 @@ func TestServer_HandlePostAISettings_OmittedKeyPreserved(t *testing.T) {
 	}
 }
 
-func TestServer_HandlePostAISettings_UpdateKey(t *testing.T) {
+func TestServer_HandlePostAISettings_RejectsAPIKey(t *testing.T) {
+	// SECURITY-002: POST /api/settings/ai now rejects apiKey in body
 	scheme := runtime.NewScheme()
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 	registry := checker.NewRegistry()
 	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
 
-	// Set initial key
-	setBody, _ := json.Marshal(AISettingsRequest{
+	body, _ := json.Marshal(AISettingsRequest{
 		Enabled:  true,
 		Provider: providerNoop,
-		APIKey:   "sk-old-key",
+		APIKey:   "sk-any-key",
 	})
-	req := httptest.NewRequest(http.MethodPost, "/api/settings/ai", bytes.NewReader(setBody))
+	req := httptest.NewRequest(http.MethodPost, "/api/settings/ai", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
 	server.handleAISettings(rr, req)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("setup POST status = %d, want %d", rr.Code, http.StatusOK)
-	}
 
-	// Update key without clearApiKey
-	updateBody, _ := json.Marshal(AISettingsRequest{
-		Enabled:  true,
-		Provider: providerNoop,
-		APIKey:   "sk-new-key",
-	})
-	req2 := httptest.NewRequest(http.MethodPost, "/api/settings/ai", bytes.NewReader(updateBody))
-	req2.Header.Set("Content-Type", "application/json")
-	rr2 := httptest.NewRecorder()
-	server.handleAISettings(rr2, req2)
-
-	if rr2.Code != http.StatusOK {
-		t.Fatalf("update POST status = %d, want %d", rr2.Code, http.StatusOK)
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for apiKey in body, got %d", rr.Code)
 	}
-
-	var resp AISettingsResponse
-	if err := json.Unmarshal(rr2.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("returned invalid JSON: %v", err)
-	}
-	if !resp.HasAPIKey {
-		t.Error("expected hasApiKey to be true after updating key")
-	}
-
-	// Verify internal state has the new key
-	server.mu.RLock()
-	key := server.aiConfig.APIKey
-	server.mu.RUnlock()
-	if key != "sk-new-key" {
-		t.Errorf("expected APIKey 'sk-new-key', got %q", key)
+	if !strings.Contains(rr.Body.String(), "apiKey") {
+		t.Errorf("expected error mentioning apiKey, got %q", rr.Body.String())
 	}
 }
 
@@ -3398,19 +3373,10 @@ func TestServer_HandleGetAISettings_NoKeyLeakage(t *testing.T) {
 	registry := checker.NewRegistry()
 	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
 
-	// Set a key
-	setBody, _ := json.Marshal(AISettingsRequest{
-		Enabled:  true,
-		Provider: providerNoop,
-		APIKey:   "sk-secret-key-do-not-leak",
-	})
-	req := httptest.NewRequest(http.MethodPost, "/api/settings/ai", bytes.NewReader(setBody))
-	req.Header.Set("Content-Type", "application/json")
-	rr := httptest.NewRecorder()
-	server.handleAISettings(rr, req)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("setup POST status = %d, want %d", rr.Code, http.StatusOK)
-	}
+	// Pre-set API key directly (SECURITY-002 rejects apiKey in POST body)
+	server.aiConfig.APIKey = "sk-secret-key-do-not-leak"
+	server.aiConfig.Provider = providerNoop
+	server.aiEnabled = true
 
 	// GET the settings
 	req2 := httptest.NewRequest(http.MethodGet, "/api/settings/ai", nil)
@@ -3678,19 +3644,10 @@ func TestServer_HandlePostAISettings_ClearAPIKeyTriggersReconfigure(t *testing.T
 	registry := checker.NewRegistry()
 	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
 
-	// First, set a key with noop provider
-	setBody, _ := json.Marshal(AISettingsRequest{
-		Enabled:  true,
-		Provider: providerNoop,
-		APIKey:   "sk-initial-key",
-	})
-	req := httptest.NewRequest(http.MethodPost, "/api/settings/ai", bytes.NewReader(setBody))
-	req.Header.Set("Content-Type", "application/json")
-	rr := httptest.NewRecorder()
-	server.handleAISettings(rr, req)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("setup POST status = %d, want %d", rr.Code, http.StatusOK)
-	}
+	// Pre-set API key directly (SECURITY-002 rejects apiKey in POST body)
+	server.aiConfig.APIKey = "sk-initial-key"
+	server.aiConfig.Provider = providerNoop
+	server.aiEnabled = true
 
 	// Now clear key WITHOUT changing provider (provider field empty)
 	clearBody, _ := json.Marshal(AISettingsRequest{
@@ -5069,12 +5026,14 @@ func TestHandlePostAISettings_APIKeyTooLong(t *testing.T) {
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 	registry := checker.NewRegistry()
 	s := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+	s.authToken = testAuthToken
 
 	handler := s.buildHandler()
 	longKey := strings.Repeat("x", 257)
 	body := `{"provider":"noop","apiKey":"` + longKey + `"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/settings/ai", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+testAuthToken)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
@@ -5088,12 +5047,14 @@ func TestHandlePostAISettings_ModelTooLong(t *testing.T) {
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 	registry := checker.NewRegistry()
 	s := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+	s.authToken = testAuthToken
 
 	handler := s.buildHandler()
 	longModel := strings.Repeat("m", 129)
 	body := `{"provider":"noop","model":"` + longModel + `"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/settings/ai", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+testAuthToken)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
@@ -5107,12 +5068,14 @@ func TestHandlePostAISettings_ExplainModelTooLong(t *testing.T) {
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 	registry := checker.NewRegistry()
 	s := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+	s.authToken = testAuthToken
 
 	handler := s.buildHandler()
 	longModel := strings.Repeat("m", 129)
 	body := `{"provider":"noop","explainModel":"` + longModel + `"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/settings/ai", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+testAuthToken)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 

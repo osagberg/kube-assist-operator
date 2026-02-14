@@ -184,8 +184,13 @@ func (p *AnthropicProvider) doAnthropicRequest(ctx context.Context, req anthropi
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
 
+	if resp.StatusCode == http.StatusTooManyRequests {
+		delay := parseRetryAfter(resp.Header.Get("Retry-After"))
+		return nil, &rateLimitError{retryAfter: delay, statusCode: resp.StatusCode}
+	}
+
 	if resp.StatusCode != http.StatusOK {
-		errBody := string(respBody)
+		errBody := NewSanitizer().SanitizeString(string(respBody))
 		if len(errBody) > 500 {
 			errBody = errBody[:500] + "...(truncated)"
 		}
@@ -282,6 +287,9 @@ func (p *AnthropicProvider) Analyze(ctx context.Context, request AnalysisRequest
 
 	result, err := p.doAnthropicRequest(ctx, anthropicReq)
 	if err != nil {
+		if !isRetryableForFallback(err) {
+			return nil, err
+		}
 		// Retry without tools on failure (model may not support tool use)
 		log.Info("Tool use mode failed, retrying with prompt-based JSON", "error", err)
 		anthropicReq.Tools = nil

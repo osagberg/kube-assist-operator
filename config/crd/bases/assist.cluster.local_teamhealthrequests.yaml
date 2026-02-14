@@ -329,6 +329,11 @@ spec:
                 items:
                   type: string
                 type: array
+              observedGeneration:
+                description: observedGeneration is the most recent generation observed
+                  by the controller
+                format: int64
+                type: integer
               phase:
                 description: phase indicates the current phase of the health check
                 enum:
@@ -383,10 +388,16 @@ spec:
                   type: object
                 description: results contains results grouped by checker
                 type: object
+              startedAt:
+                description: startedAt is when the health check started
+                format: date-time
+                type: string
               summary:
                 description: summary provides a brief overview of findings
                 type: string
             type: object
+        required:
+        - spec
         type: object
     served: true
     storage: true
