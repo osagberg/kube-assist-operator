@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -87,7 +88,6 @@ type ChatAgent struct {
 	apiKey        string
 	model         string
 	endpoint      string
-	timeout       time.Duration
 	client        *http.Client
 	tools         []ToolDef
 	executor      ToolExecutor
@@ -117,7 +117,6 @@ func NewChatAgent(providerName, apiKey, model, endpoint string, executor ToolExe
 		apiKey:        apiKey,
 		model:         model,
 		endpoint:      endpoint,
-		timeout:       90 * time.Second,
 		client:        &http.Client{Timeout: 90 * time.Second},
 		tools:         ChatTools(),
 		executor:      executor,
@@ -129,6 +128,13 @@ func NewChatAgent(providerName, apiKey, model, endpoint string, executor ToolExe
 func (a *ChatAgent) SetMaxIterations(n int) {
 	if n > 0 {
 		a.maxIterations = n
+	}
+}
+
+// SetHTTPClient overrides the default http.Client used for API calls.
+func (a *ChatAgent) SetHTTPClient(c *http.Client) {
+	if c != nil {
+		a.client = c
 	}
 }
 
@@ -147,6 +153,7 @@ func (a *ChatAgent) RunTurn(ctx context.Context, messages []ChatMessage, emit fu
 	for i := 0; i < a.maxIterations; i++ {
 		if err := ctx.Err(); err != nil {
 			emit(ChatEvent{Type: ChatEventError, Content: "context cancelled"})
+			emit(ChatEvent{Type: ChatEventDone, Tokens: totalTokens})
 			return msgs, totalTokens, err
 		}
 
@@ -168,7 +175,8 @@ func (a *ChatAgent) RunTurn(ctx context.Context, messages []ChatMessage, emit fu
 			return msgs, totalTokens, fmt.Errorf("unsupported provider: %s", a.providerName)
 		}
 		if err != nil {
-			emit(ChatEvent{Type: ChatEventError, Content: err.Error()})
+			emit(ChatEvent{Type: ChatEventError, Content: "An error occurred while processing your request"})
+			emit(ChatEvent{Type: ChatEventDone, Tokens: totalTokens})
 			return msgs, totalTokens, err
 		}
 		totalTokens += tokens
@@ -228,7 +236,7 @@ type openAIChatRequest struct {
 
 type openAIChatMessage struct {
 	Role       string               `json:"role"`
-	Content    string               `json:"content,omitempty"`
+	Content    string               `json:"content"`
 	ToolCallID string               `json:"tool_call_id,omitempty"`
 	ToolCalls  []openAIChatToolCall `json:"tool_calls,omitempty"`
 }
@@ -394,7 +402,7 @@ type anthropicChatContentBlock struct {
 	Name      string          `json:"name,omitempty"`
 	Input     json.RawMessage `json:"input,omitempty"`
 	ToolUseID string          `json:"tool_use_id,omitempty"`
-	Content   string          `json:"content,omitempty"`
+	Content   string          `json:"content"`
 }
 
 type anthropicChatResponse struct {
@@ -410,7 +418,10 @@ type anthropicChatResponse struct {
 }
 
 func (a *ChatAgent) callAnthropic(ctx context.Context, messages []ChatMessage) (string, []ToolCall, int, error) {
-	anthMsgs := buildAnthropicMessages(messages)
+	anthMsgs, err := buildAnthropicMessages(messages)
+	if err != nil {
+		return "", nil, 0, fmt.Errorf("build messages: %w", err)
+	}
 
 	anthTools := make([]anthropicChatTool, 0, len(a.tools))
 	for _, t := range a.tools {
@@ -467,12 +478,12 @@ func (a *ChatAgent) callAnthropic(ctx context.Context, messages []ChatMessage) (
 
 	tokens := anthResp.Usage.InputTokens + anthResp.Usage.OutputTokens
 
-	var textContent string
+	var textBuilder strings.Builder
 	var calls []ToolCall
 	for _, block := range anthResp.Content {
 		switch block.Type {
 		case "text":
-			textContent = block.Text
+			textBuilder.WriteString(block.Text)
 		case "tool_use":
 			calls = append(calls, ToolCall{
 				ID:   block.ID,
@@ -482,19 +493,22 @@ func (a *ChatAgent) callAnthropic(ctx context.Context, messages []ChatMessage) (
 		}
 	}
 
-	return textContent, calls, tokens, nil
+	return textBuilder.String(), calls, tokens, nil
 }
 
 // buildAnthropicMessages converts ChatMessage history into Anthropic API
 // messages. Anthropic requires tool results to be content blocks inside an
 // "assistant" message followed by a "user" message with "tool_result" blocks.
-func buildAnthropicMessages(messages []ChatMessage) []anthropicChatMessage {
+func buildAnthropicMessages(messages []ChatMessage) ([]anthropicChatMessage, error) {
 	var result []anthropicChatMessage
 
 	for _, m := range messages {
 		switch m.Role {
 		case "user":
-			content, _ := json.Marshal(m.Content)
+			content, err := json.Marshal(m.Content)
+			if err != nil {
+				return nil, fmt.Errorf("marshal user content: %w", err)
+			}
 			result = append(result, anthropicChatMessage{
 				Role:    "user",
 				Content: content,
@@ -516,7 +530,10 @@ func buildAnthropicMessages(messages []ChatMessage) []anthropicChatMessage {
 					Input: tc.Args,
 				})
 			}
-			blockJSON, _ := json.Marshal(blocks)
+			blockJSON, err := json.Marshal(blocks)
+			if err != nil {
+				return nil, fmt.Errorf("marshal assistant blocks: %w", err)
+			}
 			result = append(result, anthropicChatMessage{
 				Role:    "assistant",
 				Content: blockJSON,
@@ -535,12 +552,20 @@ func buildAnthropicMessages(messages []ChatMessage) []anthropicChatMessage {
 			if len(result) > 0 && result[len(result)-1].Role == "user" {
 				// Merge into the preceding user message.
 				var existing []anthropicChatContentBlock
-				_ = json.Unmarshal(result[len(result)-1].Content, &existing)
+				if err := json.Unmarshal(result[len(result)-1].Content, &existing); err != nil {
+					return nil, fmt.Errorf("unmarshal existing tool results: %w", err)
+				}
 				existing = append(existing, newBlock)
-				blockJSON, _ := json.Marshal(existing)
+				blockJSON, err := json.Marshal(existing)
+				if err != nil {
+					return nil, fmt.Errorf("marshal merged tool results: %w", err)
+				}
 				result[len(result)-1].Content = blockJSON
 			} else {
-				blockJSON, _ := json.Marshal([]anthropicChatContentBlock{newBlock})
+				blockJSON, err := json.Marshal([]anthropicChatContentBlock{newBlock})
+				if err != nil {
+					return nil, fmt.Errorf("marshal tool result: %w", err)
+				}
 				result = append(result, anthropicChatMessage{
 					Role:    "user",
 					Content: blockJSON,
@@ -549,15 +574,16 @@ func buildAnthropicMessages(messages []ChatMessage) []anthropicChatMessage {
 		}
 	}
 
-	return result
+	return result, nil
 }
 
-// truncate shortens s to at most maxLen characters.
+// truncate shortens s to at most maxLen runes.
 func truncate(s string, maxLen int) string {
-	if len(s) <= maxLen {
+	runes := []rune(s)
+	if len(runes) <= maxLen {
 		return s
 	}
-	return s[:maxLen] + "...(truncated)"
+	return string(runes[:maxLen]) + "...(truncated)"
 }
 
 // ---------------------------------------------------------------------------
@@ -617,6 +643,10 @@ func ChatTools() []ToolDef {
 					"issueKey": map[string]any{
 						"type":        "string",
 						"description": "The issue key to explain (e.g. 'CrashLoopBackOff:deployment/my-app')",
+					},
+					"checker": map[string]any{
+						"type":        "string",
+						"description": "Optional checker name to narrow the search (e.g. 'workloads')",
 					},
 				},
 				"required":             []string{"issueKey"},

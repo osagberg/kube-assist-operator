@@ -166,11 +166,12 @@ func TestHandleChat_ChatDisabled(t *testing.T) {
 }
 
 func TestHandleChat_MaxSessionsReached(t *testing.T) {
+	existingID := "dddddddd-dddd-dddd-dddd-dddddddddddd"
 	s := newChatTestServer(t, func(s *Server) {
 		s.chatMaxSessions = 1
 		// Pre-fill with one session
-		s.chatSessions["existing"] = &ChatSession{
-			ID:             "existing",
+		s.chatSessions[existingID] = &ChatSession{
+			ID:             existingID,
 			Messages:       []ai.ChatMessage{},
 			TokenBudget:    50000,
 			CreatedAt:      time.Now(),
@@ -230,19 +231,21 @@ func TestHandleChat_NewSession_SSEFormat(t *testing.T) {
 func TestHandleChat_ExistingSession(t *testing.T) {
 	s := newChatTestServer(t)
 
+	sessionID := "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+
 	// Pre-create a session
 	session := &ChatSession{
-		ID:             "test-session-123",
+		ID:             sessionID,
 		Messages:       []ai.ChatMessage{{Role: "user", Content: "first message"}},
 		TokenBudget:    50000,
 		CreatedAt:      time.Now(),
 		LastAccessedAt: time.Now(),
 	}
 	s.chatMu.Lock()
-	s.chatSessions["test-session-123"] = session
+	s.chatSessions[sessionID] = session
 	s.chatMu.Unlock()
 
-	req := httptest.NewRequest(http.MethodPost, "/api/chat", chatBody("test-session-123", "follow up"))
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", chatBody(sessionID, "follow up"))
 	rr := httptest.NewRecorder()
 	s.handleChat(rr, req)
 
@@ -277,9 +280,11 @@ func TestHandleChat_ExistingSession(t *testing.T) {
 func TestHandleChat_SessionBudgetExceeded(t *testing.T) {
 	s := newChatTestServer(t)
 
+	budgetSessionID := "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+
 	// Pre-create a session that has exceeded its budget
 	session := &ChatSession{
-		ID:             "budget-session",
+		ID:             budgetSessionID,
 		Messages:       []ai.ChatMessage{},
 		TokensUsed:     50000,
 		TokenBudget:    50000,
@@ -287,10 +292,10 @@ func TestHandleChat_SessionBudgetExceeded(t *testing.T) {
 		LastAccessedAt: time.Now(),
 	}
 	s.chatMu.Lock()
-	s.chatSessions["budget-session"] = session
+	s.chatSessions[budgetSessionID] = session
 	s.chatMu.Unlock()
 
-	req := httptest.NewRequest(http.MethodPost, "/api/chat", chatBody("budget-session", "hello"))
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", chatBody(budgetSessionID, "hello"))
 	rr := httptest.NewRecorder()
 	s.handleChat(rr, req)
 
@@ -570,19 +575,20 @@ func TestGetOrCreateChatSession_New(t *testing.T) {
 
 func TestGetOrCreateChatSession_Existing(t *testing.T) {
 	s := newChatTestServer(t)
+	existingID := "cccccccc-cccc-cccc-cccc-cccccccccccc"
 	s.chatMu.Lock()
-	s.chatSessions["abc"] = &ChatSession{ID: "abc", TokenBudget: 50000, CreatedAt: time.Now(), LastAccessedAt: time.Now()}
+	s.chatSessions[existingID] = &ChatSession{ID: existingID, TokenBudget: 50000, CreatedAt: time.Now(), LastAccessedAt: time.Now()}
 	s.chatMu.Unlock()
 
-	session, created, err := s.getOrCreateChatSession("abc")
+	session, created, err := s.getOrCreateChatSession(existingID)
 	if err != nil {
 		t.Fatalf("getOrCreateChatSession error: %v", err)
 	}
 	if created {
 		t.Error("expected created=false for existing session")
 	}
-	if session.ID != "abc" {
-		t.Errorf("session ID = %q, want abc", session.ID)
+	if session.ID != existingID {
+		t.Errorf("session ID = %q, want %s", session.ID, existingID)
 	}
 }
 
@@ -643,5 +649,153 @@ func TestWithChatAIConfig(t *testing.T) {
 	}
 	if s.chatEndpoint != "https://custom.endpoint/v1" {
 		t.Errorf("chatEndpoint = %q, want https://custom.endpoint/v1", s.chatEndpoint)
+	}
+}
+
+func TestHandleChat_ConcurrentSameSession(t *testing.T) {
+	s := newChatTestServer(t)
+
+	sessionID := "11111111-2222-3333-4444-555555555555"
+
+	// Pre-create a session with inFlight already set
+	session := &ChatSession{
+		ID:             sessionID,
+		Messages:       []ai.ChatMessage{},
+		TokenBudget:    50000,
+		CreatedAt:      time.Now(),
+		LastAccessedAt: time.Now(),
+		inFlight:       true,
+	}
+	s.chatMu.Lock()
+	s.chatSessions[sessionID] = session
+	s.chatMu.Unlock()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", chatBody(sessionID, "hello"))
+	rr := httptest.NewRecorder()
+	s.handleChat(rr, req)
+
+	if rr.Code != http.StatusConflict {
+		t.Errorf("handleChat(concurrent same session) status = %d, want %d", rr.Code, http.StatusConflict)
+	}
+	if !strings.Contains(rr.Body.String(), "already in progress") {
+		t.Error("expected 'already in progress' message in response")
+	}
+}
+
+func TestHandleChat_SessionIdReuse(t *testing.T) {
+	s := newChatTestServer(t)
+
+	clientID := "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", chatBody(clientID, "hello"))
+	rr := httptest.NewRecorder()
+	s.handleChat(rr, req)
+
+	// The session should be stored under the client-supplied ID
+	s.chatMu.RLock()
+	_, exists := s.chatSessions[clientID]
+	s.chatMu.RUnlock()
+
+	if !exists {
+		t.Errorf("session should be stored under client-supplied ID %q", clientID)
+	}
+}
+
+func TestHandleChat_InvalidSessionId(t *testing.T) {
+	s := newChatTestServer(t)
+
+	// Non-UUID session ID should be rejected
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", chatBody("not-a-uuid", "hello"))
+	rr := httptest.NewRecorder()
+	s.handleChat(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("handleChat(invalid session id) status = %d, want %d", rr.Code, http.StatusBadRequest)
+	}
+	if !strings.Contains(rr.Body.String(), "invalid session ID") {
+		t.Error("expected 'invalid session ID' error message")
+	}
+}
+
+func TestCleanupChatSessions_TOCTOU(t *testing.T) {
+	s := newChatTestServer(t, func(s *Server) {
+		s.chatSessionTTL = 1 * time.Millisecond
+	})
+
+	// Create an expired session
+	session := &ChatSession{
+		ID:             "toctou-session",
+		Messages:       []ai.ChatMessage{},
+		TokenBudget:    50000,
+		CreatedAt:      time.Now().Add(-1 * time.Hour),
+		LastAccessedAt: time.Now().Add(-1 * time.Hour),
+	}
+	s.chatMu.Lock()
+	s.chatSessions["toctou-session"] = session
+	s.chatMu.Unlock()
+
+	// Pass 1: identify expired sessions under RLock (simulating what cleanup does)
+	var expired []string
+	s.chatMu.RLock()
+	now := time.Now()
+	for id, sess := range s.chatSessions {
+		sess.mu.Lock()
+		if now.Sub(sess.LastAccessedAt) > s.chatSessionTTL {
+			expired = append(expired, id)
+		}
+		sess.mu.Unlock()
+	}
+	s.chatMu.RUnlock()
+
+	if len(expired) == 0 {
+		t.Fatal("expected session to be identified as expired in pass 1")
+	}
+
+	// Between pass 1 and pass 2, the session gets accessed (simulating TOCTOU race)
+	session.mu.Lock()
+	session.LastAccessedAt = time.Now()
+	session.mu.Unlock()
+
+	// Pass 2: with the TOCTOU fix, it should re-check and NOT delete
+	if len(expired) > 0 {
+		now = time.Now()
+		s.chatMu.Lock()
+		for _, id := range expired {
+			if sess, ok := s.chatSessions[id]; ok {
+				sess.mu.Lock()
+				if now.Sub(sess.LastAccessedAt) > s.chatSessionTTL {
+					delete(s.chatSessions, id)
+				}
+				sess.mu.Unlock()
+			}
+		}
+		s.chatMu.Unlock()
+	}
+
+	// Session should NOT have been deleted because it was refreshed
+	s.chatMu.RLock()
+	_, exists := s.chatSessions["toctou-session"]
+	s.chatMu.RUnlock()
+
+	if !exists {
+		t.Error("session should not have been deleted after being refreshed between pass 1 and pass 2")
+	}
+}
+
+func TestHandleChat_RequestBodyTooLarge(t *testing.T) {
+	s := newChatTestServer(t)
+
+	// Create a valid JSON body that exceeds maxChatBodySize (64 KB).
+	// The message field needs to be large enough to push the total over 64KB.
+	largeMsg := strings.Repeat("x", maxChatBodySize)
+	body, _ := json.Marshal(chatRequest{
+		SessionID: "",
+		Message:   largeMsg,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBuffer(body))
+	rr := httptest.NewRecorder()
+	s.handleChat(rr, req)
+
+	if rr.Code != http.StatusRequestEntityTooLarge {
+		t.Errorf("handleChat(large body) status = %d, want %d", rr.Code, http.StatusRequestEntityTooLarge)
 	}
 }

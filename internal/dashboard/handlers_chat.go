@@ -19,6 +19,7 @@ package dashboard
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -44,6 +45,7 @@ type ChatSession struct {
 	TokenBudget    int
 	CreatedAt      time.Time
 	LastAccessedAt time.Time
+	inFlight       bool
 	mu             sync.Mutex
 }
 
@@ -103,19 +105,48 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	// Get or create session
 	session, created, err := s.getOrCreateChatSession(req.SessionID)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		http.Error(w, err.Error(), chatSessionErrorStatus(err))
 		return
 	}
+
+	// Check and set inFlight guard before writing SSE headers.
+	session.mu.Lock()
+	if session.inFlight {
+		session.mu.Unlock()
+		http.Error(w, "A request is already in progress for this session", http.StatusConflict)
+		return
+	}
+	session.inFlight = true
+	session.mu.Unlock()
 
 	// Set SSE headers before any event writes.
 	setSSEHeaders(w)
 	flusher, _ := w.(http.Flusher)
 
+	// Extend write deadline for long-running SSE chat streams
+	if rc := http.NewResponseController(w); rc != nil {
+		_ = rc.SetWriteDeadline(time.Now().Add(10 * time.Minute))
+	}
+
 	// Lock session briefly to check budget, append user message, and snapshot.
+	// Keep I/O (SSE writes) outside the lock to avoid blocking on slow clients.
 	session.mu.Lock()
 	session.LastAccessedAt = time.Now()
+	budgetExceeded := session.TokensUsed >= session.TokenBudget
+	var msgsCopy []ai.ChatMessage
+	if !budgetExceeded {
+		session.Messages = append(session.Messages, ai.ChatMessage{
+			Role:    "user",
+			Content: msg,
+		})
+		msgsCopy = make([]ai.ChatMessage, len(session.Messages))
+		copy(msgsCopy, session.Messages)
+	} else {
+		session.inFlight = false
+	}
+	session.mu.Unlock()
 
-	// Send session_id event if newly created
+	// Send session_id event if newly created (outside lock — ID is immutable).
 	if created {
 		writeSSEEvent(w, map[string]any{
 			"type":      "session_id",
@@ -126,9 +157,8 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Check session token budget
-	if session.TokensUsed >= session.TokenBudget {
-		session.mu.Unlock()
+	// Handle budget exceeded (outside lock).
+	if budgetExceeded {
 		writeSSEEvent(w, map[string]any{
 			"type":    string(ai.ChatEventError),
 			"content": "Session token budget exceeded. Start a new session.",
@@ -143,19 +173,13 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Append user message and snapshot history for the agent.
-	session.Messages = append(session.Messages, ai.ChatMessage{
-		Role:    "user",
-		Content: msg,
-	})
-	msgsCopy := make([]ai.ChatMessage, len(session.Messages))
-	copy(msgsCopy, session.Messages)
-	session.mu.Unlock()
-
 	// Check global budget (no session lock needed)
 	if mgr, ok := provider.(*ai.Manager); ok {
 		if budget := mgr.Budget(); budget != nil {
 			if err := budget.CheckAllowance(500); err != nil {
+				session.mu.Lock()
+				session.inFlight = false
+				session.mu.Unlock()
 				writeSSEEvent(w, map[string]any{
 					"type":    string(ai.ChatEventError),
 					"content": "Global AI token budget exceeded.",
@@ -189,6 +213,9 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	if s.chatMaxTurns > 0 {
 		agent.SetMaxIterations(s.chatMaxTurns)
 	}
+	if s.chatHTTPClient != nil {
+		agent.SetHTTPClient(s.chatHTTPClient)
+	}
 
 	// Run the agent turn with SSE streaming (no session lock held).
 	emit := func(evt ai.ChatEvent) {
@@ -204,6 +231,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	session.mu.Lock()
 	session.Messages = updatedMsgs
 	session.TokensUsed += tokensUsed
+	session.inFlight = false
 	session.mu.Unlock()
 
 	// Record global budget usage
@@ -222,7 +250,6 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 func setSSEHeaders(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
 }
 
 // writeSSEEvent writes a single SSE event to the response writer.
@@ -235,9 +262,36 @@ func writeSSEEvent(w http.ResponseWriter, evt any) {
 	_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
 }
 
+// maxSessionIDLen is the maximum acceptable length for a client-supplied session ID.
+const maxSessionIDLen = 72
+
+// badSessionIDError is returned when a client-supplied session ID fails validation.
+type badSessionIDError struct{ msg string }
+
+func (e *badSessionIDError) Error() string { return e.msg }
+
+// chatSessionErrorStatus maps getOrCreateChatSession errors to HTTP status codes.
+func chatSessionErrorStatus(err error) int {
+	var target *badSessionIDError
+	if errors.As(err, &target) {
+		return http.StatusBadRequest
+	}
+	return http.StatusServiceUnavailable
+}
+
 // getOrCreateChatSession returns an existing session or creates a new one.
 // Returns (session, created, error).
 func (s *Server) getOrCreateChatSession(sessionID string) (*ChatSession, bool, error) {
+	// Validate session ID format before acquiring lock.
+	if sessionID != "" {
+		if len(sessionID) > maxSessionIDLen {
+			return nil, false, &badSessionIDError{"invalid session ID"}
+		}
+		if _, err := uuid.Parse(sessionID); err != nil {
+			return nil, false, &badSessionIDError{"invalid session ID format"}
+		}
+	}
+
 	s.chatMu.Lock()
 	defer s.chatMu.Unlock()
 
@@ -252,8 +306,11 @@ func (s *Server) getOrCreateChatSession(sessionID string) (*ChatSession, bool, e
 		return nil, false, fmt.Errorf("maximum concurrent chat sessions reached")
 	}
 
-	// Create new session
-	id := uuid.New().String()
+	// Create new session — reuse client-supplied ID when available
+	id := sessionID
+	if id == "" {
+		id = uuid.New().String()
+	}
 	session := &ChatSession{
 		ID:             id,
 		Messages:       make([]ai.ChatMessage, 0),
@@ -457,9 +514,16 @@ func (s *Server) cleanupChatSessions(ctx context.Context) {
 
 			// Pass 2: delete expired sessions under write Lock.
 			if len(expired) > 0 {
+				now = time.Now()
 				s.chatMu.Lock()
 				for _, id := range expired {
-					delete(s.chatSessions, id)
+					if session, ok := s.chatSessions[id]; ok {
+						session.mu.Lock()
+						if now.Sub(session.LastAccessedAt) > s.chatSessionTTL {
+							delete(s.chatSessions, id)
+						}
+						session.mu.Unlock()
+					}
 				}
 				s.chatMu.Unlock()
 			}

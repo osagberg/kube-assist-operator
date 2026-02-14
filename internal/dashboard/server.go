@@ -237,6 +237,7 @@ type Server struct {
 	chatAIModel       string // Model for chat agent
 	chatProviderName  string // Provider name for chat agent
 	chatEndpoint      string // Endpoint for chat agent
+	chatHTTPClient    *http.Client
 }
 
 // NewServer creates a new dashboard server
@@ -517,9 +518,8 @@ func (s *Server) WithChat(enabled bool, maxTurns, tokenBudget, maxSessions int, 
 	s.chatTokenBudget = tokenBudget
 	s.chatMaxSessions = maxSessions
 	s.chatSessionTTL = sessionTTL
-	if enabled {
-		s.chatSessions = make(map[string]*ChatSession)
-	}
+	s.chatSessions = make(map[string]*ChatSession)
+	s.chatHTTPClient = &http.Client{Timeout: 90 * time.Second}
 	return s
 }
 

@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from 'react'
 import { useChat } from '../hooks/useChat'
 import type { ChatMessage } from '../types'
 
-export function ChatPanel({ open, onClose }: { open: boolean; onClose: () => void }) {
+export function ChatPanel({ open, onClose, clusterId }: { open: boolean; onClose: () => void; clusterId?: string }) {
   const { messages, streaming, send, reset, stop } = useChat()
   const [input, setInput] = useState('')
   const messagesEndRef = useRef<HTMLDivElement>(null)
@@ -21,7 +21,7 @@ export function ChatPanel({ open, onClose }: { open: boolean; onClose: () => voi
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
     if (!input.trim() || streaming) return
-    send(input.trim())
+    send(input.trim(), clusterId)
     setInput('')
   }
 

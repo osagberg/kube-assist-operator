@@ -429,14 +429,20 @@ func TestChatAgent_ContextCancellation(t *testing.T) {
 		t.Fatal("expected error from cancelled context, got nil")
 	}
 
-	var hasError bool
+	var hasError, hasDone bool
 	for _, e := range events {
 		if e.Type == ChatEventError {
 			hasError = true
 		}
+		if e.Type == ChatEventDone {
+			hasDone = true
+		}
 	}
 	if !hasError {
 		t.Error("expected error event for context cancellation")
+	}
+	if !hasDone {
+		t.Error("expected done event after context cancellation error")
 	}
 }
 
@@ -649,5 +655,251 @@ func TestChatTools_Definitions(t *testing.T) {
 		if !found {
 			t.Errorf("missing tool: %s", name)
 		}
+	}
+}
+
+func TestBuildAnthropicMessages(t *testing.T) {
+	t.Run("user message", func(t *testing.T) {
+		msgs, err := buildAnthropicMessages([]ChatMessage{
+			{Role: "user", Content: "hello"},
+		})
+		if err != nil {
+			t.Fatalf("buildAnthropicMessages error: %v", err)
+		}
+		if len(msgs) != 1 {
+			t.Fatalf("expected 1 message, got %d", len(msgs))
+		}
+		if msgs[0].Role != "user" { //nolint:goconst // test value
+			t.Errorf("role = %q, want user", msgs[0].Role)
+		}
+		// Content should be a JSON string (quoted)
+		var s string
+		if err := json.Unmarshal(msgs[0].Content, &s); err != nil {
+			t.Fatalf("failed to unmarshal user content as string: %v", err)
+		}
+		if s != "hello" {
+			t.Errorf("content = %q, want hello", s)
+		}
+	})
+
+	t.Run("assistant with tool calls", func(t *testing.T) {
+		msgs, err := buildAnthropicMessages([]ChatMessage{
+			{Role: "assistant", Content: "Let me check.", ToolCalls: []ToolCall{
+				{ID: "tc_1", Name: "get_issues", Args: json.RawMessage(`{"severity":"Critical"}`)},
+			}},
+		})
+		if err != nil {
+			t.Fatalf("buildAnthropicMessages error: %v", err)
+		}
+		if len(msgs) != 1 {
+			t.Fatalf("expected 1 message, got %d", len(msgs))
+		}
+		if msgs[0].Role != "assistant" { //nolint:goconst // test value
+			t.Errorf("role = %q, want assistant", msgs[0].Role)
+		}
+		var blocks []anthropicChatContentBlock
+		if err := json.Unmarshal(msgs[0].Content, &blocks); err != nil {
+			t.Fatalf("failed to unmarshal assistant content: %v", err)
+		}
+		if len(blocks) != 2 {
+			t.Fatalf("expected 2 blocks, got %d", len(blocks))
+		}
+		if blocks[0].Type != "text" || blocks[0].Text != "Let me check." { //nolint:goconst // test value
+			t.Errorf("block[0] = %+v, want text block with 'Let me check.'", blocks[0])
+		}
+		if blocks[1].Type != "tool_use" || blocks[1].Name != "get_issues" { //nolint:goconst // test value
+			t.Errorf("block[1] = %+v, want tool_use block for get_issues", blocks[1])
+		}
+	})
+
+	t.Run("consecutive tool results merged", func(t *testing.T) {
+		msgs, err := buildAnthropicMessages([]ChatMessage{
+			{Role: "user", Content: "check"},
+			{Role: "assistant", Content: "", ToolCalls: []ToolCall{
+				{ID: "tc_1", Name: "get_issues", Args: json.RawMessage(`{}`)},
+				{ID: "tc_2", Name: "get_health_score", Args: json.RawMessage(`{}`)},
+			}},
+			{Role: "tool", Content: "issues result", ToolCallID: "tc_1"},
+			{Role: "tool", Content: "health result", ToolCallID: "tc_2"},
+		})
+		if err != nil {
+			t.Fatalf("buildAnthropicMessages error: %v", err)
+		}
+		// user + assistant + single merged user message for both tool results
+		if len(msgs) != 3 {
+			t.Fatalf("expected 3 messages, got %d", len(msgs))
+		}
+		// The last message should be "user" with 2 tool_result blocks
+		if msgs[2].Role != "user" {
+			t.Errorf("msgs[2].Role = %q, want user", msgs[2].Role)
+		}
+		var blocks []anthropicChatContentBlock
+		if err := json.Unmarshal(msgs[2].Content, &blocks); err != nil {
+			t.Fatalf("failed to unmarshal tool result content: %v", err)
+		}
+		if len(blocks) != 2 {
+			t.Fatalf("expected 2 tool_result blocks, got %d", len(blocks))
+		}
+		if blocks[0].ToolUseID != "tc_1" || blocks[1].ToolUseID != "tc_2" {
+			t.Errorf("tool_use_ids = [%s, %s], want [tc_1, tc_2]", blocks[0].ToolUseID, blocks[1].ToolUseID)
+		}
+	})
+
+	t.Run("empty tool result content not omitted", func(t *testing.T) {
+		msgs, err := buildAnthropicMessages([]ChatMessage{
+			{Role: "assistant", Content: "", ToolCalls: []ToolCall{
+				{ID: "tc_1", Name: "get_issues", Args: json.RawMessage(`{}`)},
+			}},
+			{Role: "tool", Content: "", ToolCallID: "tc_1"},
+		})
+		if err != nil {
+			t.Fatalf("buildAnthropicMessages error: %v", err)
+		}
+		if len(msgs) != 2 {
+			t.Fatalf("expected 2 messages, got %d", len(msgs))
+		}
+		// Marshal the tool result message and verify "content" key is present
+		raw := msgs[1].Content
+		var blocks []json.RawMessage
+		if err := json.Unmarshal(raw, &blocks); err != nil {
+			t.Fatalf("failed to unmarshal: %v", err)
+		}
+		if len(blocks) != 1 {
+			t.Fatalf("expected 1 block, got %d", len(blocks))
+		}
+		blockStr := string(blocks[0])
+		// The "content" key must be present even when empty (Fix 3 validation)
+		if !strings.Contains(blockStr, `"content"`) {
+			t.Errorf("tool_result block missing 'content' key: %s", blockStr)
+		}
+	})
+}
+
+func TestChatAgent_RunTurnReturnsMessages(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(openAITextResponse("All good.", 50))
+	}))
+	defer server.Close()
+
+	agent := NewChatAgent(ProviderNameOpenAI, "test-key", "gpt-4o-mini", server.URL, noopExecutor)
+
+	initial := []ChatMessage{
+		{Role: "user", Content: "How are things?"},
+	}
+	result, _, err := agent.RunTurn(context.Background(), initial, func(ChatEvent) {})
+	if err != nil {
+		t.Fatalf("RunTurn() error = %v", err)
+	}
+
+	// Should contain the original user message + the assistant response
+	if len(result) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(result))
+	}
+	if result[0].Role != "user" || result[0].Content != "How are things?" {
+		t.Errorf("result[0] = %+v, want user message", result[0])
+	}
+	if result[1].Role != "assistant" || result[1].Content != "All good." {
+		t.Errorf("result[1] = %+v, want assistant message with 'All good.'", result[1])
+	}
+
+	// Verify original slice was not mutated
+	if len(initial) != 1 {
+		t.Errorf("original messages slice was mutated: len = %d, want 1", len(initial))
+	}
+}
+
+func TestChatAgent_UnsupportedProvider(t *testing.T) {
+	agent := NewChatAgent("unsupported", "key", "model", "http://localhost", noopExecutor)
+
+	var events []ChatEvent
+	_, _, err := agent.RunTurn(context.Background(), []ChatMessage{
+		{Role: "user", Content: "test"},
+	}, func(e ChatEvent) {
+		events = append(events, e)
+	})
+
+	if err == nil {
+		t.Fatal("expected error for unsupported provider, got nil")
+	}
+	if !strings.Contains(err.Error(), "unsupported provider") {
+		t.Errorf("error = %q, want to contain 'unsupported provider'", err.Error())
+	}
+}
+
+func TestChatAgent_ParallelToolCalls(t *testing.T) {
+	var callCount atomic.Int32
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := callCount.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+
+		if n == 1 {
+			// First call: return 2 tool calls in a single response
+			calls := []openAIChatToolCall{
+				{
+					ID:   "call_a",
+					Type: "function",
+					Function: struct {
+						Name      string `json:"name"`
+						Arguments string `json:"arguments"`
+					}{Name: "get_issues", Arguments: `{}`},
+				},
+				{
+					ID:   "call_b",
+					Type: "function",
+					Function: struct {
+						Name      string `json:"name"`
+						Arguments string `json:"arguments"`
+					}{Name: "get_health_score", Arguments: `{}`},
+				},
+			}
+			_, _ = w.Write(openAIToolCallResponse(calls, 100))
+			return
+		}
+
+		// Second call: final text response
+		_, _ = w.Write(openAITextResponse("Both tools executed.", 120))
+	}))
+	defer server.Close()
+
+	var executedTools []string
+	executor := func(_ context.Context, name string, _ json.RawMessage) (string, error) {
+		executedTools = append(executedTools, name)
+		return `{"ok":true}`, nil
+	}
+
+	agent := NewChatAgent(ProviderNameOpenAI, "test-key", "gpt-4o-mini", server.URL, executor)
+
+	var events []ChatEvent
+	_, _, err := agent.RunTurn(context.Background(), []ChatMessage{
+		{Role: "user", Content: "Run both tools"},
+	}, func(e ChatEvent) {
+		events = append(events, e)
+	})
+	if err != nil {
+		t.Fatalf("RunTurn() error = %v", err)
+	}
+
+	// Verify both tools were executed
+	if len(executedTools) != 2 {
+		t.Fatalf("expected 2 tool executions, got %d: %v", len(executedTools), executedTools)
+	}
+
+	// Count tool_call and tool_result events
+	var toolCallCount, toolResultCount int
+	for _, e := range events {
+		switch e.Type {
+		case ChatEventToolCall:
+			toolCallCount++
+		case ChatEventToolResult:
+			toolResultCount++
+		}
+	}
+	if toolCallCount != 2 {
+		t.Errorf("tool_call events = %d, want 2", toolCallCount)
+	}
+	if toolResultCount != 2 {
+		t.Errorf("tool_result events = %d, want 2", toolResultCount)
 	}
 }

@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from 'react'
+import { useState, useCallback, useRef, useEffect } from 'react'
 import type { ChatMessage, ChatEvent } from '../types'
 
 export function useChat() {
@@ -7,7 +7,12 @@ export function useChat() {
   const sessionIdRef = useRef(crypto.randomUUID())
   const abortRef = useRef<AbortController | null>(null)
 
-  const send = useCallback(async (message: string) => {
+  // Abort any in-flight request on unmount
+  useEffect(() => {
+    return () => { abortRef.current?.abort() }
+  }, [])
+
+  const send = useCallback(async (message: string, clusterId?: string) => {
     if (!message.trim() || streaming) return
 
     // Add user message
@@ -26,7 +31,7 @@ export function useChat() {
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sessionId: sessionIdRef.current, message }),
+        body: JSON.stringify({ sessionId: sessionIdRef.current, message, clusterId }),
         credentials: 'same-origin',
         signal: controller.signal,
       })
@@ -36,7 +41,10 @@ export function useChat() {
         throw new Error(text || `${response.status} ${response.statusText}`)
       }
 
-      const reader = response.body!.getReader()
+      if (!response.body) {
+        throw new Error('Response body is not readable')
+      }
+      const reader = response.body.getReader()
       const decoder = new TextDecoder()
       let buffer = ''
 
@@ -106,19 +114,19 @@ function handleEvent(event: ChatEvent, setMessages: React.Dispatch<React.SetStat
 
     switch (event.type) {
       case 'tool_call':
-        last.toolCalls = [...(last.toolCalls ?? []), { name: event.toolName ?? '', args: event.toolArgs ?? {} }]
+        last.toolCalls = [...(last.toolCalls ?? []), { name: event.tool ?? '', args: event.args ?? {} }]
         break
       case 'tool_result':
-        last.toolResults = [...(last.toolResults ?? []), { name: event.toolName ?? '', summary: event.summary ?? '' }]
+        last.toolResults = [...(last.toolResults ?? []), { name: event.tool ?? '', summary: event.content ?? '' }]
         break
       case 'content':
-        last.content = event.text ?? ''
+        last.content = (last.content ?? '') + (event.content ?? '')
         break
       case 'done':
         last.streaming = false
         break
       case 'error':
-        last.content = last.content || `Error: ${event.error}`
+        last.content = last.content || `Error: ${event.content}`
         last.streaming = false
         break
     }

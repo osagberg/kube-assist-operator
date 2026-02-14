@@ -214,11 +214,10 @@ export interface ChatMessage {
 }
 
 export interface ChatEvent {
-  type: 'thinking' | 'tool_call' | 'tool_result' | 'content' | 'done' | 'error'
-  text?: string
-  toolName?: string
-  toolArgs?: Record<string, unknown>
-  summary?: string
-  tokensUsed?: number
-  error?: string
+  type: 'thinking' | 'tool_call' | 'tool_result' | 'content' | 'done' | 'error' | 'session_id'
+  content?: string
+  tool?: string
+  args?: Record<string, unknown>
+  tokens?: number
+  sessionId?: string
 }

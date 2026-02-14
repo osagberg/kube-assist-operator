@@ -399,7 +399,7 @@ function App() {
         prefill={diagnosePrefill}
       />
       <KeyboardShortcutsHelp open={showHelp} onClose={() => setShowHelp(false)} />
-      {canChat && <ChatPanel open={showChat} onClose={() => setShowChat(false)} />}
+      {canChat && <ChatPanel open={showChat} onClose={() => setShowChat(false)} clusterId={effectiveCluster} />}
       <ToastContainer />
     </div>
     </ErrorBoundary>
