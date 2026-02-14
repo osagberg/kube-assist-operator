@@ -74,6 +74,7 @@ type TeamHealthRequestReconciler struct {
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
 // +kubebuilder:rbac:groups=apps,resources=deployments;statefulsets;daemonsets;replicasets,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=pods;events,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get
 // +kubebuilder:rbac:groups=helm.toolkit.fluxcd.io,resources=helmreleases,verbs=get;list;watch
 // +kubebuilder:rbac:groups=kustomize.toolkit.fluxcd.io,resources=kustomizations,verbs=get;list;watch
 // +kubebuilder:rbac:groups=source.toolkit.fluxcd.io,resources=gitrepositories,verbs=get;list;watch
@@ -441,62 +442,76 @@ func (r *TeamHealthRequestReconciler) dispatchNotifications(
 ) {
 	log := logf.FromContext(ctx).WithValues("name", hr.Name, "namespace", hr.Namespace)
 
-	for _, target := range hr.Spec.Notify {
-		if target.Type != assistv1alpha1.NotificationTypeWebhook {
-			continue
-		}
+	// Build notification once — values are identical for every target
+	score := float64(100)
+	if totalHealthy+totalIssues > 0 {
+		score = float64(totalHealthy) / float64(totalHealthy+totalIssues) * 100
+	}
+	notification := notifier.Notification{
+		Summary:       hr.Status.Summary,
+		TotalHealthy:  totalHealthy,
+		TotalIssues:   totalIssues,
+		CriticalCount: criticalCount,
+		WarningCount:  warningCount,
+		HealthScore:   score,
+		Timestamp:     time.Now(),
+		RequestName:   hr.Name,
+		Namespace:     hr.Namespace,
+	}
 
-		// Skip if OnCompletion is false and this is a completion notification
+	for _, target := range hr.Spec.Notify {
 		if !target.OnCompletion {
 			continue
 		}
 
-		// Skip if severity filter doesn't match
 		if target.OnSeverity != "" && !r.severityMet(target.OnSeverity, criticalCount, warningCount) {
 			continue
 		}
 
 		webhookURL := target.URL
 		if webhookURL == "" && target.SecretRef != nil {
-			// Read URL from secret
 			var secret corev1.Secret
 			if err := r.Get(ctx, client.ObjectKey{Name: target.SecretRef.Name, Namespace: hr.Namespace}, &secret); err != nil {
 				log.Error(err, "Failed to read notification secret", "secret", target.SecretRef.Name)
 				continue
 			}
 			webhookURL = string(secret.Data[target.SecretRef.Key])
+			if webhookURL == "" {
+				log.Info("Secret key not found or empty, skipping notification",
+					"secret", target.SecretRef.Name, "key", target.SecretRef.Key)
+				continue
+			}
 		}
 
 		if webhookURL == "" {
 			continue
 		}
-		if err := r.validateNotificationURL(hr, webhookURL); err != nil {
-			log.Error(err, "Skipping invalid notification target", "target", "webhook")
+
+		// PagerDuty uses routing key (not a URL), skip URL validation for it
+		if target.Type != assistv1alpha1.NotificationTypePagerDuty {
+			if err := r.validateNotificationURL(hr, webhookURL); err != nil {
+				log.Error(err, "Skipping invalid notification target", "target", string(target.Type))
+				continue
+			}
+		}
+
+		var n notifier.Notifier
+		switch target.Type {
+		case assistv1alpha1.NotificationTypeWebhook:
+			n = notifier.NewWebhookNotifier(webhookURL)
+		case assistv1alpha1.NotificationTypeSlack:
+			n = notifier.NewSlackNotifier(webhookURL)
+		case assistv1alpha1.NotificationTypePagerDuty:
+			n = notifier.NewPagerDutyNotifier(webhookURL)
+		case assistv1alpha1.NotificationTypeTeams:
+			n = notifier.NewTeamsNotifier(webhookURL)
+		default:
+			log.Info("Unknown notification type, skipping", "type", target.Type)
 			continue
 		}
 
-		healthy := totalHealthy
-		issues := totalIssues
-		score := float64(100)
-		if healthy+issues > 0 {
-			score = float64(healthy) / float64(healthy+issues) * 100
-		}
-
-		n := notifier.Notification{
-			Summary:       hr.Status.Summary,
-			TotalHealthy:  healthy,
-			TotalIssues:   issues,
-			CriticalCount: criticalCount,
-			WarningCount:  warningCount,
-			HealthScore:   score,
-			Timestamp:     time.Now(),
-			RequestName:   hr.Name,
-			Namespace:     hr.Namespace,
-		}
-
-		wh := notifier.NewWebhookNotifier(webhookURL)
-		if err := wh.Send(ctx, n); err != nil {
-			log.Error(err, "Failed to send notification", "target", "webhook")
+		if err := n.Send(ctx, notification); err != nil {
+			log.Error(err, "Failed to send notification", "type", string(target.Type))
 		}
 	}
 }

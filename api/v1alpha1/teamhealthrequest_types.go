@@ -124,11 +124,14 @@ type CheckerConfig struct {
 }
 
 // NotificationType identifies a notification backend
-// +kubebuilder:validation:Enum=webhook
+// +kubebuilder:validation:Enum=webhook;slack;pagerduty;teams
 type NotificationType string
 
 const (
-	NotificationTypeWebhook NotificationType = "webhook"
+	NotificationTypeWebhook   NotificationType = "webhook"
+	NotificationTypeSlack     NotificationType = "slack"
+	NotificationTypePagerDuty NotificationType = "pagerduty"
+	NotificationTypeTeams     NotificationType = "teams"
 
 	// AllowHTTPWebhooksAnnotation permits HTTP webhook URLs for explicit test/dev use.
 	AllowHTTPWebhooksAnnotation = "assist.cluster.local/allow-http-webhooks"

@@ -11,6 +11,8 @@ import (
 	"time"
 )
 
+const contentTypeJSON = "application/json"
+
 // WebhookNotifier sends notifications via HTTP POST to a webhook URL.
 // Compatible with Slack, Mattermost, Discord, and any HTTP endpoint.
 type WebhookNotifier struct {
@@ -91,7 +93,7 @@ func (w *WebhookNotifier) Send(ctx context.Context, notification Notification) e
 	if err != nil {
 		return fmt.Errorf("create request: %w", err)
 	}
-	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Type", contentTypeJSON)
 
 	resp, err := w.client.Do(req)
 	if err != nil {

@@ -172,6 +172,9 @@ spec:
                       description: type is the notification backend type
                       enum:
                       - webhook
+                      - slack
+                      - pagerduty
+                      - teams
                       type: string
                     url:
                       description: url is the webhook URL (use this OR secretRef,

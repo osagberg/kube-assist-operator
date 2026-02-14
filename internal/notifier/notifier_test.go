@@ -71,7 +71,7 @@ func TestWebhookNotifier_SendValidatesJSONBody(t *testing.T) {
 			t.Fatalf("read body: %v", err)
 		}
 
-		if ct := r.Header.Get("Content-Type"); ct != "application/json" {
+		if ct := r.Header.Get("Content-Type"); ct != contentTypeJSON {
 			t.Errorf("Content-Type = %q, want application/json", ct)
 		}
 
