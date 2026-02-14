@@ -130,8 +130,9 @@ func main() {
 		"Enable AI-powered suggestions for health check issues.")
 	flag.StringVar(&aiProvider, "ai-provider", "noop",
 		"AI provider to use: anthropic, openai, or noop (default: noop).")
+	// Deprecated: use KUBE_ASSIST_AI_API_KEY env var instead.
 	flag.StringVar(&aiAPIKey, "ai-api-key", "",
-		"API key for AI provider (or use KUBE_ASSIST_AI_API_KEY env var).")
+		"API key for AI provider (DEPRECATED: use KUBE_ASSIST_AI_API_KEY env var).")
 	flag.StringVar(&aiModel, "ai-model", "",
 		"AI model to use (provider default if empty).")
 	flag.StringVar(&aiExplainModel, "ai-explain-model", "",
@@ -160,8 +161,9 @@ func main() {
 		"Console backend URL (required when --datasource=console).")
 	flag.StringVar(&clusterID, "cluster-id", "",
 		"Cluster identifier for console backend.")
+	// Deprecated: use CONSOLE_BEARER_TOKEN env var instead.
 	flag.StringVar(&consoleBearerToken, "console-bearer-token", "",
-		"Bearer token for authenticating with console backend.")
+		"Bearer token for console backend (DEPRECATED: use CONSOLE_BEARER_TOKEN env var).")
 	flag.BoolVar(&aiLogContext, "ai-log-context", false,
 		"Enable event/log context enrichment for AI analysis.")
 	flag.IntVar(&aiLogContextMaxEvents, "ai-log-context-max-events", 10,
@@ -202,6 +204,18 @@ func main() {
 	flag.Parse()
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+
+	// Warn about deprecated CLI flags that expose secrets in process listings
+	if aiAPIKey != "" {
+		ctrl.Log.WithName("setup").Info(
+			"WARNING: --ai-api-key flag is deprecated; use KUBE_ASSIST_AI_API_KEY env var instead",
+		)
+	}
+	if consoleBearerToken != "" {
+		ctrl.Log.WithName("setup").Info(
+			"WARNING: --console-bearer-token is deprecated; use CONSOLE_BEARER_TOKEN env var",
+		)
+	}
 
 	// if the enable-http2 flag is false (the default), http/2 should be disabled
 	// due to its vulnerabilities. More specifically, disabling http/2 will
@@ -421,7 +435,7 @@ func main() {
 		Scheme:    mgr.GetScheme(),
 		Clientset: clientset,
 		Registry:  registry,
-		Recorder:  mgr.GetEventRecorder("troubleshootrequest-controller"),
+		Recorder:  mgr.GetEventRecorderFor("troubleshootrequest-controller"), //nolint:staticcheck
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "TroubleshootRequest")
 		os.Exit(1)
@@ -436,7 +450,7 @@ func main() {
 		Correlator:       causal.NewCorrelator(),
 		NotifierRegistry: notifierRegistry,
 		NotifySem:        make(chan struct{}, notifySemCapacity),
-		Recorder:         mgr.GetEventRecorder("teamhealthrequest-controller"),
+		Recorder:         mgr.GetEventRecorderFor("teamhealthrequest-controller"), //nolint:staticcheck
 		LogContextConfig: logCtxConfig,
 		Clientset:        clientset,
 	}).SetupWithManager(mgr); err != nil {
@@ -447,7 +461,7 @@ func main() {
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
 		Registry: registry,
-		Recorder: mgr.GetEventRecorder("checkplugin-controller"),
+		Recorder: mgr.GetEventRecorderFor("checkplugin-controller"), //nolint:staticcheck
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "CheckPlugin")
 		os.Exit(1)

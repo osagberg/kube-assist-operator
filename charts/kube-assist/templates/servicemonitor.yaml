@@ -23,4 +23,5 @@ spec:
   selector:
     matchLabels:
       {{- include "kube-assist.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: metrics
 {{- end }}

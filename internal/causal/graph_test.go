@@ -24,6 +24,7 @@ import (
 )
 
 func TestResourceGraphCorrelator_Correlate(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 2, 6, 12, 0, 0, 0, time.UTC)
 
 	tests := []struct {
@@ -153,6 +154,7 @@ func TestResourceGraphCorrelator_Correlate(t *testing.T) {
 }
 
 func TestParseResource(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		resource string
 		wantKind string
@@ -178,6 +180,7 @@ func TestParseResource(t *testing.T) {
 }
 
 func TestRelatedByOwnership(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		kindA    string
@@ -207,6 +210,7 @@ func TestRelatedByOwnership(t *testing.T) {
 }
 
 func TestGraphConfidence(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name       string
 		eventCount int

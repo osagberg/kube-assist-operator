@@ -24,6 +24,7 @@ import (
 )
 
 func TestTemporalCorrelator_Correlate(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 2, 6, 12, 0, 0, 0, time.UTC)
 
 	tests := []struct {
@@ -149,6 +150,7 @@ func TestTemporalCorrelator_Correlate(t *testing.T) {
 }
 
 func TestTemporalCorrelator_GroupMetadata(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 2, 6, 12, 0, 0, 0, time.UTC)
 	tc := NewTemporalCorrelator(DefaultTimeWindow)
 
@@ -189,6 +191,7 @@ func TestTemporalCorrelator_GroupMetadata(t *testing.T) {
 }
 
 func TestHighestSeverity(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		events  []TimelineEvent

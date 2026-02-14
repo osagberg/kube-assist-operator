@@ -18,24 +18,18 @@ type SlackNotifier struct {
 
 // NewSlackNotifier creates a Slack notifier that sends Block Kit payloads.
 func NewSlackNotifier(webhookURL string) *SlackNotifier {
-	return &SlackNotifier{
+	s := &SlackNotifier{
 		webhookURL: webhookURL,
-		client: &http.Client{
-			Timeout: 10 * time.Second,
-			CheckRedirect: func(req *http.Request, via []*http.Request) error {
-				return http.ErrUseLastResponse
-			},
-		},
 	}
+	s.client = newSSRFSafeClient(&s.allowPrivate)
+	return s
 }
 
 func (s *SlackNotifier) Name() string { return "slack" }
 
 func (s *SlackNotifier) Send(ctx context.Context, notification Notification) error {
-	if !s.allowPrivate {
-		if err := validateWebhookTarget(s.webhookURL); err != nil {
-			return fmt.Errorf("SSRF protection: %w", err)
-		}
+	if err := validateWebhookURL(s.webhookURL); err != nil {
+		return fmt.Errorf("SSRF protection: %w", err)
 	}
 
 	payload := s.buildPayload(notification)

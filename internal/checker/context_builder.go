@@ -21,7 +21,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -47,6 +46,10 @@ type ContextBuilder struct {
 	ds        datasource.DataSource
 	clientset kubernetes.Interface // nil = skip logs
 	config    LogContextConfig
+
+	// Namespace-scoped caches, populated lazily during Enrich.
+	eventCache map[string]*corev1.EventList // PERF-001
+	podCache   map[string]*corev1.PodList   // PERF-002
 }
 
 // NewContextBuilder creates a ContextBuilder for enriching AI issue context.
@@ -58,9 +61,8 @@ func NewContextBuilder(ds datasource.DataSource, clientset kubernetes.Interface,
 	}
 }
 
-// rsHashSuffix matches the standard Kubernetes ReplicaSet hash suffix.
-// ReplicaSet names follow the pattern: {deployment-name}-{8-10 char alphanumeric hash}
-var rsHashSuffix = regexp.MustCompile(`-[a-z0-9]{8,10}$`)
+// rsHashSuffix is an alias for the canonical RSHashSuffix in hashutil.go.
+var rsHashSuffix = RSHashSuffix
 
 // crashTypes are issue types that indicate a pod has crashed and may have
 // useful previous-container logs.
@@ -87,6 +89,10 @@ func (b *ContextBuilder) Enrich(ctx context.Context, issues []ai.IssueContext) [
 		maxLines = 50
 	}
 
+	// Initialize namespace-scoped caches to avoid redundant API calls.
+	b.eventCache = make(map[string]*corev1.EventList)
+	b.podCache = make(map[string]*corev1.PodList)
+
 	for i := range issues {
 		b.enrichEvents(ctx, &issues[i], maxEvents)
 		b.enrichLogs(ctx, &issues[i], maxLines)
@@ -94,6 +100,22 @@ func (b *ContextBuilder) Enrich(ctx context.Context, issues []ai.IssueContext) [
 
 	issues = b.capTokenBudget(issues)
 	return issues
+}
+
+// getNamespaceEvents returns the cached event list for a namespace, fetching it if needed.
+func (b *ContextBuilder) getNamespaceEvents(ctx context.Context, namespace string) *corev1.EventList {
+	if cached, ok := b.eventCache[namespace]; ok {
+		return cached
+	}
+	eventList := &corev1.EventList{}
+	if err := b.ds.List(ctx, eventList, client.InNamespace(namespace)); err != nil {
+		log.V(1).Info("Failed to list events for context enrichment",
+			"namespace", namespace, "error", err)
+		b.eventCache[namespace] = &corev1.EventList{} // cache empty to avoid retries
+		return b.eventCache[namespace]
+	}
+	b.eventCache[namespace] = eventList
+	return eventList
 }
 
 // enrichEvents fetches recent events for the issue's resource and populates
@@ -104,12 +126,7 @@ func (b *ContextBuilder) enrichEvents(ctx context.Context, issue *ai.IssueContex
 		return
 	}
 
-	eventList := &corev1.EventList{}
-	if err := b.ds.List(ctx, eventList, client.InNamespace(issue.Namespace)); err != nil {
-		log.V(1).Info("Failed to list events for context enrichment",
-			"namespace", issue.Namespace, "resource", issue.Resource, "error", err)
-		return
-	}
+	eventList := b.getNamespaceEvents(ctx, issue.Namespace)
 
 	// Filter events matching the resource kind and name
 	var matching []corev1.Event
@@ -139,15 +156,9 @@ func (b *ContextBuilder) enrichEvents(ctx context.Context, issue *ai.IssueContex
 	issue.Events = events
 }
 
-// eventTime returns the best available timestamp for an event.
+// eventTime delegates to the shared EventTimestamp utility.
 func eventTime(ev corev1.Event) time.Time {
-	if !ev.LastTimestamp.IsZero() {
-		return ev.LastTimestamp.Time
-	}
-	if ev.EventTime.Time.IsZero() {
-		return ev.CreationTimestamp.Time
-	}
-	return ev.EventTime.Time
+	return EventTimestamp(&ev)
 }
 
 // enrichLogs fetches pod logs for crash-type issues and populates
@@ -207,13 +218,24 @@ func (b *ContextBuilder) enrichLogs(ctx context.Context, issue *ai.IssueContext,
 	issue.Logs = lines
 }
 
+// getNamespacePods returns the cached pod list for a namespace, fetching it if needed.
+func (b *ContextBuilder) getNamespacePods(ctx context.Context, namespace string) *corev1.PodList {
+	if cached, ok := b.podCache[namespace]; ok {
+		return cached
+	}
+	podList := &corev1.PodList{}
+	if err := b.ds.List(ctx, podList, client.InNamespace(namespace)); err != nil {
+		b.podCache[namespace] = &corev1.PodList{} // cache empty to avoid retries
+		return b.podCache[namespace]
+	}
+	b.podCache[namespace] = podList
+	return podList
+}
+
 // findOwnedPods lists pods in a namespace and returns names of those owned by
 // the given workload resource.
 func (b *ContextBuilder) findOwnedPods(ctx context.Context, namespace, kind, name string) []string {
-	podList := &corev1.PodList{}
-	if err := b.ds.List(ctx, podList, client.InNamespace(namespace)); err != nil {
-		return nil
-	}
+	podList := b.getNamespacePods(ctx, namespace)
 
 	var podNames []string
 	for _, pod := range podList.Items {

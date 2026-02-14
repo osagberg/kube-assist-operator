@@ -26,6 +26,7 @@ import (
 
 	"github.com/osagberg/kube-assist-operator/internal/ai"
 	"github.com/osagberg/kube-assist-operator/internal/causal"
+	"github.com/osagberg/kube-assist-operator/internal/history"
 	"github.com/osagberg/kube-assist-operator/internal/prediction"
 )
 
@@ -79,9 +80,9 @@ func (s *Server) handlePostAISettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate field lengths to prevent unbounded input
-	if len(req.APIKey) > maxAPIKeyLen {
-		http.Error(w, fmt.Sprintf("apiKey exceeds maximum length of %d", maxAPIKeyLen), http.StatusBadRequest)
+	// SECURITY-002: reject direct API key submission — only secretRef-based config is allowed
+	if req.APIKey != "" {
+		http.Error(w, "Direct apiKey submission is not allowed; use secretRef-based configuration", http.StatusBadRequest)
 		return
 	}
 	if len(req.Model) > maxModelLen {
@@ -167,6 +168,11 @@ func (s *Server) handlePostAISettings(w http.ResponseWriter, r *http.Request) {
 
 		// Trigger immediate check so user doesn't wait for next 30s cycle
 		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Error(fmt.Errorf("panic: %v", r), "recovered panic in AI settings check goroutine")
+				}
+			}()
 			if s.checkInFlight.CompareAndSwap(false, true) {
 				defer s.checkInFlight.Store(false)
 				checkCtx, checkCancel := context.WithTimeout(context.Background(), s.checkTimeout)
@@ -223,6 +229,11 @@ func (s *Server) handlePostAISettings(w http.ResponseWriter, r *http.Request) {
 
 	// Trigger immediate check so user doesn't wait for next 30s cycle
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Error(fmt.Errorf("panic: %v", r), "recovered panic in AI settings check goroutine")
+			}
+		}()
 		if s.checkInFlight.CompareAndSwap(false, true) {
 			defer s.checkInFlight.Store(false)
 			checkCtx, checkCancel := context.WithTimeout(context.Background(), s.checkTimeout)
@@ -284,7 +295,7 @@ func (s *Server) handleExplain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Read from cluster state (use "" key for backward compat)
+	// CONCURRENCY-011: snapshot all cluster state references under a single RLock
 	clusterID := r.URL.Query().Get("clusterId")
 	s.mu.RLock()
 	cs := s.clusters[clusterID]
@@ -292,11 +303,13 @@ func (s *Server) handleExplain(w http.ResponseWriter, r *http.Request) {
 	var cached *ExplainCacheEntry
 	var latest *HealthUpdate
 	var causalCtx *causal.CausalContext
+	var historyRef *history.RingBuffer
 	if cs != nil {
 		currentHash = cs.lastIssueHash
 		cached = cs.lastExplain
 		latest = cs.latest
 		causalCtx = cs.latestCausal
+		historyRef = cs.history
 	}
 	s.mu.RUnlock()
 
@@ -329,8 +342,8 @@ func (s *Server) handleExplain(w http.ResponseWriter, r *http.Request) {
 	}
 	healthMap["summary"] = latest.Summary
 
-	// Get history for trend context
-	historySnapshots := cs.history.Last(20)
+	// Get history for trend context (using snapshot from single lock above)
+	historySnapshots := historyRef.Last(20)
 	historyForPrompt := make([]any, 0, len(historySnapshots))
 	for _, snap := range historySnapshots {
 		historyForPrompt = append(historyForPrompt, map[string]any{
@@ -386,10 +399,10 @@ func (s *Server) handleExplain(w http.ResponseWriter, r *http.Request) {
 	// Parse the response
 	explainResp := ai.ParseExplainResponse(analysisResp.RawContent, analysisResp.TokensUsed)
 
-	// Cache the result
+	// CONCURRENCY-003: re-lookup cs under write lock before writing lastExplain
 	s.mu.Lock()
-	if cs != nil {
-		cs.lastExplain = &ExplainCacheEntry{
+	if freshCS, ok := s.clusters[clusterID]; ok {
+		freshCS.lastExplain = &ExplainCacheEntry{
 			Response:  explainResp,
 			IssueHash: currentHash,
 			CachedAt:  time.Now(),

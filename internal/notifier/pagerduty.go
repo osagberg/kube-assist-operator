@@ -22,25 +22,19 @@ type PagerDutyNotifier struct {
 // NewPagerDutyNotifier creates a PagerDuty notifier. The routingKey is the
 // PagerDuty integration key (passed via the URL field in NotificationTarget).
 func NewPagerDutyNotifier(routingKey string) *PagerDutyNotifier {
-	return &PagerDutyNotifier{
+	p := &PagerDutyNotifier{
 		routingKey: routingKey,
 		apiURL:     pagerDutyEventsURL,
-		client: &http.Client{
-			Timeout: 10 * time.Second,
-			CheckRedirect: func(req *http.Request, via []*http.Request) error {
-				return http.ErrUseLastResponse
-			},
-		},
 	}
+	p.client = newSSRFSafeClient(&p.allowPrivate)
+	return p
 }
 
 func (p *PagerDutyNotifier) Name() string { return "pagerduty" }
 
 func (p *PagerDutyNotifier) Send(ctx context.Context, notification Notification) error {
-	if !p.allowPrivate {
-		if err := validateWebhookTarget(p.apiURL); err != nil {
-			return fmt.Errorf("SSRF protection: %w", err)
-		}
+	if err := validateWebhookURL(p.apiURL); err != nil {
+		return fmt.Errorf("SSRF protection: %w", err)
 	}
 
 	payload := p.buildPayload(notification)

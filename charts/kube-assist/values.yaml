@@ -29,6 +29,20 @@ serviceAccount:
   # If not set and create is true, a name is generated using the fullname template.
   name: ""
 
+# Health checker toggles.
+checkers:
+  secrets:
+    # Enable the SecretChecker, which inspects TLS certificates for expiry.
+    # When enabled, the operator is granted read-only access to Secrets via RBAC.
+    # Security implication: the operator can read all Secrets cluster-wide.
+    # Disable this if you do not need TLS certificate expiry checks.
+    enabled: true
+
+# Pod disruption budget for high-availability deployments.
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
 podAnnotations: {}
 
 podLabels: {}
@@ -36,6 +50,8 @@ podLabels: {}
 # Pod-level security context. Applied to all containers in the pod.
 podSecurityContext:
   runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
   seccompProfile:
     type: RuntimeDefault
 
@@ -319,6 +335,13 @@ networkPolicy:
           kubernetes.io/metadata.name: kube-system
   # DNS egress mode: "all" (any namespace) or "kube-system" (restricted to kube-system pods).
   dnsMode: kube-system
+  # AI provider egress CIDR (used when ai.enabled=true).
+  # Default 0.0.0.0/0 allows any external IP. Restrict to provider CIDRs in production:
+  #   Anthropic API:  160.79.104.0/23
+  #   OpenAI API:     Resolve api.openai.com (no stable CIDR published)
+  # Example: "160.79.104.0/23" for Anthropic-only access.
+  aiEgress:
+    cidr: "0.0.0.0/0"
   # Console backend egress (used when datasource.type=console).
   consoleEgress:
     # CIDR must be explicitly set when datasource.type=console.

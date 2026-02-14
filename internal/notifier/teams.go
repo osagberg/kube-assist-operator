@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"time"
 )
 
 // TeamsNotifier sends notifications formatted as Microsoft Teams Adaptive Cards.
@@ -18,24 +17,18 @@ type TeamsNotifier struct {
 
 // NewTeamsNotifier creates a Teams notifier that sends Adaptive Card payloads.
 func NewTeamsNotifier(webhookURL string) *TeamsNotifier {
-	return &TeamsNotifier{
+	t := &TeamsNotifier{
 		webhookURL: webhookURL,
-		client: &http.Client{
-			Timeout: 10 * time.Second,
-			CheckRedirect: func(req *http.Request, via []*http.Request) error {
-				return http.ErrUseLastResponse
-			},
-		},
 	}
+	t.client = newSSRFSafeClient(&t.allowPrivate)
+	return t
 }
 
 func (t *TeamsNotifier) Name() string { return "teams" }
 
 func (t *TeamsNotifier) Send(ctx context.Context, notification Notification) error {
-	if !t.allowPrivate {
-		if err := validateWebhookTarget(t.webhookURL); err != nil {
-			return fmt.Errorf("SSRF protection: %w", err)
-		}
+	if err := validateWebhookURL(t.webhookURL); err != nil {
+		return fmt.Errorf("SSRF protection: %w", err)
 	}
 
 	payload := t.buildPayload(notification)

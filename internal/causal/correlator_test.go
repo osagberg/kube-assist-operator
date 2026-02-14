@@ -25,6 +25,7 @@ import (
 )
 
 func TestCorrelator_Analyze(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 2, 6, 12, 0, 0, 0, time.UTC)
 
 	tests := []struct {

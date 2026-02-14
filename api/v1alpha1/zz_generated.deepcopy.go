@@ -486,6 +486,10 @@ func (in *TeamHealthRequestStatus) DeepCopyInto(out *TeamHealthRequestStatus) {
 		in, out := &in.LastCheckTime, &out.LastCheckTime
 		*out = (*in).DeepCopy()
 	}
+	if in.StartedAt != nil {
+		in, out := &in.StartedAt, &out.StartedAt
+		*out = (*in).DeepCopy()
+	}
 	if in.CompletedAt != nil {
 		in, out := &in.CompletedAt, &out.CompletedAt
 		*out = (*in).DeepCopy()

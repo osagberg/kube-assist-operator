@@ -20,9 +20,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -165,8 +167,13 @@ func (p *OpenAIProvider) doOpenAIRequest(ctx context.Context, req openAIRequest)
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
 
+	if resp.StatusCode == http.StatusTooManyRequests {
+		delay := parseRetryAfter(resp.Header.Get("Retry-After"))
+		return nil, &rateLimitError{retryAfter: delay, statusCode: resp.StatusCode}
+	}
+
 	if resp.StatusCode != http.StatusOK {
-		errBody := string(respBody)
+		errBody := NewSanitizer().SanitizeString(string(respBody))
 		if len(errBody) > 500 {
 			errBody = errBody[:500] + "...(truncated)"
 		}
@@ -235,6 +242,9 @@ func (p *OpenAIProvider) Analyze(ctx context.Context, request AnalysisRequest) (
 
 	result, err := p.doOpenAIRequest(ctx, openAIReq)
 	if err != nil {
+		if !isRetryableForFallback(err) {
+			return nil, err
+		}
 		// Retry without schema on failure (model may not support structured outputs)
 		log.Info("Schema mode failed, retrying with prompt-based JSON", "error", err)
 		openAIReq.ResponseFormat = nil
@@ -322,6 +332,51 @@ func isValidJSONEscapeChar(c byte) bool {
 	default:
 		return false
 	}
+}
+
+// rateLimitError represents a 429 rate-limit response from an API provider.
+type rateLimitError struct {
+	retryAfter time.Duration
+	statusCode int
+}
+
+func (e *rateLimitError) Error() string {
+	return fmt.Sprintf("rate limited (status %d), retry after %s", e.statusCode, e.retryAfter)
+}
+
+// parseRetryAfter parses the Retry-After header as seconds. Returns 5s default.
+func parseRetryAfter(header string) time.Duration {
+	if header == "" {
+		return 5 * time.Second
+	}
+	secs, err := strconv.Atoi(header)
+	if err != nil || secs <= 0 {
+		return 5 * time.Second
+	}
+	d := time.Duration(secs) * time.Second
+	return min(d, 30*time.Second)
+}
+
+// isRetryableForFallback returns true if the error indicates a schema/tool
+// incompatibility (400-level) that warrants retrying without structured output.
+// Returns false for auth errors, rate limits, and server errors.
+func isRetryableForFallback(err error) bool {
+	if err == nil {
+		return false
+	}
+	// Never retry rate-limit errors as fallback
+	var rle *rateLimitError
+	if errors.As(err, &rle) {
+		return false
+	}
+	// Check for HTTP status code in error message
+	errMsg := err.Error()
+	// Only retry 400 Bad Request (likely schema/tool incompatibility)
+	if strings.Contains(errMsg, "status 400") {
+		return true
+	}
+	// Do not retry 401, 403, 429, 5xx
+	return false
 }
 
 const systemPrompt = `You are a Kubernetes troubleshooting expert. You analyze health check issues from Kubernetes clusters and provide actionable suggestions.

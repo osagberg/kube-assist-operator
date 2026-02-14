@@ -318,14 +318,18 @@ func (c *ConsoleDataSource) ClusterID() string { return c.clusterID }
 
 // ForCluster returns a shallow copy of this ConsoleDataSource scoped to a specific cluster.
 // The returned copy shares the HTTP client, scheme, and auth token.
-func (c *ConsoleDataSource) ForCluster(clusterID string) *ConsoleDataSource {
+// Returns an error if clusterID fails validation.
+func (c *ConsoleDataSource) ForCluster(clusterID string) (*ConsoleDataSource, error) {
+	if err := ValidateClusterID(clusterID); err != nil {
+		return nil, err
+	}
 	return &ConsoleDataSource{
 		baseURL:     c.baseURL,
 		clusterID:   clusterID,
 		httpClient:  c.httpClient,
 		scheme:      c.scheme,
 		bearerToken: c.bearerToken,
-	}
+	}, nil
 }
 
 // GetClusters fetches the list of known cluster IDs from the console backend.

@@ -87,16 +87,17 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check that AI and chat are enabled
-	if !s.chatEnabled || !s.aiEnabled {
+	// CONCURRENCY-006: read chatEnabled/aiEnabled under lock
+	s.mu.RLock()
+	chatOn := s.chatEnabled
+	aiOn := s.aiEnabled
+	provider := s.aiProvider
+	s.mu.RUnlock()
+
+	if !chatOn || !aiOn {
 		http.Error(w, "Chat is not available", http.StatusServiceUnavailable)
 		return
 	}
-
-	// Check AI provider is available
-	s.mu.RLock()
-	provider := s.aiProvider
-	s.mu.RUnlock()
 	if provider == nil || !provider.Available() {
 		http.Error(w, "AI provider is not available", http.StatusServiceUnavailable)
 		return

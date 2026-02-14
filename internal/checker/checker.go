@@ -31,6 +31,15 @@ import (
 	"github.com/osagberg/kube-assist-operator/internal/datasource"
 )
 
+// validNamespace matches RFC 1123 label names: lowercase alphanumeric, may contain
+// hyphens, must start and end with alphanumeric, max 63 characters.
+var validNamespace = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
+
+// IsValidNamespace reports whether name conforms to RFC 1123 label format.
+func IsValidNamespace(name string) bool {
+	return validNamespace.MatchString(name)
+}
+
 var log = logf.Log.WithName("checker")
 
 // Severity levels for issues
@@ -443,22 +452,24 @@ func severityRank(s string) int {
 	}
 }
 
-// Pre-compiled regexes for normalizeMessage (avoid recompiling on every call).
-var (
-	rePodHash    = regexp.MustCompile(`-[a-f0-9]{5,}(-[a-z0-9]{5})?`)
-	reWhitespace = regexp.MustCompile(`\s+`)
-)
+// Pre-compiled regex for normalizeMessage (avoid recompiling on every call).
+var reWhitespace = regexp.MustCompile(`\s+`)
 
 // normalizeMessage strips pod hash suffixes and collapses whitespace for dedup comparison.
 func normalizeMessage(msg string) string {
 	// Strip pod hash suffixes like -7f8b4c5d9f-x2k4p or -abc12
-	msg = rePodHash.ReplaceAllString(msg, "-<pod>")
+	msg = PodHashSuffix.ReplaceAllString(msg, "-<pod>")
 	// Collapse multiple spaces
 	msg = reWhitespace.ReplaceAllString(msg, " ")
 	return strings.TrimSpace(msg)
 }
 
 // normalizeIssueSignature creates a dedup key from an issue's core identity.
+// Non-conforming namespaces are sanitized to prevent injection into AI prompts.
 func normalizeIssueSignature(issue Issue) string {
-	return issue.Type + "|" + issue.Severity + "|" + normalizeMessage(issue.Message)
+	ns := issue.Namespace
+	if ns != "" && !IsValidNamespace(ns) {
+		ns = "<invalid>"
+	}
+	return issue.Type + "|" + issue.Severity + "|" + ns + "|" + normalizeMessage(issue.Message)
 }

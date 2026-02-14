@@ -779,7 +779,7 @@ func TestEstimateCost(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cost := estimateCost(tt.provider, tt.tokens)
+			cost := estimateCost(tt.provider, "", tt.tokens)
 			if tt.wantZero {
 				if cost != 0 {
 					t.Errorf("estimateCost(%q, %d) = %f, want 0", tt.provider, tt.tokens, cost)
@@ -798,8 +798,8 @@ func TestEstimateCost(t *testing.T) {
 
 func TestEstimateCost_Proportional(t *testing.T) {
 	// Cost should be proportional to tokens
-	cost1k := estimateCost("anthropic", 1000)
-	cost2k := estimateCost("anthropic", 2000)
+	cost1k := estimateCost("anthropic", "", 1000)
+	cost2k := estimateCost("anthropic", "", 2000)
 	if cost1k <= 0 {
 		t.Skip("anthropic cost is zero, cannot test proportionality")
 	}

@@ -21,18 +21,50 @@ import (
 	"net/http"
 
 	"github.com/osagberg/kube-assist-operator/internal/causal"
+	"github.com/osagberg/kube-assist-operator/internal/history"
 	"github.com/osagberg/kube-assist-operator/internal/prediction"
 )
+
+// deepCopyCausalContext returns a deep copy of CausalContext so it can be
+// marshaled outside the lock without races on shared slices.
+func deepCopyCausalContext(cc *causal.CausalContext) *causal.CausalContext {
+	if cc == nil {
+		return nil
+	}
+	cp := &causal.CausalContext{
+		UncorrelatedCount: cc.UncorrelatedCount,
+		TotalIssues:       cc.TotalIssues,
+	}
+	if len(cc.Groups) > 0 {
+		cp.Groups = make([]causal.CausalGroup, len(cc.Groups))
+		for i, g := range cc.Groups {
+			cp.Groups[i] = g
+			// Deep-copy slices within each group
+			if len(g.Events) > 0 {
+				events := make([]causal.TimelineEvent, len(g.Events))
+				copy(events, g.Events)
+				cp.Groups[i].Events = events
+			}
+			if len(g.AISteps) > 0 {
+				steps := make([]string, len(g.AISteps))
+				copy(steps, g.AISteps)
+				cp.Groups[i].AISteps = steps
+			}
+		}
+	}
+	return cp
+}
 
 // handleCausalGroups returns the latest causal correlation analysis
 func (s *Server) handleCausalGroups(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	clusterID := r.URL.Query().Get("clusterId")
 
+	// CONCURRENCY-005: deep-copy CausalContext under lock, marshal outside
 	s.mu.RLock()
 	var cc *causal.CausalContext
 	if cs, ok := s.clusters[clusterID]; ok {
-		cc = cs.latestCausal
+		cc = deepCopyCausalContext(cs.latestCausal)
 	}
 	s.mu.RUnlock()
 
@@ -60,8 +92,13 @@ func (s *Server) handlePrediction(w http.ResponseWriter, r *http.Request) {
 
 	clusterID := r.URL.Query().Get("clusterId")
 
+	// CONCURRENCY-004: hold RLock through cs.history.Last(50)
 	s.mu.RLock()
 	cs, ok := s.clusters[clusterID]
+	var snapshots []history.HealthSnapshot
+	if ok {
+		snapshots = cs.history.Last(50)
+	}
 	s.mu.RUnlock()
 
 	if !ok {
@@ -74,8 +111,6 @@ func (s *Server) handlePrediction(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-
-	snapshots := cs.history.Last(50)
 
 	result := prediction.Analyze(snapshots)
 	if result == nil {

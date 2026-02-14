@@ -55,11 +55,14 @@ func NewCache(capacity int, ttl time.Duration, enabled bool) *Cache {
 }
 
 // Get retrieves a cached response. Returns (nil, false) on miss or expired entry.
-func (c *Cache) Get(request AnalysisRequest) (*AnalysisResponse, bool) {
+// Optional providerModel args: [provider, model] are included in the cache key
+// to avoid cross-provider collisions.
+func (c *Cache) Get(request AnalysisRequest, providerModel ...string) (*AnalysisResponse, bool) {
 	if c == nil || !c.enabled {
 		return nil, false
 	}
-	key := computeRequestKey(request)
+	provider, model := extractProviderModel(providerModel)
+	key := computeRequestKey(request, provider, model)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -78,11 +81,13 @@ func (c *Cache) Get(request AnalysisRequest) (*AnalysisResponse, bool) {
 }
 
 // Put stores a response in the cache, evicting LRU entries if at capacity.
-func (c *Cache) Put(request AnalysisRequest, response *AnalysisResponse) {
+// Optional providerModel args: [provider, model] are included in the cache key.
+func (c *Cache) Put(request AnalysisRequest, response *AnalysisResponse, providerModel ...string) {
 	if c == nil || !c.enabled || response == nil {
 		return
 	}
-	key := computeRequestKey(request)
+	provider, model := extractProviderModel(providerModel)
+	key := computeRequestKey(request, provider, model)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -131,10 +136,25 @@ func (c *Cache) Size() int {
 	return c.order.Len()
 }
 
+// extractProviderModel extracts provider and model from variadic args.
+func extractProviderModel(args []string) (string, string) {
+	var provider, model string
+	if len(args) > 0 {
+		provider = args[0]
+	}
+	if len(args) > 1 {
+		model = args[1]
+	}
+	return provider, model
+}
+
 // computeRequestKey generates a deterministic cache key from an AnalysisRequest.
-// It hashes the normalized issue signatures (type+severity+resource+message).
-func computeRequestKey(request AnalysisRequest) string {
+// It hashes the normalized issue signatures (type+severity+resource+message)
+// along with provider and model to avoid cross-provider cache collisions.
+// NOTE: SHA-256 is used here; xxhash could be substituted if profiling shows this is a bottleneck.
+func computeRequestKey(request AnalysisRequest, provider, model string) string {
 	h := sha256.New()
+	_, _ = fmt.Fprintf(h, "provider:%s|model:%s\n", provider, model)
 	for _, issue := range request.Issues {
 		_, _ = fmt.Fprintf(h, "%s|%s|%s|%s\n", issue.Type, issue.Severity, issue.Resource, issue.Message)
 	}

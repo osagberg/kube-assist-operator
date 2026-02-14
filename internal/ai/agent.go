@@ -92,6 +92,9 @@ type ChatAgent struct {
 	tools         []ToolDef
 	executor      ToolExecutor
 	maxIterations int
+	maxTokens     int
+	budget        *Budget
+	chatBudget    *ChatBudget
 }
 
 // NewChatAgent creates a ChatAgent for the given provider.
@@ -121,6 +124,28 @@ func NewChatAgent(providerName, apiKey, model, endpoint string, executor ToolExe
 		tools:         ChatTools(),
 		executor:      executor,
 		maxIterations: 5,
+		maxTokens:     4096,
+	}
+}
+
+// SetMaxTokens overrides the default max response tokens (4096).
+func (a *ChatAgent) SetMaxTokens(n int) {
+	if a != nil && n > 0 {
+		a.maxTokens = n
+	}
+}
+
+// SetBudget sets a per-session token budget for this agent.
+func (a *ChatAgent) SetBudget(b *Budget) {
+	if a != nil {
+		a.budget = b
+	}
+}
+
+// SetChatBudget sets an aggregate chat budget for cross-session tracking.
+func (a *ChatAgent) SetChatBudget(cb *ChatBudget) {
+	if a != nil {
+		a.chatBudget = cb
 	}
 }
 
@@ -156,6 +181,26 @@ func (a *ChatAgent) RunTurn(ctx context.Context, messages []ChatMessage, emit fu
 			emit(ChatEvent{Type: ChatEventDone, Tokens: totalTokens})
 			return msgs, totalTokens, err
 		}
+
+		// Budget check before each API call (AI-004)
+		estimatedTokens := estimateMessageTokens(msgs)
+		if a.budget != nil {
+			if err := a.budget.TryConsume(estimatedTokens); err != nil {
+				emit(ChatEvent{Type: ChatEventError, Content: "Token budget exceeded. Please try again later."})
+				emit(ChatEvent{Type: ChatEventDone, Tokens: totalTokens})
+				return msgs, totalTokens, fmt.Errorf("chat budget exceeded: %w", err)
+			}
+		}
+		if a.chatBudget != nil {
+			if err := a.chatBudget.TryChatConsume(estimatedTokens); err != nil {
+				emit(ChatEvent{Type: ChatEventError, Content: "Aggregate chat token budget exceeded."})
+				emit(ChatEvent{Type: ChatEventDone, Tokens: totalTokens})
+				return msgs, totalTokens, fmt.Errorf("aggregate chat budget exceeded: %w", err)
+			}
+		}
+
+		// Summarize older messages if approaching context window limit (AI-015)
+		msgs = a.maybeCompactHistory(msgs)
 
 		emit(ChatEvent{Type: ChatEventThinking})
 
@@ -315,7 +360,7 @@ func (a *ChatAgent) callOpenAI(ctx context.Context, messages []ChatMessage) (str
 		Model:       a.model,
 		Messages:    oaiMsgs,
 		Tools:       oaiTools,
-		MaxTokens:   4096,
+		MaxTokens:   a.maxTokens,
 		Temperature: 0.3,
 	}
 
@@ -434,7 +479,7 @@ func (a *ChatAgent) callAnthropic(ctx context.Context, messages []ChatMessage) (
 
 	reqBody := anthropicChatRequest{
 		Model:     a.model,
-		MaxTokens: 4096,
+		MaxTokens: a.maxTokens,
 		System:    chatSystemPrompt,
 		Messages:  anthMsgs,
 		Tools:     anthTools,
@@ -584,6 +629,55 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return string(runes[:maxLen]) + "...(truncated)"
+}
+
+// estimateMessageTokens returns an approximate token count for a message list.
+// Uses a simple heuristic of ~4 characters per token.
+func estimateMessageTokens(msgs []ChatMessage) int {
+	total := 0
+	for _, m := range msgs {
+		total += len(m.Content)
+		for _, tc := range m.ToolCalls {
+			total += len(tc.Args) + len(tc.Name)
+		}
+	}
+	return total / 4
+}
+
+// contextWindowEstimate is the approximate context window in tokens.
+// Conservative estimate that works for both OpenAI and Anthropic models.
+const contextWindowEstimate = 128000
+
+// maybeCompactHistory summarizes older messages if the accumulated content
+// exceeds 80% of the estimated context window. Keeps the first (system-like)
+// message and the last few messages intact.
+func (a *ChatAgent) maybeCompactHistory(msgs []ChatMessage) []ChatMessage {
+	threshold := contextWindowEstimate * 80 / 100
+	est := estimateMessageTokens(msgs)
+	if est < threshold || len(msgs) <= 4 {
+		return msgs
+	}
+
+	// Summarize all but the last 3 messages into a single summary
+	keepTail := min(3, len(msgs))
+	toSummarize := msgs[:len(msgs)-keepTail]
+	tail := msgs[len(msgs)-keepTail:]
+
+	var summary strings.Builder
+	summary.WriteString("Previous conversation summary: ")
+	for _, m := range toSummarize {
+		if m.Content != "" {
+			summary.WriteString(fmt.Sprintf("[%s] %s ", m.Role, truncate(m.Content, 100)))
+		}
+	}
+
+	compacted := make([]ChatMessage, 0, 1+keepTail)
+	compacted = append(compacted, ChatMessage{
+		Role:    "user",
+		Content: summary.String(),
+	})
+	compacted = append(compacted, tail...)
+	return compacted
 }
 
 // ---------------------------------------------------------------------------
