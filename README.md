@@ -384,7 +384,7 @@ make install-cli
 
 ## Roadmap
 
-Next priorities: server.go decomposition, test coverage targets, schema-enforced AI outputs, ServiceMonitor Helm templates.
+Current priorities: T0-3 coverage lock, T1-5 dashboard OIDC auth, T1-8 operator SLO pack, and T1-9 upgrade/migration strategy.
 
 For the full roadmap with dependency graph and implementation details, see the project documentation.
 

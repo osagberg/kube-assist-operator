@@ -84,7 +84,6 @@ flowchart LR
     controller --> datasource
     controller --> scope
     controller --> notifier
-    controller --> history
 
     dashboard --> ai
     dashboard --> checker
