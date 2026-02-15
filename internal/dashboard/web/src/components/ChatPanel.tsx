@@ -18,11 +18,11 @@ export function ChatPanel({ open, onClose, clusterId }: { open: boolean; onClose
     if (open) inputRef.current?.focus()
   }, [open])
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!input.trim() || streaming) return
-    send(input.trim(), clusterId)
-    setInput('')
+    const sent = await send(input.trim(), clusterId)
+    if (sent) setInput('')
   }
 
   const handleKeyDown = (e: React.KeyboardEvent) => {

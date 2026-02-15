@@ -196,6 +196,11 @@ type AISettingsResponse struct {
 	ProviderReady bool   `json:"providerReady"`
 }
 
+type authSession struct {
+	tokenHash [32]byte
+	expiresAt time.Time
+}
+
 // Server is the dashboard web server
 type Server struct {
 	client            datasource.DataSource
@@ -228,7 +233,7 @@ type Server struct {
 	mutationLimiter   *rate.Limiter
 	running           atomic.Bool
 	checkInFlight     atomic.Bool
-	sessions          sync.Map // sessionID (string) -> authToken (string)
+	sessions          sync.Map // sessionID (string) -> authSession
 	sessionHMACKey    []byte   // HMAC key for signing session IDs
 	stopCh            chan struct{}
 	chatSessions      map[string]*ChatSession
@@ -401,7 +406,10 @@ func (s *Server) createSession() string {
 	mac.Write([]byte(sessionID))
 	sig := hex.EncodeToString(mac.Sum(nil))
 	signedID := sessionID + "." + sig
-	s.sessions.Store(sessionID, s.authToken)
+	s.sessions.Store(sessionID, authSession{
+		tokenHash: sha256.Sum256([]byte(s.authToken)),
+		expiresAt: time.Now().Add(s.sessionTTL),
+	})
 	return signedID
 }
 
@@ -432,7 +440,23 @@ func (s *Server) validateToken(r *http.Request) bool {
 			return false
 		}
 		// Look up session in store
-		if _, ok := s.sessions.Load(sessionID); ok {
+		if value, ok := s.sessions.Load(sessionID); ok {
+			session, ok := value.(authSession)
+			if !ok {
+				s.sessions.Delete(sessionID)
+				return false
+			}
+			if !session.expiresAt.After(time.Now()) {
+				s.sessions.Delete(sessionID)
+				return false
+			}
+			if subtle.ConstantTimeCompare(session.tokenHash[:], wantHash[:]) != 1 {
+				s.sessions.Delete(sessionID)
+				return false
+			}
+			// Sliding expiry keeps active browser sessions alive within TTL bounds.
+			session.expiresAt = time.Now().Add(s.sessionTTL)
+			s.sessions.Store(sessionID, session)
 			return true
 		}
 	}
@@ -693,6 +717,11 @@ func (s *Server) Start(ctx context.Context) error {
 
 	s.running.Store(true)
 
+	// Start auth session cleanup when dashboard auth is enabled.
+	if s.authToken != "" {
+		go s.cleanupAuthSessions(ctx)
+	}
+
 	// Start chat session cleanup if chat is enabled
 	if s.chatEnabled {
 		go s.cleanupChatSessions(ctx)
@@ -773,4 +802,30 @@ func (s *Server) cleanupExpiredIssueStates(ctx context.Context) {
 			s.mu.Unlock()
 		}
 	}
+}
+
+// cleanupAuthSessions periodically removes expired auth sessions.
+func (s *Server) cleanupAuthSessions(ctx context.Context) {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-s.stopCh:
+			return
+		case <-ticker.C:
+			s.cleanupAuthSessionsOnce(time.Now())
+		}
+	}
+}
+
+func (s *Server) cleanupAuthSessionsOnce(now time.Time) {
+	s.sessions.Range(func(key, value any) bool {
+		session, ok := value.(authSession)
+		if !ok || !session.expiresAt.After(now) {
+			s.sessions.Delete(key)
+		}
+		return true
+	})
 }

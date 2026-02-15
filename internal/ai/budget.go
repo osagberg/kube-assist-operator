@@ -187,7 +187,7 @@ func NewChatBudget(maxTokens int64) *ChatBudget {
 // TryChatConsume checks the aggregate chat budget and reserves tokens.
 // Returns an error if the aggregate limit would be exceeded.
 func (cb *ChatBudget) TryChatConsume(tokens int) error {
-	if cb == nil {
+	if cb == nil || tokens <= 0 {
 		return nil
 	}
 	for {
@@ -200,6 +200,29 @@ func (cb *ChatBudget) TryChatConsume(tokens int) error {
 			return nil
 		}
 	}
+}
+
+// ReleaseUnused returns unused reserved aggregate chat tokens to the budget.
+func (cb *ChatBudget) ReleaseUnused(tokens int) {
+	if cb == nil || tokens <= 0 {
+		return
+	}
+	for {
+		cur := cb.used.Load()
+		next := cur - int64(tokens)
+		next = max(next, 0)
+		if cb.used.CompareAndSwap(cur, next) {
+			return
+		}
+	}
+}
+
+// RecordUsage records additional aggregate token usage (for underestimation deltas).
+func (cb *ChatBudget) RecordUsage(tokens int) {
+	if cb == nil || tokens <= 0 {
+		return
+	}
+	cb.used.Add(int64(tokens))
 }
 
 // ChatUsed returns the current aggregate chat token usage.

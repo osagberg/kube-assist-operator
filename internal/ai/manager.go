@@ -257,6 +257,37 @@ func (m *Manager) Budget() *Budget {
 	return m.budget
 }
 
+// AllowChatTurn applies circuit-breaker admission for dashboard chat turns.
+func (m *Manager) AllowChatTurn() error {
+	m.mu.RLock()
+	cb := m.cb
+	m.mu.RUnlock()
+	if cb != nil && !cb.Allow() {
+		return fmt.Errorf("AI provider unavailable: %w", ErrCircuitOpen)
+	}
+	return nil
+}
+
+// RecordChatTurnSuccess updates circuit-breaker state for successful chat turns.
+func (m *Manager) RecordChatTurnSuccess() {
+	m.mu.RLock()
+	cb := m.cb
+	m.mu.RUnlock()
+	if cb != nil {
+		cb.RecordSuccess()
+	}
+}
+
+// RecordChatTurnFailure updates circuit-breaker state for failed chat turns.
+func (m *Manager) RecordChatTurnFailure() {
+	m.mu.RLock()
+	cb := m.cb
+	m.mu.RUnlock()
+	if cb != nil {
+		cb.RecordFailure()
+	}
+}
+
 // Cache returns the current cache (may be nil).
 func (m *Manager) Cache() *Cache {
 	m.mu.RLock()

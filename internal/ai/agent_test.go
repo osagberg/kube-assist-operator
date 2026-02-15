@@ -25,6 +25,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // ---------------------------------------------------------------------------
@@ -901,5 +902,64 @@ func TestChatAgent_ParallelToolCalls(t *testing.T) {
 	}
 	if toolResultCount != 2 {
 		t.Errorf("tool_result events = %d, want 2", toolResultCount)
+	}
+}
+
+func TestChatAgent_BudgetReservation_ReleasesUnusedTokens(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(openAITextResponse("short answer", 10))
+	}))
+	defer server.Close()
+
+	budget := NewBudget([]BudgetWindow{
+		{Name: "daily", Duration: 24 * time.Hour, Limit: 10000},
+	})
+	agent := NewChatAgent(ProviderNameOpenAI, "test-key", "gpt-4o-mini", server.URL, noopExecutor)
+	agent.SetBudget(budget)
+
+	// Long input inflates estimated reservation, but actual usage is 10 tokens.
+	_, _, err := agent.RunTurn(context.Background(), []ChatMessage{
+		{Role: "user", Content: strings.Repeat("x", 400)},
+	}, func(ChatEvent) {})
+	if err != nil {
+		t.Fatalf("RunTurn() error = %v", err)
+	}
+
+	usage := budget.GetUsage()
+	if len(usage) != 1 {
+		t.Fatalf("expected one budget window, got %d", len(usage))
+	}
+	if usage[0].Used != 10 {
+		t.Fatalf("budget usage = %d, want actual token usage 10", usage[0].Used)
+	}
+}
+
+func TestChatAgent_BudgetReservation_AccountsUnderestimationDelta(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(openAITextResponse("long answer", 700))
+	}))
+	defer server.Close()
+
+	budget := NewBudget([]BudgetWindow{
+		{Name: "daily", Duration: 24 * time.Hour, Limit: 10000},
+	})
+	agent := NewChatAgent(ProviderNameOpenAI, "test-key", "gpt-4o-mini", server.URL, noopExecutor)
+	agent.SetBudget(budget)
+
+	_, _, err := agent.RunTurn(context.Background(), []ChatMessage{
+		{Role: "user", Content: "hi"},
+	}, func(ChatEvent) {})
+	if err != nil {
+		t.Fatalf("RunTurn() error = %v", err)
+	}
+
+	usage := budget.GetUsage()
+	if len(usage) != 1 {
+		t.Fatalf("expected one budget window, got %d", len(usage))
+	}
+	if usage[0].Used != 700 {
+		t.Fatalf("budget usage = %d, want actual token usage 700", usage[0].Used)
 	}
 }

@@ -19,9 +19,12 @@ package dashboard
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -98,6 +101,32 @@ func chatBody(sessionID, message string) *bytes.Buffer {
 	return bytes.NewBuffer(body)
 }
 
+type failingSSEWriter struct {
+	header    http.Header
+	failAfter int
+	writes    int
+}
+
+func newFailingSSEWriter(failAfter int) *failingSSEWriter {
+	return &failingSSEWriter{
+		header:    make(http.Header),
+		failAfter: failAfter,
+	}
+}
+
+func (w *failingSSEWriter) Header() http.Header { return w.header }
+
+func (w *failingSSEWriter) Write(data []byte) (int, error) {
+	if w.writes >= w.failAfter {
+		return 0, errors.New("simulated write failure")
+	}
+	w.writes++
+	return len(data), nil
+}
+
+func (w *failingSSEWriter) WriteHeader(_ int) {}
+func (w *failingSSEWriter) Flush()            {}
+
 func TestHandleChat_POSTOnly(t *testing.T) {
 	s := newChatTestServer(t)
 	for _, method := range []string{http.MethodGet, http.MethodPut, http.MethodDelete} {
@@ -127,6 +156,27 @@ func TestHandleChat_WhitespaceOnlyMessage(t *testing.T) {
 	s.handleChat(rr, req)
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("handleChat(whitespace) status = %d, want %d", rr.Code, http.StatusBadRequest)
+	}
+}
+
+func TestHandleChat_MultiClusterRequiresClusterID(t *testing.T) {
+	s := newChatTestServer(t, func(s *Server) {
+		s.mu.Lock()
+		cs := s.getOrCreateClusterState("cluster-b")
+		cs.latest = &HealthUpdate{
+			Timestamp:  time.Now(),
+			Namespaces: []string{"default"},
+			Results:    map[string]CheckResult{},
+			Summary:    Summary{},
+		}
+		s.mu.Unlock()
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", chatBody("", "hello"))
+	rr := httptest.NewRecorder()
+	s.handleChat(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("handleChat(multi-cluster no clusterId) status = %d, want %d", rr.Code, http.StatusBadRequest)
 	}
 }
 
@@ -302,6 +352,119 @@ func TestHandleChat_SessionBudgetExceeded(t *testing.T) {
 	body := rr.Body.String()
 	if !strings.Contains(body, "budget exceeded") {
 		t.Error("expected budget exceeded error in SSE events")
+	}
+}
+
+func TestHandleChat_GlobalBudgetReservation_PreventsOvercommit(t *testing.T) {
+	var endpointHits atomic.Int32
+	entered := make(chan struct{}, 2)
+	release := make(chan struct{})
+
+	openAIServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		endpointHits.Add(1)
+		select {
+		case entered <- struct{}{}:
+		default:
+		}
+		<-release
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}],"usage":{"total_tokens":400}}`))
+	}))
+	defer openAIServer.Close()
+
+	s := newChatTestServer(t, func(s *Server) {
+		budget := ai.NewBudget([]ai.BudgetWindow{
+			{Name: "daily", Duration: 24 * time.Hour, Limit: 5000},
+		})
+		mgr := ai.NewManager(ai.NewNoOpProvider(), nil, true, budget, nil, nil)
+		s.WithAI(mgr, true)
+		s.WithChatAIConfig(ai.ProviderNameOpenAI, "test-key", "gpt-4o-mini", openAIServer.URL)
+	})
+
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		req := httptest.NewRequest(http.MethodPost, "/api/chat", chatBody("", "first request"))
+		rr := httptest.NewRecorder()
+		s.handleChat(rr, req)
+	})
+
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for first chat request to reach AI endpoint")
+	}
+
+	wg.Go(func() {
+		req := httptest.NewRequest(http.MethodPost, "/api/chat", chatBody("", "second request"))
+		rr := httptest.NewRecorder()
+		s.handleChat(rr, req)
+	})
+
+	time.Sleep(100 * time.Millisecond)
+	close(release)
+	wg.Wait()
+
+	mgr, ok := s.aiProvider.(*ai.Manager)
+	if !ok {
+		t.Fatal("expected AI manager provider")
+	}
+	usage := mgr.Budget().GetUsage()
+	if len(usage) == 0 {
+		t.Fatal("expected non-empty budget usage")
+	}
+	if usage[0].Used > usage[0].Limit {
+		t.Fatalf("chat budget overcommitted: used=%d limit=%d endpointHits=%d", usage[0].Used, usage[0].Limit, endpointHits.Load())
+	}
+	if endpointHits.Load() != 1 {
+		t.Fatalf("expected exactly one provider call due reservation gate, got %d", endpointHits.Load())
+	}
+}
+
+func TestHandleChat_CircuitBreakerBlocksChat(t *testing.T) {
+	cb := ai.NewCircuitBreaker(1, 5*time.Minute)
+	cb.RecordFailure() // threshold=1 opens the circuit
+	s := newChatTestServer(t, func(s *Server) {
+		mgr := ai.NewManager(ai.NewNoOpProvider(), nil, true, nil, nil, cb)
+		s.WithAI(mgr, true)
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", chatBody("", "hello"))
+	rr := httptest.NewRecorder()
+	s.handleChat(rr, req)
+
+	body := rr.Body.String()
+	if !strings.Contains(body, "temporarily unavailable") {
+		t.Fatalf("expected circuit breaker error event, got body: %s", body)
+	}
+}
+
+func TestHandleChat_SSEWriteFailure_ClearsInFlight(t *testing.T) {
+	s := newChatTestServer(t)
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", chatBody("", "hello"))
+	w := newFailingSSEWriter(0) // fail on first SSE write (session_id)
+
+	s.handleChat(w, req)
+
+	s.chatMu.RLock()
+	if len(s.chatSessions) != 1 {
+		s.chatMu.RUnlock()
+		t.Fatalf("expected one chat session, got %d", len(s.chatSessions))
+	}
+	var session *ChatSession
+	for _, sess := range s.chatSessions {
+		session = sess
+		break
+	}
+	s.chatMu.RUnlock()
+	if session == nil {
+		t.Fatal("expected chat session to be created")
+	}
+
+	session.mu.Lock()
+	inFlight := session.inFlight
+	session.mu.Unlock()
+	if inFlight {
+		t.Fatal("expected inFlight to be cleared after SSE write failure")
 	}
 }
 

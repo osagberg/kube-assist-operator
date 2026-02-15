@@ -23,6 +23,7 @@ import { ChatPanel } from './components/ChatPanel'
 import { useKeyboardShortcuts, KeyboardShortcutsHelp } from './components/KeyboardShortcuts'
 import { ToastContainer, showToast } from './components/Toast'
 import { ErrorBoundary } from './components/ErrorBoundary'
+import { getChatAvailability } from './utils/chatSession'
 
 import type { IssueState, TargetKind } from './types'
 
@@ -62,6 +63,10 @@ function App() {
   const { clusters } = useClusters()
   const showFleet = cluster === '' && clusters.length > 1
   const effectiveCluster = (cluster === null || showFleet) ? undefined : cluster || undefined
+  const chatAvailability = useMemo(
+    () => getChatAvailability(canChat, showFleet, effectiveCluster),
+    [canChat, showFleet, effectiveCluster],
+  )
   const { health, error, loading, refresh, setHealth } = useHealth(effectiveCluster)
   const { fleet } = useFleet(showFleet)
   const { data: sseData, connected } = useSSE(paused || showFleet, effectiveCluster)
@@ -165,6 +170,16 @@ function App() {
       return !p
     })
   }, [])
+  const handleOpenChat = useCallback(() => {
+    if (!chatAvailability.enabled) return
+    setShowChat(true)
+  }, [chatAvailability.enabled])
+
+  useEffect(() => {
+    if (!showChat || chatAvailability.enabled) return
+    setShowChat(false)
+    if (chatAvailability.reason) showToast(chatAvailability.reason, 'info')
+  }, [showChat, chatAvailability.enabled, chatAvailability.reason])
 
   useKeyboardShortcuts({
     onToggleTheme: toggleTheme,
@@ -202,8 +217,8 @@ function App() {
             <button onClick={() => setShowSettings(true)} className="glass-button px-3 py-1.5 rounded-lg text-sm" style={{ color: 'var(--text-secondary)' }} aria-label="Open AI settings">
               AI Settings
             </button>
-            {canChat && <button onClick={() => setShowChat(true)} className="glass-button px-3 py-1.5 rounded-lg text-sm" style={{ color: 'var(--text-secondary)' }} aria-label="Open chat">
-              Chat
+            {canChat && <button onClick={handleOpenChat} disabled={!chatAvailability.enabled} title={chatAvailability.reason} className="glass-button px-3 py-1.5 rounded-lg text-sm disabled:opacity-50 disabled:cursor-not-allowed" style={{ color: 'var(--text-secondary)' }} aria-label={chatAvailability.enabled ? 'Open chat' : 'Chat unavailable in this view'}>
+              {chatAvailability.enabled ? 'Chat' : 'Chat (Select Cluster)'}
             </button>}
             <button onClick={toggleTheme} className="glass-button px-3 py-1.5 rounded-lg text-sm" style={{ color: 'var(--text-secondary)' }} aria-label={dark ? 'Switch to light theme' : 'Switch to dark theme'}>
               {dark ? 'Light' : 'Dark'}
@@ -237,8 +252,8 @@ function App() {
                 <button onClick={() => { setShowSettings(true); setMenuOpen(false) }} className="glass-button px-3 py-1.5 rounded-lg text-sm w-full text-left" style={{ color: 'var(--text-secondary)' }} aria-label="Open AI settings">
                   AI Settings
                 </button>
-                {canChat && <button onClick={() => { setShowChat(true); setMenuOpen(false) }} className="glass-button px-3 py-1.5 rounded-lg text-sm w-full text-left" style={{ color: 'var(--text-secondary)' }} aria-label="Open chat">
-                  Chat
+                {canChat && <button onClick={() => { if (chatAvailability.enabled) { setShowChat(true) }; setMenuOpen(false) }} disabled={!chatAvailability.enabled} title={chatAvailability.reason} className="glass-button px-3 py-1.5 rounded-lg text-sm w-full text-left disabled:opacity-50 disabled:cursor-not-allowed" style={{ color: 'var(--text-secondary)' }} aria-label={chatAvailability.enabled ? 'Open chat' : 'Chat unavailable in this view'}>
+                  {chatAvailability.enabled ? 'Chat' : 'Chat (Select Cluster)'}
                 </button>}
                 <button onClick={() => { setShowHelp(true); setMenuOpen(false) }} className="glass-button px-2.5 py-1.5 rounded-lg text-sm font-mono w-full text-left" style={{ color: 'var(--text-secondary)' }} aria-label="Show keyboard shortcuts">
                   ?

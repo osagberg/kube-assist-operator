@@ -1,10 +1,19 @@
 import { useState, useCallback, useRef, useEffect } from 'react'
 import type { ChatMessage, ChatEvent } from '../types'
+import {
+  clearChatSessionId,
+  getOrCreateChatSessionId,
+  resolveSessionIdEvent,
+  saveChatSessionId,
+} from '../utils/chatSession'
 
 export function useChat() {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [streaming, setStreaming] = useState(false)
-  const sessionIdRef = useRef(crypto.randomUUID())
+  const sessionIdRef = useRef('')
+  if (!sessionIdRef.current) {
+    sessionIdRef.current = getOrCreateChatSessionId()
+  }
   const abortRef = useRef<AbortController | null>(null)
 
   // Abort any in-flight request on unmount
@@ -13,7 +22,7 @@ export function useChat() {
   }, [])
 
   const send = useCallback(async (message: string, clusterId?: string) => {
-    if (!message.trim() || streaming) return
+    if (!message.trim() || streaming) return false
 
     // Add user message
     const userMsg: ChatMessage = { role: 'user', content: message }
@@ -26,6 +35,7 @@ export function useChat() {
 
     const controller = new AbortController()
     abortRef.current = controller
+    let sent = false
 
     try {
       const response = await fetch('/api/chat', {
@@ -44,6 +54,7 @@ export function useChat() {
       if (!response.body) {
         throw new Error('Response body is not readable')
       }
+      sent = true
       const reader = response.body.getReader()
       const decoder = new TextDecoder()
       let buffer = ''
@@ -61,7 +72,10 @@ export function useChat() {
           if (!line.startsWith('data: ')) continue
           try {
             const event: ChatEvent = JSON.parse(line.slice(6))
-            handleEvent(event, setMessages)
+            handleEvent(event, setMessages, (nextSessionId: string) => {
+              sessionIdRef.current = nextSessionId
+              saveChatSessionId(nextSessionId)
+            })
           } catch { /* skip malformed events */ }
         }
       }
@@ -89,13 +103,16 @@ export function useChat() {
         return updated
       })
     }
+    return sent
   }, [streaming])
 
   const reset = useCallback(() => {
     if (abortRef.current) abortRef.current.abort()
     setMessages([])
     setStreaming(false)
-    sessionIdRef.current = crypto.randomUUID()
+    clearChatSessionId()
+    const nextSessionId = getOrCreateChatSessionId()
+    sessionIdRef.current = nextSessionId
   }, [])
 
   const stop = useCallback(() => {
@@ -105,7 +122,17 @@ export function useChat() {
   return { messages, streaming, send, reset, stop }
 }
 
-function handleEvent(event: ChatEvent, setMessages: React.Dispatch<React.SetStateAction<ChatMessage[]>>) {
+function handleEvent(
+  event: ChatEvent,
+  setMessages: React.Dispatch<React.SetStateAction<ChatMessage[]>>,
+  setCanonicalSessionId: (sessionId: string) => void,
+) {
+  const canonicalSessionId = resolveSessionIdEvent(event)
+  if (canonicalSessionId) {
+    setCanonicalSessionId(canonicalSessionId)
+    return
+  }
+
   setMessages(prev => {
     const updated = [...prev]
     const lastIdx = updated.length - 1

@@ -34,6 +34,9 @@ questions about cluster health, issues, namespaces, and trends.
 Be concise and actionable. When issues are found, suggest specific kubectl
 commands or remediation steps. If you need more context, call the appropriate tool.`
 
+// Reserve a conservative floor per provider call to avoid underestimation races.
+const minChatTurnReservationTokens = 500
+
 // ToolDef defines a tool available to the ChatAgent.
 type ToolDef struct {
 	Name        string         `json:"name"`
@@ -174,6 +177,11 @@ func (a *ChatAgent) RunTurn(ctx context.Context, messages []ChatMessage, emit fu
 	copy(msgs, messages)
 
 	totalTokens := 0
+	switch a.providerName {
+	case ProviderNameOpenAI, ProviderNameAnthropic:
+	default:
+		return msgs, totalTokens, fmt.Errorf("unsupported provider: %s", a.providerName)
+	}
 
 	for i := 0; i < a.maxIterations; i++ {
 		if err := ctx.Err(); err != nil {
@@ -182,20 +190,52 @@ func (a *ChatAgent) RunTurn(ctx context.Context, messages []ChatMessage, emit fu
 			return msgs, totalTokens, err
 		}
 
-		// Budget check before each API call (AI-004)
-		estimatedTokens := estimateMessageTokens(msgs)
+		// Budget check before each API call (AI-004). Reserve conservatively as
+		// estimated input + max output tokens, then reconcile with actual usage.
+		estimatedInputTokens := estimateMessageTokens(msgs)
+		reservedTokens := max(estimatedInputTokens+a.maxTokens, minChatTurnReservationTokens)
+		reservedSessionBudget := false
 		if a.budget != nil {
-			if err := a.budget.TryConsume(estimatedTokens); err != nil {
+			if err := a.budget.TryConsume(reservedTokens); err != nil {
 				emit(ChatEvent{Type: ChatEventError, Content: "Token budget exceeded. Please try again later."})
 				emit(ChatEvent{Type: ChatEventDone, Tokens: totalTokens})
 				return msgs, totalTokens, fmt.Errorf("chat budget exceeded: %w", err)
 			}
+			reservedSessionBudget = true
 		}
+		reservedAggregateBudget := false
 		if a.chatBudget != nil {
-			if err := a.chatBudget.TryChatConsume(estimatedTokens); err != nil {
+			if err := a.chatBudget.TryChatConsume(reservedTokens); err != nil {
+				if reservedSessionBudget {
+					a.budget.ReleaseUnused(reservedTokens)
+				}
 				emit(ChatEvent{Type: ChatEventError, Content: "Aggregate chat token budget exceeded."})
 				emit(ChatEvent{Type: ChatEventDone, Tokens: totalTokens})
 				return msgs, totalTokens, fmt.Errorf("aggregate chat budget exceeded: %w", err)
+			}
+			reservedAggregateBudget = true
+		}
+
+		settleReservations := func(actualTokens int) {
+			if actualTokens < 0 {
+				actualTokens = 0
+			}
+			if actualTokens <= reservedTokens {
+				unused := reservedTokens - actualTokens
+				if reservedSessionBudget {
+					a.budget.ReleaseUnused(unused)
+				}
+				if reservedAggregateBudget {
+					a.chatBudget.ReleaseUnused(unused)
+				}
+				return
+			}
+			delta := actualTokens - reservedTokens
+			if reservedSessionBudget {
+				a.budget.RecordUsage(delta)
+			}
+			if reservedAggregateBudget {
+				a.chatBudget.RecordUsage(delta)
 			}
 		}
 
@@ -216,9 +256,8 @@ func (a *ChatAgent) RunTurn(ctx context.Context, messages []ChatMessage, emit fu
 			content, calls, tokens, err = a.callOpenAI(ctx, msgs)
 		case ProviderNameAnthropic:
 			content, calls, tokens, err = a.callAnthropic(ctx, msgs)
-		default:
-			return msgs, totalTokens, fmt.Errorf("unsupported provider: %s", a.providerName)
 		}
+		settleReservations(tokens)
 		if err != nil {
 			emit(ChatEvent{Type: ChatEventError, Content: "An error occurred while processing your request"})
 			emit(ChatEvent{Type: ChatEventDone, Tokens: totalTokens})

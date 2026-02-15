@@ -72,6 +72,8 @@ type chatRequest struct {
 
 // handleChat handles POST /api/chat. It manages chat sessions and streams
 // responses as Server-Sent Events.
+//
+//nolint:gocyclo // Chat orchestration requires multi-branch validation, gating, and SSE streaming control.
 func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -118,6 +120,18 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "AI provider is not available", http.StatusServiceUnavailable)
 		return
 	}
+	clusterID := strings.TrimSpace(req.ClusterID)
+	s.mu.RLock()
+	multiCluster := len(s.clusters) > 1
+	s.mu.RUnlock()
+	if clusterID == "" && multiCluster {
+		http.Error(w, "clusterId is required when multiple clusters are available", http.StatusBadRequest)
+		return
+	}
+	var mgr *ai.Manager
+	if m, ok := provider.(*ai.Manager); ok {
+		mgr = m
+	}
 
 	// Get or create session
 	session, created, err := s.getOrCreateChatSession(req.SessionID)
@@ -135,10 +149,24 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 	session.inFlight = true
 	session.mu.Unlock()
+	defer func() {
+		session.mu.Lock()
+		session.inFlight = false
+		session.mu.Unlock()
+	}()
 
 	// Set SSE headers before any event writes.
 	setSSEHeaders(w)
 	flusher, _ := w.(http.Flusher)
+	writeAndFlush := func(evt any) error {
+		if err := writeSSEEvent(w, evt); err != nil {
+			return err
+		}
+		if flusher != nil {
+			flusher.Flush()
+		}
+		return nil
+	}
 
 	// Extend write deadline for long-running SSE chat streams
 	if rc := http.NewResponseController(w); rc != nil {
@@ -158,69 +186,66 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		})
 		msgsCopy = make([]ai.ChatMessage, len(session.Messages))
 		copy(msgsCopy, session.Messages)
-	} else {
-		session.inFlight = false
 	}
 	session.mu.Unlock()
 
 	// Send session_id event if newly created (outside lock — ID is immutable).
 	if created {
-		writeSSEEvent(w, map[string]any{
+		if err := writeAndFlush(map[string]any{
 			"type":      "session_id",
 			"sessionId": session.ID,
-		})
-		if flusher != nil {
-			flusher.Flush()
+		}); err != nil {
+			log.Error(err, "Failed to write session_id SSE event", "session", session.ID)
+			return
 		}
 	}
 
 	// Handle budget exceeded (outside lock).
 	if budgetExceeded {
-		writeSSEEvent(w, map[string]any{
+		if err := writeAndFlush(map[string]any{
 			"type":    string(ai.ChatEventError),
 			"content": "Session token budget exceeded. Start a new session.",
-		})
-		writeSSEEvent(w, map[string]any{
+		}); err != nil {
+			log.Error(err, "Failed to write budget exceeded SSE event", "session", session.ID)
+			return
+		}
+		if err := writeAndFlush(map[string]any{
 			"type":      string(ai.ChatEventDone),
 			"sessionId": session.ID,
-		})
-		if flusher != nil {
-			flusher.Flush()
+		}); err != nil {
+			log.Error(err, "Failed to write done SSE event", "session", session.ID)
+			return
 		}
 		return
 	}
 
-	// Check global budget (no session lock needed)
-	if mgr, ok := provider.(*ai.Manager); ok {
-		if budget := mgr.Budget(); budget != nil {
-			if err := budget.CheckAllowance(500); err != nil {
-				session.mu.Lock()
-				session.inFlight = false
-				session.mu.Unlock()
-				writeSSEEvent(w, map[string]any{
-					"type":    string(ai.ChatEventError),
-					"content": "Global AI token budget exceeded.",
-				})
-				writeSSEEvent(w, map[string]any{
-					"type":      string(ai.ChatEventDone),
-					"sessionId": session.ID,
-				})
-				if flusher != nil {
-					flusher.Flush()
-				}
+	// Apply manager circuit-breaker gating for chat path.
+	if mgr != nil {
+		if err := mgr.AllowChatTurn(); err != nil {
+			if writeErr := writeAndFlush(map[string]any{
+				"type":    string(ai.ChatEventError),
+				"content": "AI provider temporarily unavailable. Please try again shortly.",
+			}); writeErr != nil {
+				log.Error(writeErr, "Failed to write circuit breaker SSE event", "session", session.ID)
 				return
 			}
+			if writeErr := writeAndFlush(map[string]any{
+				"type":      string(ai.ChatEventDone),
+				"sessionId": session.ID,
+			}); writeErr != nil {
+				log.Error(writeErr, "Failed to write done SSE event", "session", session.ID)
+			}
+			return
 		}
 	}
 
 	// Build tool executor from cluster state
-	clusterID := req.ClusterID
 	executor := s.buildChatToolExecutor(clusterID)
 
 	// Determine provider name from the manager
 	providerName := s.chatProviderName
 	if providerName == "" {
-		if mgr, ok := provider.(*ai.Manager); ok {
+		if mgr != nil {
 			providerName = mgr.Name()
 		}
 	}
@@ -233,28 +258,48 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	if s.chatHTTPClient != nil {
 		agent.SetHTTPClient(s.chatHTTPClient)
 	}
+	if mgr != nil {
+		agent.SetBudget(mgr.Budget())
+	}
 
 	// Run the agent turn with SSE streaming (no session lock held).
+	turnCtx, cancelTurn := context.WithCancel(r.Context())
+	defer cancelTurn()
+	var (
+		streamErr   error
+		streamErrMu sync.Mutex
+	)
 	emit := func(evt ai.ChatEvent) {
-		writeSSEEvent(w, evt)
-		if flusher != nil {
-			flusher.Flush()
+		if err := writeAndFlush(evt); err != nil {
+			streamErrMu.Lock()
+			if streamErr == nil {
+				streamErr = err
+				cancelTurn()
+			}
+			streamErrMu.Unlock()
 		}
 	}
 
-	updatedMsgs, tokensUsed, runErr := agent.RunTurn(r.Context(), msgsCopy, emit)
+	updatedMsgs, tokensUsed, runErr := agent.RunTurn(turnCtx, msgsCopy, emit)
 
 	// Re-acquire lock to update session state.
 	session.mu.Lock()
 	session.Messages = updatedMsgs
 	session.TokensUsed += tokensUsed
-	session.inFlight = false
 	session.mu.Unlock()
+	streamErrMu.Lock()
+	localStreamErr := streamErr
+	streamErrMu.Unlock()
+	if localStreamErr != nil {
+		log.Error(localStreamErr, "Chat SSE stream write failed", "session", session.ID)
+		return
+	}
 
-	// Record global budget usage
-	if mgr, ok := provider.(*ai.Manager); ok {
-		if budget := mgr.Budget(); budget != nil {
-			budget.RecordUsage(tokensUsed)
+	if mgr != nil {
+		if runErr == nil {
+			mgr.RecordChatTurnSuccess()
+		} else if !errors.Is(runErr, context.Canceled) {
+			mgr.RecordChatTurnFailure()
 		}
 	}
 
@@ -270,13 +315,16 @@ func setSSEHeaders(w http.ResponseWriter) {
 }
 
 // writeSSEEvent writes a single SSE event to the response writer.
-func writeSSEEvent(w http.ResponseWriter, evt any) {
+func writeSSEEvent(w http.ResponseWriter, evt any) error {
 	data, err := json.Marshal(evt)
 	if err != nil {
 		log.Error(err, "Failed to marshal SSE chat event")
-		return
+		return err
 	}
-	_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
+	if _, err := fmt.Fprintf(w, "data: %s\n\n", data); err != nil {
+		return err
+	}
+	return nil
 }
 
 // maxSessionIDLen is the maximum acceptable length for a client-supplied session ID.

@@ -19,6 +19,7 @@ package dashboard
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -2410,6 +2411,66 @@ func TestAuthMiddleware_AcceptsCookie(t *testing.T) {
 	}
 	if !called {
 		t.Error("authMiddleware should call next handler with valid cookie")
+	}
+}
+
+func TestValidateToken_RejectsExpiredSessionCookie(t *testing.T) {
+	scheme := runtime.NewScheme()
+	cl := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(cl), registry, ":8080")
+	server.authToken = testAuthToken
+	server.sessionTTL = 10 * time.Millisecond
+
+	sessionID := server.createSession()
+	parts := strings.SplitN(sessionID, ".", 2)
+	if len(parts) != 2 {
+		t.Fatalf("expected signed session id, got %q", sessionID)
+	}
+	rawSessionID := parts[0]
+	req := httptest.NewRequest(http.MethodGet, "/api/health", nil)
+	req.AddCookie(&http.Cookie{Name: "__dashboard_session", Value: sessionID})
+
+	if !server.validateToken(req) {
+		t.Fatal("expected freshly created session cookie to validate")
+	}
+	if _, ok := server.sessions.Load(rawSessionID); !ok {
+		t.Fatal("expected session to exist after successful validation")
+	}
+
+	time.Sleep(25 * time.Millisecond)
+	if server.validateToken(req) {
+		t.Fatal("expected expired session cookie to be rejected")
+	}
+	if _, ok := server.sessions.Load(rawSessionID); ok {
+		t.Fatal("expected expired session to be evicted on validation")
+	}
+}
+
+func TestCleanupAuthSessionsOnce_RemovesExpiredEntries(t *testing.T) {
+	scheme := runtime.NewScheme()
+	cl := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(cl), registry, ":8080")
+	server.authToken = testAuthToken
+
+	now := time.Now()
+	server.sessions.Store("expired", authSession{
+		tokenHash: sha256.Sum256([]byte(testAuthToken)),
+		expiresAt: now.Add(-1 * time.Minute),
+	})
+	server.sessions.Store("fresh", authSession{
+		tokenHash: sha256.Sum256([]byte(testAuthToken)),
+		expiresAt: now.Add(10 * time.Minute),
+	})
+
+	server.cleanupAuthSessionsOnce(now)
+
+	if _, ok := server.sessions.Load("expired"); ok {
+		t.Fatal("expected expired auth session to be removed")
+	}
+	if _, ok := server.sessions.Load("fresh"); !ok {
+		t.Fatal("expected unexpired auth session to be retained")
 	}
 }
 
