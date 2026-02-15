@@ -141,7 +141,7 @@ func TestQuotaChecker_QuotaExceeded(t *testing.T) {
 
 	found := false
 	for _, issue := range result.Issues {
-		if issue.Type == "QuotaExceeded" && issue.Severity == checker.SeverityCritical {
+		if issue.Type == issueTypeQuotaExceeded && issue.Severity == checker.SeverityCritical {
 			found = true
 			break
 		}
@@ -192,7 +192,7 @@ func TestQuotaChecker_MultipleResources(t *testing.T) {
 		if issue.Type == issueTypeQuotaNearLimit && issue.Metadata["resource"] == "cpu" {
 			foundCPUWarning = true
 		}
-		if issue.Type == "QuotaExceeded" && issue.Metadata["resource"] == "memory" {
+		if issue.Type == issueTypeQuotaExceeded && issue.Metadata["resource"] == "memory" {
 			foundMemoryExceeded = true
 		}
 	}
