@@ -142,23 +142,32 @@ func (c *GitRepositoryChecker) checkGitRepository(gr *sourcev1.GitRepository) []
 
 	// Check for stale reconciliation
 	if !gr.Spec.Suspend && readyCondition != nil && readyCondition.Status == metav1.ConditionTrue {
-		lastReconcile := readyCondition.LastTransitionTime.Time
-		staleDuration := time.Since(lastReconcile)
-		if staleDuration > c.staleThreshold {
-			issues = append(issues, checker.Issue{
-				Type:      "StaleReconciliation",
-				Severity:  checker.SeverityWarning,
-				Resource:  resourceRef,
-				Namespace: gr.Namespace,
-				Message:   fmt.Sprintf("GitRepository last reconciled %s ago", staleDuration.Round(time.Minute)),
-				Suggestion: "Check if the source controller is running: kubectl get deploy -n flux-system source-controller. " +
-					"Force reconciliation: flux reconcile source git " + gr.Name + " -n " + gr.Namespace + ".",
-				Metadata: map[string]string{
-					"repository":    gr.Name,
-					"lastReconcile": lastReconcile.Format(time.RFC3339),
-					"staleDuration": staleDuration.String(),
-				},
-			})
+		lastReconcile, ok := parseReconcileRequestTime(gr.Status.LastHandledReconcileAt)
+		timestampSource := "status.lastHandledReconcileAt"
+		if !ok && gr.Status.Artifact != nil && !gr.Status.Artifact.LastUpdateTime.IsZero() {
+			lastReconcile = gr.Status.Artifact.LastUpdateTime.Time
+			ok = true
+			timestampSource = "status.artifact.lastUpdateTime"
+		}
+		if ok {
+			staleDuration := time.Since(lastReconcile)
+			if staleDuration > c.staleThreshold {
+				issues = append(issues, checker.Issue{
+					Type:      "StaleReconciliation",
+					Severity:  checker.SeverityWarning,
+					Resource:  resourceRef,
+					Namespace: gr.Namespace,
+					Message:   fmt.Sprintf("GitRepository last reconciled %s ago", staleDuration.Round(time.Minute)),
+					Suggestion: "Check if the source controller is running: kubectl get deploy -n flux-system source-controller. " +
+						"Force reconciliation: flux reconcile source git " + gr.Name + " -n " + gr.Namespace + ".",
+					Metadata: map[string]string{
+						"repository":      gr.Name,
+						"lastReconcile":   lastReconcile.Format(time.RFC3339),
+						"staleDuration":   staleDuration.String(),
+						"timestampSource": timestampSource,
+					},
+				})
+			}
 		}
 	}
 

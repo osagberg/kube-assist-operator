@@ -142,24 +142,27 @@ func (c *KustomizationChecker) checkKustomization(ks *kustomizev1.Kustomization)
 	// Check for stale reconciliation
 	if !ks.Spec.Suspend && readyCondition != nil && readyCondition.Status == metav1.ConditionTrue {
 		if ks.Status.LastAttemptedRevision != "" {
-			lastReconcile := readyCondition.LastTransitionTime.Time
-			staleDuration := time.Since(lastReconcile)
-			if staleDuration > c.staleThreshold {
-				issues = append(issues, checker.Issue{
-					Type:      "StaleReconciliation",
-					Severity:  checker.SeverityWarning,
-					Resource:  resourceRef,
-					Namespace: ks.Namespace,
-					Message:   fmt.Sprintf("Kustomization last reconciled %s ago", staleDuration.Round(time.Minute)),
-					Suggestion: "Check if the Kustomize controller is running: kubectl get deploy -n flux-system kustomize-controller. " +
-						"Force reconciliation: flux reconcile kustomization " + ks.Name + " -n " + ks.Namespace + ". " +
-						"Check controller logs: kubectl logs -n flux-system deploy/kustomize-controller --tail=20.",
-					Metadata: map[string]string{
-						"kustomization": ks.Name,
-						"lastReconcile": lastReconcile.Format(time.RFC3339),
-						"staleDuration": staleDuration.String(),
-					},
-				})
+			lastReconcile, ok := parseReconcileRequestTime(ks.Status.LastHandledReconcileAt)
+			if ok {
+				staleDuration := time.Since(lastReconcile)
+				if staleDuration > c.staleThreshold {
+					issues = append(issues, checker.Issue{
+						Type:      "StaleReconciliation",
+						Severity:  checker.SeverityWarning,
+						Resource:  resourceRef,
+						Namespace: ks.Namespace,
+						Message:   fmt.Sprintf("Kustomization last reconciled %s ago", staleDuration.Round(time.Minute)),
+						Suggestion: "Check if the Kustomize controller is running: kubectl get deploy -n flux-system kustomize-controller. " +
+							"Force reconciliation: flux reconcile kustomization " + ks.Name + " -n " + ks.Namespace + ". " +
+							"Check controller logs: kubectl logs -n flux-system deploy/kustomize-controller --tail=20.",
+						Metadata: map[string]string{
+							"kustomization":   ks.Name,
+							"lastReconcile":   lastReconcile.Format(time.RFC3339),
+							"staleDuration":   staleDuration.String(),
+							"timestampSource": "status.lastHandledReconcileAt",
+						},
+					})
+				}
 			}
 		}
 	}

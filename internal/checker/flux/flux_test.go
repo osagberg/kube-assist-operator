@@ -256,12 +256,13 @@ func TestGitRepositoryChecker_Check(t *testing.T) {
 						{
 							Type:               "Ready",
 							Status:             metav1.ConditionTrue,
-							LastTransitionTime: metav1.NewTime(time.Now().Add(-3 * time.Hour)),
+							LastTransitionTime: metav1.Now(),
 							Reason:             "Succeeded",
 						},
 					},
 					Artifact: &fluxmeta.Artifact{
-						Revision: "main@sha1:abc123",
+						Revision:       "main@sha1:abc123",
+						LastUpdateTime: metav1.NewTime(time.Now().Add(-3 * time.Hour)),
 					},
 				},
 			},
@@ -794,14 +795,41 @@ func TestHelmReleaseChecker_Check(t *testing.T) {
 						{
 							Type:               "Ready",
 							Status:             metav1.ConditionTrue,
+							LastTransitionTime: metav1.Now(),
+							Reason:             "Succeeded",
+						},
+					},
+					ReconcileRequestStatus: fluxmeta.ReconcileRequestStatus{
+						LastHandledReconcileAt: time.Now().Add(-3 * time.Hour).Format(time.RFC3339Nano),
+					},
+				},
+			},
+			wantHealthy: 0,
+			wantTypes:   map[string]string{"StaleReconciliation": checker.SeverityWarning},
+		},
+		{
+			name: "ready with old transition but no reconcile timestamp",
+			hr: &helmv2.HelmRelease{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "old-transition-no-reconcile-token",
+					Namespace: "flux-system",
+				},
+				Spec: helmv2.HelmReleaseSpec{
+					Interval: metav1.Duration{Duration: 5 * time.Minute},
+				},
+				Status: helmv2.HelmReleaseStatus{
+					Conditions: []metav1.Condition{
+						{
+							Type:               "Ready",
+							Status:             metav1.ConditionTrue,
 							LastTransitionTime: metav1.NewTime(time.Now().Add(-3 * time.Hour)),
 							Reason:             "Succeeded",
 						},
 					},
 				},
 			},
-			wantHealthy: 0,
-			wantTypes:   map[string]string{"StaleReconciliation": checker.SeverityWarning},
+			wantHealthy: 1,
+			wantTypes:   map[string]string{},
 		},
 		{
 			name: "failed release in history",
@@ -1218,6 +1246,39 @@ func TestKustomizationChecker_Check(t *testing.T) {
 						{
 							Type:               "Ready",
 							Status:             metav1.ConditionTrue,
+							LastTransitionTime: metav1.Now(),
+							Reason:             "Succeeded",
+						},
+					},
+					ReconcileRequestStatus: fluxmeta.ReconcileRequestStatus{
+						LastHandledReconcileAt: time.Now().Add(-3 * time.Hour).Format(time.RFC3339Nano),
+					},
+					LastAttemptedRevision: "main@sha1:abc",
+					LastAppliedRevision:   "main@sha1:abc",
+				},
+			},
+			wantHealthy: 0,
+			wantTypes:   map[string]string{"StaleReconciliation": checker.SeverityWarning},
+		},
+		{
+			name: "ready with old transition but no reconcile timestamp",
+			ks: &kustomizev1.Kustomization{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "old-transition-no-reconcile-token",
+					Namespace: "flux-system",
+				},
+				Spec: kustomizev1.KustomizationSpec{
+					Interval: metav1.Duration{Duration: 10 * time.Minute},
+					SourceRef: kustomizev1.CrossNamespaceSourceReference{
+						Kind: "GitRepository",
+						Name: "my-repo",
+					},
+				},
+				Status: kustomizev1.KustomizationStatus{
+					Conditions: []metav1.Condition{
+						{
+							Type:               "Ready",
+							Status:             metav1.ConditionTrue,
 							LastTransitionTime: metav1.NewTime(time.Now().Add(-3 * time.Hour)),
 							Reason:             "Succeeded",
 						},
@@ -1226,8 +1287,8 @@ func TestKustomizationChecker_Check(t *testing.T) {
 					LastAppliedRevision:   "main@sha1:abc",
 				},
 			},
-			wantHealthy: 0,
-			wantTypes:   map[string]string{"StaleReconciliation": checker.SeverityWarning},
+			wantHealthy: 1,
+			wantTypes:   map[string]string{},
 		},
 		{
 			name: "pending changes - different revisions",

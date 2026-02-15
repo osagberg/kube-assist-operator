@@ -204,6 +204,42 @@ func TestQuotaChecker_MultipleResources(t *testing.T) {
 	}
 }
 
+func TestQuotaChecker_CPUMillicoreUsage(t *testing.T) {
+	quota := &corev1.ResourceQuota{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "cpu-milli-quota",
+			Namespace: "default",
+		},
+		Status: corev1.ResourceQuotaStatus{
+			Hard: corev1.ResourceList{
+				corev1.ResourceCPU: resource.MustParse("1500m"),
+			},
+			Used: corev1.ResourceList{
+				corev1.ResourceCPU: resource.MustParse("1200m"),
+			},
+		},
+	}
+
+	c := NewQuotaChecker()
+	checkCtx := testutil.NewCheckContext(t, []string{"default"}, quota)
+
+	result, err := c.Check(context.Background(), checkCtx)
+	if err != nil {
+		t.Fatalf("Check() error = %v", err)
+	}
+
+	foundCPUWarning := false
+	for _, issue := range result.Issues {
+		if issue.Type == "QuotaNearLimit" && issue.Metadata["resource"] == "cpu" {
+			foundCPUWarning = true
+			break
+		}
+	}
+	if !foundCPUWarning {
+		t.Error("Check() did not find expected CPU QuotaNearLimit warning for millicore quantities")
+	}
+}
+
 func TestQuotaChecker_NoQuotas(t *testing.T) {
 	c := NewQuotaChecker()
 	checkCtx := testutil.NewCheckContext(t, []string{"default"})

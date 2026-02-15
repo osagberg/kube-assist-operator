@@ -109,15 +109,17 @@ func (c *QuotaChecker) checkQuotaWith(quota *corev1.ResourceQuota, warningPercen
 			continue
 		}
 
-		// Calculate usage percentage
-		hardValue := hardLimit.Value()
-		usedValue := used.Value()
+		// Calculate usage percentage.
+		// Use approximate float conversion to preserve fractional quantities
+		// (e.g. CPU millicores) instead of truncating via Value().
+		hardValue := hardLimit.AsApproximateFloat64()
+		usedValue := used.AsApproximateFloat64()
 
-		if hardValue == 0 {
+		if hardValue <= 0 {
 			continue
 		}
 
-		usagePercent := float64(usedValue) / float64(hardValue) * 100
+		usagePercent := usedValue / hardValue * 100
 
 		if usagePercent >= 100 {
 			// Quota exceeded

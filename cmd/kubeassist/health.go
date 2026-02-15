@@ -159,7 +159,7 @@ func (h *healthCmd) buildSpec() map[string]any {
 	} else if h.namespaces != "" {
 		scope["namespaces"] = strings.Split(h.namespaces, ",")
 	} else {
-		scope["currentNamespace"] = true
+		scope["currentNamespaceOnly"] = true
 	}
 	spec["scope"] = scope
 

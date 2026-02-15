@@ -146,24 +146,27 @@ func (c *HelmReleaseChecker) checkHelmRelease(hr *helmv2.HelmRelease) []checker.
 
 	// Check for stale reconciliation (only if not suspended and Ready)
 	if !hr.Spec.Suspend && readyCondition != nil && readyCondition.Status == metav1.ConditionTrue {
-		lastReconcile := readyCondition.LastTransitionTime.Time
-		staleDuration := time.Since(lastReconcile)
-		if staleDuration > c.staleThreshold {
-			issues = append(issues, checker.Issue{
-				Type:      "StaleReconciliation",
-				Severity:  checker.SeverityWarning,
-				Resource:  resourceRef,
-				Namespace: hr.Namespace,
-				Message:   fmt.Sprintf("HelmRelease last reconciled %s ago", staleDuration.Round(time.Minute)),
-				Suggestion: "Check if the Helm controller is running: kubectl get deploy -n flux-system helm-controller. " +
-					"Force reconciliation: flux reconcile helmrelease " + hr.Name + " -n " + hr.Namespace + ". " +
-					"Check controller logs: kubectl logs -n flux-system deploy/helm-controller --tail=20.",
-				Metadata: map[string]string{
-					"release":       hr.Name,
-					"lastReconcile": lastReconcile.Format(time.RFC3339),
-					"staleDuration": staleDuration.String(),
-				},
-			})
+		lastReconcile, ok := parseReconcileRequestTime(hr.Status.LastHandledReconcileAt)
+		if ok {
+			staleDuration := time.Since(lastReconcile)
+			if staleDuration > c.staleThreshold {
+				issues = append(issues, checker.Issue{
+					Type:      "StaleReconciliation",
+					Severity:  checker.SeverityWarning,
+					Resource:  resourceRef,
+					Namespace: hr.Namespace,
+					Message:   fmt.Sprintf("HelmRelease last reconciled %s ago", staleDuration.Round(time.Minute)),
+					Suggestion: "Check if the Helm controller is running: kubectl get deploy -n flux-system helm-controller. " +
+						"Force reconciliation: flux reconcile helmrelease " + hr.Name + " -n " + hr.Namespace + ". " +
+						"Check controller logs: kubectl logs -n flux-system deploy/helm-controller --tail=20.",
+					Metadata: map[string]string{
+						"release":         hr.Name,
+						"lastReconcile":   lastReconcile.Format(time.RFC3339),
+						"staleDuration":   staleDuration.String(),
+						"timestampSource": "status.lastHandledReconcileAt",
+					},
+				})
+			}
 		}
 	}
 
