@@ -33,6 +33,10 @@ const (
 
 	// Default warning threshold percentage
 	DefaultQuotaWarningPercent = 80
+
+	// Issue types
+	issueTypeQuotaExceeded  = "QuotaExceeded"
+	issueTypeQuotaNearLimit = "QuotaNearLimit"
 )
 
 // QuotaChecker analyzes ResourceQuotas for health issues
@@ -124,7 +128,7 @@ func (c *QuotaChecker) checkQuotaWith(quota *corev1.ResourceQuota, warningPercen
 		if usagePercent >= 100 {
 			// Quota exceeded
 			issues = append(issues, checker.Issue{
-				Type:      "QuotaExceeded",
+				Type:      issueTypeQuotaExceeded,
 				Severity:  checker.SeverityCritical,
 				Resource:  resourceRef,
 				Namespace: quota.Namespace,
@@ -144,7 +148,7 @@ func (c *QuotaChecker) checkQuotaWith(quota *corev1.ResourceQuota, warningPercen
 		} else if usagePercent >= float64(warningPercent) {
 			// Near quota limit
 			issues = append(issues, checker.Issue{
-				Type:      "QuotaNearLimit",
+				Type:      issueTypeQuotaNearLimit,
 				Severity:  checker.SeverityWarning,
 				Resource:  resourceRef,
 				Namespace: quota.Namespace,

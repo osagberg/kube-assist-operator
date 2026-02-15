@@ -105,13 +105,13 @@ func TestQuotaChecker_QuotaNearLimit(t *testing.T) {
 
 	found := false
 	for _, issue := range result.Issues {
-		if issue.Type == "QuotaNearLimit" && issue.Severity == checker.SeverityWarning {
+		if issue.Type == issueTypeQuotaNearLimit && issue.Severity == checker.SeverityWarning {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Error("Check() did not find expected QuotaNearLimit warning issue")
+		t.Error("Check() did not find expected quota near limit warning issue")
 	}
 }
 
@@ -189,7 +189,7 @@ func TestQuotaChecker_MultipleResources(t *testing.T) {
 	foundCPUWarning := false
 	foundMemoryExceeded := false
 	for _, issue := range result.Issues {
-		if issue.Type == "QuotaNearLimit" && issue.Metadata["resource"] == "cpu" {
+		if issue.Type == issueTypeQuotaNearLimit && issue.Metadata["resource"] == "cpu" {
 			foundCPUWarning = true
 		}
 		if issue.Type == "QuotaExceeded" && issue.Metadata["resource"] == "memory" {
@@ -197,7 +197,7 @@ func TestQuotaChecker_MultipleResources(t *testing.T) {
 		}
 	}
 	if !foundCPUWarning {
-		t.Error("Check() did not find expected CPU QuotaNearLimit warning")
+		t.Error("Check() did not find expected CPU quota near limit warning")
 	}
 	if !foundMemoryExceeded {
 		t.Error("Check() did not find expected Memory QuotaExceeded critical issue")
@@ -230,13 +230,13 @@ func TestQuotaChecker_CPUMillicoreUsage(t *testing.T) {
 
 	foundCPUWarning := false
 	for _, issue := range result.Issues {
-		if issue.Type == "QuotaNearLimit" && issue.Metadata["resource"] == "cpu" {
+		if issue.Type == issueTypeQuotaNearLimit && issue.Metadata["resource"] == "cpu" {
 			foundCPUWarning = true
 			break
 		}
 	}
 	if !foundCPUWarning {
-		t.Error("Check() did not find expected CPU QuotaNearLimit warning for millicore quantities")
+		t.Error("Check() did not find expected CPU quota near limit warning for millicore quantities")
 	}
 }
 
