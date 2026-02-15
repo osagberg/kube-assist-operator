@@ -64,7 +64,11 @@ func RegisterRoutes(mux *http.ServeMux, h *Handler) {
 	})
 }
 
-func (h *Handler) handleListClusters(w http.ResponseWriter, _ *http.Request) {
+func (h *Handler) handleListClusters(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"clusters": h.agg.ClusterIDs(),
 	})
@@ -78,6 +82,11 @@ func (h *Handler) handleListClusters(w http.ResponseWriter, _ *http.Request) {
 //	/api/v1/clusters/{cluster}/namespaces/{ns}/{resource}         → List (namespaced)
 //	/api/v1/clusters/{cluster}/namespaces/{ns}/{resource}/{name}  → Get (namespaced)
 func (h *Handler) handleResource(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
 	// Strip prefix to get: {cluster}/...
 	path := strings.TrimPrefix(r.URL.Path, "/api/v1/clusters/")
 	parts := strings.Split(strings.TrimRight(path, "/"), "/")
@@ -277,7 +286,7 @@ func writeK8sError(w http.ResponseWriter, err error) {
 		writeJSONError(w, http.StatusForbidden, err.Error())
 	} else {
 		slog.Error("K8s API error", "error", err)
-		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
 	}
 }
 

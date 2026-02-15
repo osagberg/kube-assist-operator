@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 )
 
@@ -48,7 +49,10 @@ func (t *TeamsNotifier) Send(ctx context.Context, notification Notification) err
 	if err != nil {
 		return fmt.Errorf("send teams notification: %w", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer func() {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+	}()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("teams returned status %d", resp.StatusCode)

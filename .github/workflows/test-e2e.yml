@@ -6,6 +6,9 @@ on:
     tags-ignore: ['v*']
   pull_request:
 
+permissions:
+  contents: read
+
 concurrency:
   group: test-e2e-${{ github.ref }}
   cancel-in-progress: true

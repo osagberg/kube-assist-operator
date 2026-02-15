@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import type { Issue, IssueState, TargetKind } from '../types'
 
 interface Props {
@@ -62,6 +62,16 @@ export function IssueRow({ issue, issueKey, issueState, onAcknowledge, onSnooze,
   const [copied, setCopied] = useState(false)
   const [showFull, setShowFull] = useState(false)
   const [showSnooze, setShowSnooze] = useState(false)
+  const snoozeRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!showSnooze) return
+    const handler = (e: MouseEvent) => {
+      if (!snoozeRef.current?.contains(e.target as Node)) setShowSnooze(false)
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [showSnooze])
   const pillClass = severityPills[issue.severity] ?? severityPills.Info
   const pillText = severityLabels[issue.severity] ?? 'IN'
 
@@ -154,7 +164,7 @@ export function IssueRow({ issue, issueKey, issueState, onAcknowledge, onSnooze,
                 </button>
               )}
               {onSnooze && (
-                <div className="relative">
+                <div className="relative" ref={snoozeRef}>
                   <button
                     onClick={() => setShowSnooze(!showSnooze)}
                     className="text-xs text-accent hover:underline transition-all duration-200"

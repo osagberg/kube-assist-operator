@@ -162,5 +162,9 @@ func computeRequestKey(request AnalysisRequest, provider, model string) string {
 	if request.ExplainMode {
 		_, _ = fmt.Fprintf(h, "explain:%s\n", request.ExplainContext)
 	}
+	_, _ = fmt.Fprintf(h, "k8s:%s\n", request.ClusterContext.KubernetesVersion)
+	if request.CausalContext != nil {
+		_, _ = fmt.Fprintf(h, "causal:%d\n", len(request.CausalContext.Groups))
+	}
 	return fmt.Sprintf("%x", h.Sum(nil))
 }

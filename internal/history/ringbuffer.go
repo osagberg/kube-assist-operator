@@ -42,6 +42,9 @@ type RingBuffer struct {
 
 // New creates a RingBuffer with the given capacity
 func New(capacity int) *RingBuffer {
+	if capacity < 1 {
+		capacity = 1
+	}
 	return &RingBuffer{
 		buf:      make([]HealthSnapshot, capacity),
 		capacity: capacity,

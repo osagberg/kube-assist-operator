@@ -160,10 +160,13 @@ func (m *Manager) Analyze(ctx context.Context, request AnalysisRequest) (*Analys
 
 	// Adjust budget: release the difference between estimated and actual tokens.
 	// TryConsume already reserved estimatedTokens, so return the unused portion.
+	// If actual usage exceeded the estimate, record the overage.
 	if budget != nil && resp != nil {
 		unused := estimatedTokens - resp.TokensUsed
 		if unused > 0 {
 			budget.ReleaseUnused(unused)
+		} else if unused < 0 {
+			budget.RecordUsage(-unused)
 		}
 	}
 

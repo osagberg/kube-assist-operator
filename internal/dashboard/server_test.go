@@ -1274,8 +1274,8 @@ func TestServer_HandleSSE_Headers(t *testing.T) {
 		t.Errorf("SSE Cache-Control = %q, want no-cache", cc)
 	}
 	conn := rr.Header().Get("Connection")
-	if conn != "keep-alive" {
-		t.Errorf("SSE Connection = %q, want keep-alive", conn)
+	if conn != "" {
+		t.Errorf("SSE Connection = %q, want empty (hop-by-hop header removed)", conn)
 	}
 }
 

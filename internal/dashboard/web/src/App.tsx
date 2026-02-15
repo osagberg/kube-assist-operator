@@ -47,6 +47,8 @@ function App() {
   const [issueStates, setIssueStates] = useState<Record<string, IssueState>>({})
   const searchRef = useRef<HTMLInputElement>(null)
   const nsRef = useRef<HTMLSelectElement>(null)
+  const seededRef = useRef(false)
+  const triggerTimeoutRef = useRef<ReturnType<typeof setTimeout>>(undefined)
 
   const { settings, save: saveSettings } = useSettings()
   const [canDiagnose, setCanDiagnose] = useState(false)
@@ -73,7 +75,8 @@ function App() {
 
   // Seed issueStates from initial health fetch
   useEffect(() => {
-    if (health?.issueStates) {
+    if (!seededRef.current && health?.issueStates) {
+      seededRef.current = true
       setIssueStates(health.issueStates)
     }
   }, [health?.issueStates])
@@ -83,7 +86,7 @@ function App() {
     if (sseData) {
       setHealth(sseData)
       if (sseData.issueStates) {
-        setIssueStates(sseData.issueStates)
+        setIssueStates(prev => ({...prev, ...sseData.issueStates}))
       }
     }
   }, [sseData, setHealth])
@@ -110,11 +113,16 @@ function App() {
     return health.summary.healthScore
   }, [health])
 
+  // Clean up trigger timeout on unmount
+  useEffect(() => {
+    return () => { clearTimeout(triggerTimeoutRef.current) }
+  }, [])
+
   const handleTriggerCheck = async () => {
     try {
       await triggerCheck()
       showToast('Health check triggered', 'success')
-      setTimeout(refresh, 2000)
+      triggerTimeoutRef.current = setTimeout(refresh, 2000)
     } catch {
       showToast('Failed to trigger check', 'error')
     }
@@ -238,7 +246,7 @@ function App() {
           </div>
           {menuOpen && (
             <>
-              <div className="fixed inset-0 z-40" onClick={() => setMenuOpen(false)} />
+              <div className="fixed inset-0 z-40" role="presentation" onClick={() => setMenuOpen(false)} />
               <div className="glass-elevated absolute right-4 top-14 rounded-xl p-2 flex flex-col gap-1 z-50">
                 <button onClick={() => { togglePause(); setMenuOpen(false) }} className="glass-button px-3 py-1.5 rounded-lg text-sm w-full text-left" style={{ color: 'var(--text-secondary)' }} aria-label={paused ? 'Resume live updates' : 'Pause live updates'}>
                   {paused ? 'Resume' : 'Pause'}

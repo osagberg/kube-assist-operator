@@ -192,7 +192,7 @@ func (p *AnthropicProvider) doAnthropicRequest(ctx context.Context, req anthropi
 	if resp.StatusCode != http.StatusOK {
 		errBody := NewSanitizer().SanitizeString(string(respBody))
 		if len(errBody) > 500 {
-			errBody = errBody[:500] + "...(truncated)"
+			errBody = string([]rune(errBody)[:500]) + "...(truncated)"
 		}
 		return nil, fmt.Errorf("API error (status %d): %s", resp.StatusCode, errBody)
 	}

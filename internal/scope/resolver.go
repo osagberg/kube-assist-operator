@@ -57,11 +57,6 @@ func (r *Resolver) ResolveNamespaces(ctx context.Context, scope assistv1alpha1.S
 	}
 
 	// Priority 3: Current namespace only (or if no scope specified)
-	if scope.CurrentNamespaceOnly || r.isEmptyScope(scope) {
-		return []string{r.defaultNamespace}, nil
-	}
-
-	// Fallback to current namespace
 	return []string{r.defaultNamespace}, nil
 }
 
@@ -107,13 +102,6 @@ func (r *Resolver) resolveBySelector(ctx context.Context, selector *metav1.Label
 	// Sort for consistent ordering
 	sort.Strings(namespaces)
 	return namespaces, nil
-}
-
-// isEmptyScope returns true if no scope is specified
-func (r *Resolver) isEmptyScope(scope assistv1alpha1.ScopeConfig) bool {
-	return len(scope.Namespaces) == 0 &&
-		scope.NamespaceSelector == nil &&
-		!scope.CurrentNamespaceOnly
 }
 
 // FilterSystemNamespaces removes common system namespaces from the list

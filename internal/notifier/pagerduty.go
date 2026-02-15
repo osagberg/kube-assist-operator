@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 )
@@ -54,7 +55,10 @@ func (p *PagerDutyNotifier) Send(ctx context.Context, notification Notification)
 	if err != nil {
 		return fmt.Errorf("send pagerduty notification: %w", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer func() {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+	}()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("pagerduty returned status %d", resp.StatusCode)

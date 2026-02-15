@@ -248,7 +248,7 @@ func (b *ContextBuilder) findOwnedPods(ctx context.Context, namespace, kind, nam
 			// standard hash suffix to recover the deployment name.
 			if strings.EqualFold(kind, "deployment") && strings.EqualFold(ref.Kind, "ReplicaSet") {
 				deployName := rsHashSuffix.ReplaceAllString(ref.Name, "")
-				if deployName == name {
+				if deployName == name && strings.HasPrefix(ref.Name, name+"-") {
 					podNames = append(podNames, pod.Name)
 					break
 				}

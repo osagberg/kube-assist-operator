@@ -16,6 +16,14 @@ updates:
       flux:
         patterns:
           - "github.com/fluxcd/*"
+  - package-ecosystem: "npm"
+    directory: "/internal/dashboard/web"
+    schedule:
+      interval: "weekly"
+    reviewers:
+      - "osagberg"
+    labels:
+      - "dependencies"
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:

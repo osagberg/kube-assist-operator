@@ -32,11 +32,10 @@ export function HistoryChart({ clusterId }: { clusterId?: string }) {
 
   if (error || data.length === 0) return null
 
-  const chartData = data.map((s) => ({
+  const chartData: { time: string; score?: number; issues?: number; projected?: number }[] = data.map((s) => ({
     time: new Date(s.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
     score: Math.round(s.healthScore),
     issues: s.totalIssues,
-    projected: undefined as number | undefined,
   }))
 
   // Add projected data point if prediction is available
@@ -45,8 +44,6 @@ export function HistoryChart({ clusterId }: { clusterId?: string }) {
     const projectedTime = new Date(now.getTime() + 60 * 60 * 1000) // 1 hour ahead
     chartData.push({
       time: projectedTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      score: undefined as unknown as number,  // no actual score at this future time
-      issues: undefined as unknown as number,
       projected: Math.round(prediction.projectedScore),
     })
 

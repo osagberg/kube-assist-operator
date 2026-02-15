@@ -154,7 +154,7 @@ func (a *ChatAgent) SetChatBudget(cb *ChatBudget) {
 
 // SetMaxIterations overrides the default max tool-call iterations per turn.
 func (a *ChatAgent) SetMaxIterations(n int) {
-	if n > 0 {
+	if a != nil && n > 0 {
 		a.maxIterations = n
 	}
 }

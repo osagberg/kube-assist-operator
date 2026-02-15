@@ -19,6 +19,7 @@ package flux
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	sourcev1 "github.com/fluxcd/source-controller/api/v1"
@@ -245,13 +246,5 @@ func getSuggestionForGitRepoReason(reason string) string {
 // isPrivateRepo attempts to detect if a URL might be a private repository
 // This is a simple heuristic and not foolproof
 func isPrivateRepo(url string) bool {
-	// SSH URLs are typically private
-	if len(url) > 4 && url[:4] == "git@" {
-		return true
-	}
-	// URLs with gitlab.com or github.com using SSH pattern
-	if len(url) > 6 && url[:6] == "ssh://" {
-		return true
-	}
-	return false
+	return strings.HasPrefix(url, "git@") || strings.HasPrefix(url, "ssh://")
 }

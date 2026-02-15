@@ -415,7 +415,9 @@ func (s *Server) chatToolGetIssues(clusterID string, args json.RawMessage) (stri
 		Severity  string `json:"severity"`
 	}
 	if len(args) > 0 {
-		_ = json.Unmarshal(args, &filters)
+		if err := json.Unmarshal(args, &filters); err != nil {
+			return "", fmt.Errorf("invalid filter args: %w", err)
+		}
 	}
 
 	s.mu.RLock()

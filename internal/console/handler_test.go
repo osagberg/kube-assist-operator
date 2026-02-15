@@ -546,8 +546,8 @@ func TestWriteK8sErrorGeneric(t *testing.T) {
 	if decErr := json.NewDecoder(rec.Body).Decode(&body); decErr != nil {
 		t.Fatalf("decode error: %v", decErr)
 	}
-	if body["error"] != "something went wrong" {
-		t.Errorf("expected error message, got %s", body["error"])
+	if body["error"] != "internal server error" {
+		t.Errorf("expected 'internal server error', got %s", body["error"])
 	}
 }
 

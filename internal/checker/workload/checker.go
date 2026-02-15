@@ -93,23 +93,22 @@ func (c *Checker) Check(ctx context.Context, checkCtx *checker.CheckContext) (*c
 		deployments := &appsv1.DeploymentList{}
 		if err := checkCtx.DataSource.List(ctx, deployments, client.InNamespace(ns)); err != nil {
 			log.Error(err, "Failed to list deployments", "namespace", ns)
-			continue
-		}
+		} else {
+			for _, deploy := range deployments.Items {
+				pods, err := filterPodsForWorkload(podCache[ns], deploy.Spec.Selector)
+				if err != nil {
+					log.Error(err, "Failed to filter pods for deployment", "namespace", ns, "deployment", deploy.Name)
+					continue
+				}
 
-		for _, deploy := range deployments.Items {
-			pods, err := filterPodsForWorkload(podCache[ns], deploy.Spec.Selector)
-			if err != nil {
-				log.Error(err, "Failed to filter pods for deployment", "namespace", ns, "deployment", deploy.Name)
-				continue
-			}
+				resourceRef := fmt.Sprintf("deployment/%s", deploy.Name)
+				issues := c.diagnosePods(pods, ns, resourceRef, restartThreshold)
 
-			resourceRef := fmt.Sprintf("deployment/%s", deploy.Name)
-			issues := c.diagnosePods(pods, ns, resourceRef, restartThreshold)
-
-			if len(issues) == 0 {
-				result.Healthy++
-			} else {
-				result.Issues = append(result.Issues, issues...)
+				if len(issues) == 0 {
+					result.Healthy++
+				} else {
+					result.Issues = append(result.Issues, issues...)
+				}
 			}
 		}
 
@@ -117,23 +116,22 @@ func (c *Checker) Check(ctx context.Context, checkCtx *checker.CheckContext) (*c
 		statefulsets := &appsv1.StatefulSetList{}
 		if err := checkCtx.DataSource.List(ctx, statefulsets, client.InNamespace(ns)); err != nil {
 			log.Error(err, "Failed to list statefulsets", "namespace", ns)
-			continue
-		}
+		} else {
+			for _, sts := range statefulsets.Items {
+				pods, err := filterPodsForWorkload(podCache[ns], sts.Spec.Selector)
+				if err != nil {
+					log.Error(err, "Failed to filter pods for statefulset", "namespace", ns, "statefulset", sts.Name)
+					continue
+				}
 
-		for _, sts := range statefulsets.Items {
-			pods, err := filterPodsForWorkload(podCache[ns], sts.Spec.Selector)
-			if err != nil {
-				log.Error(err, "Failed to filter pods for statefulset", "namespace", ns, "statefulset", sts.Name)
-				continue
-			}
+				resourceRef := fmt.Sprintf("statefulset/%s", sts.Name)
+				issues := c.diagnosePods(pods, ns, resourceRef, restartThreshold)
 
-			resourceRef := fmt.Sprintf("statefulset/%s", sts.Name)
-			issues := c.diagnosePods(pods, ns, resourceRef, restartThreshold)
-
-			if len(issues) == 0 {
-				result.Healthy++
-			} else {
-				result.Issues = append(result.Issues, issues...)
+				if len(issues) == 0 {
+					result.Healthy++
+				} else {
+					result.Issues = append(result.Issues, issues...)
+				}
 			}
 		}
 
@@ -141,23 +139,22 @@ func (c *Checker) Check(ctx context.Context, checkCtx *checker.CheckContext) (*c
 		daemonsets := &appsv1.DaemonSetList{}
 		if err := checkCtx.DataSource.List(ctx, daemonsets, client.InNamespace(ns)); err != nil {
 			log.Error(err, "Failed to list daemonsets", "namespace", ns)
-			continue
-		}
+		} else {
+			for _, ds := range daemonsets.Items {
+				pods, err := filterPodsForWorkload(podCache[ns], ds.Spec.Selector)
+				if err != nil {
+					log.Error(err, "Failed to filter pods for daemonset", "namespace", ns, "daemonset", ds.Name)
+					continue
+				}
 
-		for _, ds := range daemonsets.Items {
-			pods, err := filterPodsForWorkload(podCache[ns], ds.Spec.Selector)
-			if err != nil {
-				log.Error(err, "Failed to filter pods for daemonset", "namespace", ns, "daemonset", ds.Name)
-				continue
-			}
+				resourceRef := fmt.Sprintf("daemonset/%s", ds.Name)
+				issues := c.diagnosePods(pods, ns, resourceRef, restartThreshold)
 
-			resourceRef := fmt.Sprintf("daemonset/%s", ds.Name)
-			issues := c.diagnosePods(pods, ns, resourceRef, restartThreshold)
-
-			if len(issues) == 0 {
-				result.Healthy++
-			} else {
-				result.Issues = append(result.Issues, issues...)
+				if len(issues) == 0 {
+					result.Healthy++
+				} else {
+					result.Issues = append(result.Issues, issues...)
+				}
 			}
 		}
 	}

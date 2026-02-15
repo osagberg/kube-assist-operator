@@ -70,14 +70,6 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 // handleSSE handles Server-Sent Events connections
 func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-
-	// CONCURRENCY-010: disable write timeout for long-lived SSE connections
-	rc := http.NewResponseController(w)
-	_ = rc.SetWriteDeadline(time.Time{})
-
 	clusterID := r.URL.Query().Get("clusterId")
 	clientCh := make(chan HealthUpdate, s.sseBufferSize)
 
@@ -89,6 +81,13 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	}
 	s.clients[clientCh] = clusterID
 	s.mu.Unlock()
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+
+	// CONCURRENCY-010: disable write timeout for long-lived SSE connections
+	rc := http.NewResponseController(w)
+	_ = rc.SetWriteDeadline(time.Time{})
 
 	defer func() {
 		s.mu.Lock()
@@ -114,7 +113,7 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 			f.Flush()
 		}
 	} else if clusterID == "" {
-		// For fleet subscription, send the first available cluster's latest
+		// For fleet subscription, send all clusters' initial state
 		for _, cs := range s.clusters {
 			if cs.latest != nil {
 				data, err := json.Marshal(cs.latest)
@@ -128,7 +127,6 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 				if f, ok := w.(http.Flusher); ok {
 					f.Flush()
 				}
-				break
 			}
 		}
 	}

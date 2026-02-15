@@ -43,7 +43,7 @@ export function SettingsModal({ open, onClose, settings, onSave }: Props) {
       setCustomModel('')
       setCustomExplainModel('')
     }
-  }, [settings])
+  }, [settings, open])
 
   if (!open) return null
 

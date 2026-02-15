@@ -22,6 +22,16 @@ import (
 	"strings"
 )
 
+// resourceHierarchy maps Kubernetes resource kinds to their ownership level.
+// Higher values indicate higher-level resources (Deployment > ReplicaSet > Pod).
+var resourceHierarchy = map[string]int{
+	"deployment":  3,
+	"statefulset": 3,
+	"daemonset":   3,
+	"replicaset":  2,
+	"pod":         1,
+}
+
 // ResourceGraphCorrelator groups issues whose resources belong to the same
 // ownership chain. For example, a Deployment owns a ReplicaSet which owns Pods;
 // issues across these resources share a root cause.
@@ -140,16 +150,8 @@ func relatedByOwnership(kindA, nameA, kindB, nameB string) bool {
 		return false
 	}
 
-	hierarchy := map[string]int{
-		"deployment":  3,
-		"statefulset": 3,
-		"daemonset":   3,
-		"replicaset":  2,
-		"pod":         1,
-	}
-
-	levelA := hierarchy[kindA]
-	levelB := hierarchy[kindB]
+	levelA := resourceHierarchy[kindA]
+	levelB := resourceHierarchy[kindB]
 
 	// Both must be in the hierarchy.
 	if levelA == 0 || levelB == 0 {
@@ -158,10 +160,10 @@ func relatedByOwnership(kindA, nameA, kindB, nameB string) bool {
 
 	// The higher-level resource's name should be a prefix of the lower-level.
 	if levelA > levelB {
-		return strings.HasPrefix(nameB, nameA)
+		return strings.HasPrefix(nameB, nameA+"-") || nameB == nameA
 	}
 	if levelB > levelA {
-		return strings.HasPrefix(nameA, nameB)
+		return strings.HasPrefix(nameA, nameB+"-") || nameA == nameB
 	}
 	return false
 }
@@ -173,16 +175,9 @@ func buildGraphGroup(namespace string, events []TimelineEvent, input Correlation
 	// Find the highest-level resource to use in the title.
 	var rootResource string
 	rootLevel := 0
-	hierarchy := map[string]int{
-		"deployment":  3,
-		"statefulset": 3,
-		"daemonset":   3,
-		"replicaset":  2,
-		"pod":         1,
-	}
 	for _, e := range events {
 		kind, _ := parseResource(e.Issue.Resource)
-		if l := hierarchy[kind]; l > rootLevel {
+		if l := resourceHierarchy[kind]; l > rootLevel {
 			rootLevel = l
 			rootResource = e.Issue.Resource
 		}

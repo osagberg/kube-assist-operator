@@ -7,6 +7,8 @@ import {
   saveChatSessionId,
 } from '../utils/chatSession'
 
+let nextMsgId = 0
+
 export function useChat() {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [streaming, setStreaming] = useState(false)
@@ -25,12 +27,12 @@ export function useChat() {
     if (!message.trim() || streaming) return false
 
     // Add user message
-    const userMsg: ChatMessage = { role: 'user', content: message }
+    const userMsg: ChatMessage = { id: String(nextMsgId++), role: 'user', content: message }
     setMessages(prev => [...prev, userMsg])
     setStreaming(true)
 
     // Create assistant message placeholder
-    const assistantMsg: ChatMessage = { role: 'assistant', content: '', streaming: true, toolCalls: [], toolResults: [] }
+    const assistantMsg: ChatMessage = { id: String(nextMsgId++), role: 'assistant', content: '', streaming: true, toolCalls: [], toolResults: [] }
     setMessages(prev => [...prev, assistantMsg])
 
     const controller = new AbortController()

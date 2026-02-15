@@ -1,3 +1,5 @@
+import { useId } from 'react'
+
 interface Props {
   score: number
   size?: 'sm' | 'md'
@@ -13,7 +15,7 @@ export function HealthScoreRing({ score, size = 'md' }: Props) {
   const circumference = 2 * Math.PI * radius
   const offset = circumference - (score / 100) * circumference
   const color = score >= 80 ? '#10B981' : score >= 50 ? '#F59E0B' : '#EF4444'
-  const filterId = isSmall ? 'score-glow-sm' : 'score-glow'
+  const filterId = useId()
 
   return (
     <div className="flex flex-col items-center">

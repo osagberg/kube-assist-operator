@@ -111,8 +111,6 @@ func (s *Server) handlePostAISettings(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.ClearAPIKey {
 		stagedConfig.APIKey = ""
-	} else if req.APIKey != "" {
-		stagedConfig.APIKey = req.APIKey
 	}
 	if req.Model != "" {
 		stagedConfig.Model = req.Model
@@ -387,7 +385,7 @@ func (s *Server) handleExplain(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Error(err, "Explain AI call failed")
 		if err := json.NewEncoder(w).Encode(ai.ExplainResponse{
-			Narrative:      "Failed to generate explanation: " + err.Error(),
+			Narrative:      "Failed to generate explanation. Please try again later.",
 			RiskLevel:      "unknown",
 			TrendDirection: "unknown",
 		}); err != nil {

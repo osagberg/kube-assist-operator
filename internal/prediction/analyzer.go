@@ -63,22 +63,31 @@ func Analyze(snapshots []history.HealthSnapshot) *PredictionResult {
 	// Convert timestamps to seconds from first snapshot (x values)
 	// and health scores as y values
 	baseTime := snapshots[0].Timestamp
-	n := float64(len(snapshots))
-
 	var sumX, sumY, sumXY, sumX2 float64
 	xs := make([]float64, len(snapshots))
 	ys := make([]float64, len(snapshots))
 
-	for i, snap := range snapshots {
+	effectiveN := 0
+	for _, snap := range snapshots {
+		if math.IsNaN(snap.HealthScore) {
+			continue
+		}
 		x := snap.Timestamp.Sub(baseTime).Seconds()
 		y := snap.HealthScore
-		xs[i] = x
-		ys[i] = y
+		xs[effectiveN] = x
+		ys[effectiveN] = y
 		sumX += x
 		sumY += y
 		sumXY += x * y
 		sumX2 += x * x
+		effectiveN++
 	}
+	xs = xs[:effectiveN]
+	ys = ys[:effectiveN]
+	if effectiveN < MinDataPoints {
+		return nil
+	}
+	n := float64(effectiveN)
 
 	// OLS: slope (b1) and intercept (b0)
 	denom := n*sumX2 - sumX*sumX
@@ -124,6 +133,9 @@ func Analyze(snapshots []history.HealthSnapshot) *PredictionResult {
 	// 95% prediction interval (proper OLS formula)
 	meanX := sumX / n
 	sxx := sumX2 - sumX*sumX/n
+	if sxx < 1e-10 {
+		sxx = 1e-10
+	}
 	var mse float64
 	if n > 2 {
 		mse = ssRes / (n - 2)

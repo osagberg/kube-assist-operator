@@ -34,13 +34,16 @@ export function ChatPanel({ open, onClose, clusterId }: { open: boolean; onClose
   return (
     <>
       {/* Backdrop */}
-      <div className="fixed inset-0 z-40 bg-black/20" onClick={onClose} />
+      <div className="fixed inset-0 z-40 bg-black/20" role="presentation" onClick={onClose} />
 
       {/* Panel */}
       <div
         className="fixed right-0 top-0 bottom-0 z-50 w-full md:w-[420px] flex flex-col glass-elevated"
         style={{ borderLeft: '1px solid var(--border)' }}
         onKeyDown={handleKeyDown}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Chat"
       >
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-3" style={{ borderBottom: '1px solid var(--border)' }}>
@@ -61,8 +64,8 @@ export function ChatPanel({ open, onClose, clusterId }: { open: boolean; onClose
               <p className="text-xs mt-1">e.g., "What pods are crashing?" or "Show me the health score"</p>
             </div>
           )}
-          {messages.map((msg, i) => (
-            <MessageBubble key={i} message={msg} />
+          {messages.map((msg) => (
+            <MessageBubble key={msg.id} message={msg} />
           ))}
           <div ref={messagesEndRef} />
         </div>

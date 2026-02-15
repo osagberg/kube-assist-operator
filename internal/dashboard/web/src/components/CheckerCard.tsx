@@ -53,7 +53,7 @@ export function CheckerCard({ name, result, search, severity, namespace, issueSt
 
   const hasCritical = activeIssues.some((i) => i.severity === 'Critical')
   const hasWarning = activeIssues.some((i) => i.severity === 'Warning')
-  const aiCount = issues.filter((i) => i.aiEnhanced).length
+  const aiCount = filteredIssues.filter((i) => i.aiEnhanced).length
 
   return (
     <div className="glass-panel rounded-xl">

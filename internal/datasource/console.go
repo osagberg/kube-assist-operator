@@ -235,10 +235,10 @@ func (c *ConsoleDataSource) resourceFor(obj runtime.Object) (string, error) {
 func (c *ConsoleDataSource) buildGetURL(resource, namespace, name string) string {
 	if clusterScopedResources[resource] || namespace == "" {
 		return fmt.Sprintf("%s/api/v1/clusters/%s/%s/%s",
-			c.baseURL, c.clusterID, resource, name)
+			c.baseURL, c.clusterID, resource, url.PathEscape(name))
 	}
 	return fmt.Sprintf("%s/api/v1/clusters/%s/namespaces/%s/%s/%s",
-		c.baseURL, c.clusterID, namespace, resource, name)
+		c.baseURL, c.clusterID, url.PathEscape(namespace), resource, url.PathEscape(name))
 }
 
 // buildListURL constructs the URL for a List request with query parameters.
@@ -249,7 +249,7 @@ func (c *ConsoleDataSource) buildListURL(resource string, opts *client.ListOptio
 			c.baseURL, c.clusterID, resource)
 	} else {
 		base = fmt.Sprintf("%s/api/v1/clusters/%s/namespaces/%s/%s",
-			c.baseURL, c.clusterID, opts.Namespace, resource)
+			c.baseURL, c.clusterID, url.PathEscape(opts.Namespace), resource)
 	}
 
 	q := url.Values{}

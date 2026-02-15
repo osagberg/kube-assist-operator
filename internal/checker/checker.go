@@ -263,37 +263,7 @@ func EnhanceAllWithAI(ctx context.Context, results map[string]*CheckResult, chec
 		return 0, 0, 0, nil, nil
 	}
 
-	// Track which result and index each issue came from
-	type issueRef struct {
-		checkerName string
-		issueIdx    int
-	}
-
-	var issueContexts []ai.IssueContext
-	var refs []issueRef
-	infoFiltered := 0
-
-	for checkerName, result := range results {
-		if result.Error != nil {
-			continue
-		}
-		for i, issue := range result.Issues {
-			// Skip Info-severity issues from AI analysis
-			if issue.Severity == SeverityInfo {
-				infoFiltered++
-				continue
-			}
-			issueContexts = append(issueContexts, ai.IssueContext{
-				Type:             issue.Type,
-				Severity:         issue.Severity,
-				Resource:         issue.Resource,
-				Namespace:        issue.Namespace,
-				Message:          issue.Message,
-				StaticSuggestion: issue.Suggestion,
-			})
-			refs = append(refs, issueRef{checkerName: checkerName, issueIdx: i})
-		}
-	}
+	issueContexts, refs, infoFiltered := collectIssuesForAI(results)
 
 	if infoFiltered > 0 {
 		log.Info("Filtered Info-severity issues from AI analysis", "filtered", infoFiltered)
@@ -437,6 +407,48 @@ const defaultMaxAIIssues = 15
 
 // defaultMinConfidence is the minimum confidence threshold for AI suggestions.
 const defaultMinConfidence = 0.3
+
+// issueRef tracks which result and index each issue came from.
+type issueRef struct {
+	checkerName string
+	issueIdx    int
+}
+
+// collectIssuesForAI extracts non-Info issues from results in deterministic order.
+func collectIssuesForAI(results map[string]*CheckResult) ([]ai.IssueContext, []issueRef, int) {
+	var issueContexts []ai.IssueContext
+	var refs []issueRef
+	infoFiltered := 0
+
+	names := make([]string, 0, len(results))
+	for k := range results {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	for _, checkerName := range names {
+		result := results[checkerName]
+		if result.Error != nil {
+			continue
+		}
+		for i, issue := range result.Issues {
+			if issue.Severity == SeverityInfo {
+				infoFiltered++
+				continue
+			}
+			issueContexts = append(issueContexts, ai.IssueContext{
+				Type:             issue.Type,
+				Severity:         issue.Severity,
+				Resource:         issue.Resource,
+				Namespace:        issue.Namespace,
+				Message:          issue.Message,
+				StaticSuggestion: issue.Suggestion,
+			})
+			refs = append(refs, issueRef{checkerName: checkerName, issueIdx: i})
+		}
+	}
+
+	return issueContexts, refs, infoFiltered
+}
 
 // severityRank returns a sort rank for severity (lower = higher priority).
 func severityRank(s string) int {

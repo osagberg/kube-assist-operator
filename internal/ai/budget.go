@@ -17,6 +17,7 @@ limitations under the License.
 package ai
 
 import (
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -56,7 +57,7 @@ func NewBudget(windows []BudgetWindow) *Budget {
 }
 
 // ErrBudgetExceeded is returned when a token budget window would be exceeded.
-var ErrBudgetExceeded = fmt.Errorf("token budget exceeded")
+var ErrBudgetExceeded = errors.New("token budget exceeded")
 
 // CheckAllowance returns an error if estimated tokens would exceed any window.
 func (b *Budget) CheckAllowance(estimatedTokens int) error {
