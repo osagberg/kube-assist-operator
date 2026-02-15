@@ -384,7 +384,7 @@ make install-cli
 
 ## Roadmap
 
-Current priorities: T0-3 coverage lock, T1-5 dashboard OIDC auth, T1-8 operator SLO pack, and T1-9 upgrade/migration strategy.
+Current priorities: T0-3 coverage lock, T0-5 per-issue AI caching, T0-6 async AI enrichment, and T1-5 dashboard OIDC auth.
 
 For the full roadmap with dependency graph and implementation details, see the project documentation.
 
