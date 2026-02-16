@@ -158,14 +158,18 @@ flowchart TD
         AN3["GET /api/explain"]
     end
 
+    subgraph Chat["NLQ Chat"]
+        C1["POST /api/chat (SSE stream)"]
+    end
+
     subgraph Fleet["Fleet / Multi-Cluster"]
         F1["GET /api/clusters"]
         F2["GET /api/fleet/summary"]
     end
 
     subgraph Issues["Issue Management"]
-        I1["POST /api/issues/acknowledge"]
-        I2["POST /api/issues/snooze"]
+        I1["POST/DELETE /api/issues/acknowledge"]
+        I2["POST/DELETE /api/issues/snooze"]
         I3["GET /api/issue-states"]
     end
 
@@ -179,7 +183,10 @@ flowchart TD
     Auth --> Settings
     RateLimit --> Actions
     Auth --> Analysis
+    Auth --> Chat
+    RateLimit --> Chat
     Auth --> Fleet
+    Auth --> Issues
     RateLimit --> Issues
     SPA --> Assets
 ```
@@ -230,7 +237,9 @@ flowchart LR
     end
 ```
 
-> **Source anchors:** `internal/datasource/datasource.go` (DataSource interface), `internal/datasource/kubernetes.go` (KubernetesDataSource), `internal/datasource/console.go` (ConsoleDataSource, GVK→resource mapping, URL building, ForCluster)
+In console mode, `cmd/console-backend` enforces auth/TLS by default (`--allow-insecure` is explicit dev-only bypass).
+
+> **Source anchors:** `internal/datasource/datasource.go` (DataSource interface), `internal/datasource/kubernetes.go` (KubernetesDataSource), `internal/datasource/console.go` (ConsoleDataSource, GVK→resource mapping, URL building, ForCluster), `cmd/console-backend/main.go` (auth/TLS requirements)
 
 ---
 
@@ -246,14 +255,15 @@ flowchart TD
 
     Check -->|"namespaces: [a, b, c]"| Explicit["validateNamespaces<br/>verify each exists via API"]
     Check -->|"namespaceSelector:<br/>matchLabels: ..."| Selector["resolveBySelector<br/>List namespaces matching labels"]
-    Check -->|"currentNamespaceOnly: true<br/>or empty"| Default["Use default<br/>namespace"]
+    Check -->|"no namespaces and no selector"| Default["Use default<br/>namespace"]
 
     Explicit --> Filter["FilterSystemNamespaces<br/>remove kube-system, kube-public,<br/>kube-node-lease, flux-system"]
     Selector --> Filter
     Default --> Filter
 
-    Filter --> Cap["Apply 50-namespace cap"]
-    Cap --> Output["[]string<br/>sorted namespace list"]
+    Filter --> Output["[]string<br/>sorted namespace list"]
 ```
 
-> **Source anchors:** `internal/scope/resolver.go` (Resolver struct, ResolveNamespaces, validateNamespaces, resolveBySelector, FilterSystemNamespaces, 50-ns cap constant)
+Namespace capping is applied by the TeamHealthRequest controller (`MaxNamespaces = 50`), not in the resolver package.
+
+> **Source anchors:** `internal/scope/resolver.go` (Resolver struct, ResolveNamespaces, validateNamespaces, resolveBySelector, FilterSystemNamespaces), `internal/controller/teamhealthrequest_controller.go` (`MaxNamespaces` truncation)

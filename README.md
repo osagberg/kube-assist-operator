@@ -20,6 +20,7 @@ It combines health checks, troubleshooting workflows, causal correlation, and op
 - Correlates related failures across checkers (causal analysis)
 - Supports optional AI enhancement (Anthropic, OpenAI, NoOp)
 - Exposes a dashboard with live updates over SSE
+- Supports natural-language chat (NLQ) backed by live cluster health data
 - Supports direct Kubernetes mode and console-backed multi-cluster mode
 
 ## Quick Start
@@ -199,6 +200,70 @@ When `dashboard.authToken` is configured, all `/api/*` endpoints require authent
 | `/api/issues/snooze` | POST, DELETE | Snooze/unsnooze issue |
 | `/api/issue-states` | GET | Active issue states |
 | `/api/capabilities` | GET | Frontend feature flags |
+| `/api/chat` | POST (SSE) | Natural-language chat stream |
+
+### Natural Language Chat (NLQ)
+
+NLQ chat is served by `POST /api/chat` and streams assistant/tool events as SSE.
+
+Requirements:
+
+- `dashboard.chat.enabled=true`
+- `ai.enabled=true` with a working provider
+- AI API key configured via Secret/env (not request body)
+- `clusterId` in each request when multiple clusters are available
+
+Example request:
+
+```bash
+curl -N -X POST http://localhost:9090/api/chat \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <dashboard-token>" \
+  -d '{
+    "message": "What pods are crashing in production?",
+    "clusterId": "cluster-a"
+  }'
+```
+
+Notes:
+
+- If `sessionId` is omitted, the server creates one and emits a `session_id` event.
+- Message limit is 2000 characters; max request body is 64 KiB.
+- Session budget/limits are controlled by `dashboard.chat.*` Helm values.
+
+### Console-Backed Multi-Cluster Mode
+
+Run console backend (required for `datasource.type=console`):
+
+```bash
+go run ./cmd/console-backend \
+  --addr=:8085 \
+  --kubeconfigs=cluster-a=/tmp/cluster-a.kubeconfig,cluster-b=/tmp/cluster-b.kubeconfig \
+  --auth-token="$CONSOLE_AUTH_TOKEN" \
+  --tls-cert=/path/to/tls.crt \
+  --tls-key=/path/to/tls.key
+```
+
+Development-only insecure mode:
+
+```bash
+go run ./cmd/console-backend \
+  --addr=:8085 \
+  --kubeconfigs=cluster-a=/tmp/cluster-a.kubeconfig \
+  --allow-insecure
+```
+
+Operator Helm values for console mode:
+
+```yaml
+datasource:
+  type: console
+  consoleURL: "https://console-backend.kube-assist-system.svc:8085"
+  clusterID: "cluster-a"
+  bearerTokenSecretRef:
+    name: kube-assist-console-auth
+    key: bearer-token
+```
 
 ## AI Integration
 
@@ -211,6 +276,8 @@ Supported providers:
 | NoOp | Disabled behavior for testing/development |
 
 AI behavior includes batching, caching, severity gating, deduplication, budget controls, and sanitization before provider calls.
+
+Runtime AI updates via `/api/settings/ai` can change enablement/provider/model, but API keys must be supplied from the operator environment (usually Secret-backed `KUBE_ASSIST_AI_API_KEY`).
 
 Full configuration and operational details:
 
@@ -239,15 +306,19 @@ flowchart TD
     Causal["Causal Engine"]
     AI["AI Manager"]
     Predict["Predictive Health"]
-    DS["DataSource"]
+    DS["DataSource (Kubernetes / Console)"]
+    Console["Console Backend"]
     K8s["Kubernetes API"]
 
     CLI -->|creates CRs| K8s
     Dash -->|REST + SSE| Controllers
+    Dash -->|POST /api/chat (SSE)| AI
     THR & TR & CP --> Checkers
     Checkers --> Causal --> AI
     Predict --> DS
-    DS --> K8s
+    DS -->|kubernetes mode| K8s
+    DS -->|console mode| Console
+    Console --> K8s
 ```
 
 Detailed diagrams:

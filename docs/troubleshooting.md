@@ -218,9 +218,11 @@ kubectl auth can-i list helmreleases.helm.toolkit.fluxcd.io --as=system:servicea
 
 ### Solutions
 
-**1. Enable AI via the Dashboard (v1.4.0 -- Easiest)**
+**1. Enable AI via the Dashboard**
 
-Open the dashboard, find the AI Settings panel, toggle AI on, select a provider, paste your API key, and save. No restart needed. The dashboard calls `POST /api/settings/ai` to reconfigure the shared AI Manager at runtime.
+Open the dashboard, find the AI Settings panel, toggle AI on, select a provider/model, and save. No restart needed. The dashboard calls `POST /api/settings/ai` to reconfigure the shared AI Manager at runtime.
+
+Important: direct `apiKey` in `POST /api/settings/ai` is rejected. Configure API keys via Secret/env (`KUBE_ASSIST_AI_API_KEY`).
 
 Verify the settings took effect:
 
@@ -360,6 +362,52 @@ kubectl top pod -n kube-assist-system -l control-plane=controller-manager --cont
 
 ---
 
+## NLQ Chat Not Available
+
+### Symptoms
+- Chat panel is disabled in the UI
+- `POST /api/chat` returns `503 Chat is not available`
+- `POST /api/chat` returns `400 clusterId is required when multiple clusters are available`
+
+### Solutions
+
+**1. Enable chat and AI together**
+
+```yaml
+dashboard:
+  chat:
+    enabled: true
+ai:
+  enabled: true
+```
+
+Chat is gated by both flags.
+
+**2. Verify AI provider is ready**
+
+```bash
+curl http://localhost:9090/api/settings/ai
+# Expect hasApiKey=true and providerReady=true
+```
+
+**3. Include `clusterId` in multi-cluster mode**
+
+When dashboard tracks multiple clusters, `/api/chat` requires `clusterId` in request JSON.
+
+```json
+{
+  "message": "Summarize current critical issues",
+  "clusterId": "cluster-a"
+}
+```
+
+**4. Check session limits**
+
+If you hit max sessions, `/api/chat` returns `503 maximum concurrent chat sessions reached`.
+Tune `dashboard.chat.maxSessions` and `dashboard.chat.sessionTTL` as needed.
+
+---
+
 ## Debug Logging
 
 Enable verbose logging to diagnose issues:
@@ -385,10 +433,10 @@ For development mode with stack traces:
 
 ---
 
-## AI Runtime Configuration Not Working (v1.4.0)
+## AI Runtime Configuration Not Working
 
 ### Symptoms
-- `POST /api/settings/ai` returns 500
+- `POST /api/settings/ai` returns 400/500
 - Dashboard save button shows error toast
 - AI settings revert after saving
 
@@ -401,8 +449,10 @@ The API returns the error message in the response body:
 ```bash
 curl -X POST http://localhost:9090/api/settings/ai \
   -H 'Content-Type: application/json' \
-  -d '{"enabled":true,"provider":"anthropic","apiKey":"your-api-key-here"}'
+  -d '{"enabled":true,"provider":"anthropic","model":"claude-haiku-4-5-20251001"}'
 ```
+
+If the body includes `apiKey`, remove it. The API now rejects direct key submission.
 
 **2. Verify provider name is valid**
 
@@ -425,7 +475,7 @@ Look for `AI settings updated via dashboard (Manager)` for successful updates.
 | `checker "X" is not supported` | CRD not installed | Install required CRD (e.g., Flux) |
 | `unable to list namespaces` | RBAC missing | Add `list namespaces` permission |
 | `failed to get pods` | RBAC missing | Add `get pods` permission |
-| `AI provider not configured` | Missing API key | Set via dashboard, env var, or flag |
+| `AI provider not configured` | Missing API key | Set via Secret/env (`KUBE_ASSIST_AI_API_KEY`) |
 | `Failed to reconfigure AI provider` | Invalid provider config | Check provider name and API key |
 | `Invalid provider` | Bad POST body | Provider must be `anthropic`, `openai`, or `noop` |
 | `dashboard server error` | Port conflict | Check port 9090 availability |

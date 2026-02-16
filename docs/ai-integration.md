@@ -1,6 +1,6 @@
 # AI Integration
 
-kube-assist can enhance health check suggestions using AI providers to deliver context-aware remediation guidance. As of v1.4.0, AI can be configured at runtime from the dashboard without restarting the operator.
+kube-assist can enhance health check suggestions using AI providers to deliver context-aware remediation guidance. AI can be configured at runtime from the dashboard without restarting the operator.
 
 ## Overview
 
@@ -17,16 +17,18 @@ AI enhancement runs after standard health checks complete. Results include both 
 
 There are four ways to configure AI, from simplest to most flexible:
 
-### 1. Dashboard UI (v1.4.0 -- Recommended for Quick Setup)
+### 1. Dashboard UI (Recommended for Quick Setup)
 
 The dashboard includes a built-in AI settings panel. No restart required.
 
 1. Open the dashboard at `http://<host>:9090`
 2. Locate the AI Settings panel
-3. Toggle AI on, select a provider, enter your API key, and choose a model
+3. Toggle AI on, select provider/model, and save
 4. Click Save
 
 Changes take effect immediately. The dashboard uses the `POST /api/settings/ai` endpoint, which calls `Manager.Reconfigure()` to swap the active provider at runtime. Both the dashboard and the controllers share the same `ai.Manager` instance, so the change is reflected everywhere.
+
+Important: `POST /api/settings/ai` rejects direct API key submission. Configure API keys through Secret/env (`KUBE_ASSIST_AI_API_KEY`) and use dashboard settings only for runtime toggles/provider/model.
 
 ### 2. CLI Flags (Operator)
 
@@ -196,7 +198,7 @@ sanitizer := ai.NewSanitizer()
 sanitizer.AddPattern(`my-custom-pattern`)
 ```
 
-## AI Manager Architecture (v1.4.0)
+## AI Manager Architecture
 
 The `ai.Manager` struct (`internal/ai/manager.go`) wraps the `ai.Provider` interface with thread-safe runtime reconfiguration. It is shared between the dashboard server and the controllers.
 
@@ -204,10 +206,10 @@ Key properties:
 
 - **Thread-safe**: All access is protected by `sync.RWMutex`
 - **Drop-in replacement**: Manager implements the `Provider` interface, so existing code that accepts a Provider works unchanged
-- **Runtime reconfiguration**: `Reconfigure(provider, apiKey, model)` swaps the active provider without downtime
+- **Runtime reconfiguration**: `Reconfigure(provider, apiKey, model, explainModel)` swaps providers/models without downtime
 - **Enable/disable toggle**: `SetEnabled(bool)` turns AI on or off without changing the provider
 
-When the dashboard receives a `POST /api/settings/ai` request, it calls `Manager.Reconfigure()` which creates a new provider from the given configuration and atomically swaps it in. Because the Manager is shared, the controllers immediately use the new provider on their next reconciliation.
+When the dashboard receives a `POST /api/settings/ai` request, it calls `Manager.Reconfigure()` with staged settings and atomically swaps the provider/model. Because the Manager is shared, the controllers immediately use the new configuration on their next reconciliation.
 
 ## Settings API Endpoints
 
@@ -234,12 +236,23 @@ When `DASHBOARD_AUTH_TOKEN` is configured, include `Authorization: Bearer <token
 {
   "enabled": true,
   "provider": "anthropic",
-  "apiKey": "your-api-key-here",
-  "model": "claude-haiku-4-5-20251001"
+  "model": "claude-haiku-4-5-20251001",
+  "explainModel": "claude-haiku-4-5-20251001"
+}
+```
+
+Optional key-clear request:
+
+```json
+{
+  "enabled": true,
+  "provider": "anthropic",
+  "clearApiKey": true
 }
 ```
 
 Valid providers: `anthropic`, `openai`, `noop`.
+Direct `apiKey` in request body is rejected with HTTP 400.
 
 ---
 
@@ -247,7 +260,7 @@ Valid providers: `anthropic`, `openai`, `noop`.
 
 ### Without AI
 
-In v1.4.0, every checker includes specific kubectl commands, common root causes, and links to Kubernetes docs -- even without AI enabled.
+Every checker includes specific kubectl commands, common root causes, and links to Kubernetes docs even without AI enabled.
 
 ```
 workloads (2 healthy, 1 critical)
