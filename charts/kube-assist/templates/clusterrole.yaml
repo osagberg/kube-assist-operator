@@ -5,7 +5,9 @@ metadata:
   labels:
     {{- include "kube-assist.labels" . | nindent 4 }}
 rules:
-  # Core resources for troubleshooting and health checks
+  # Core resources for troubleshooting and health checks.
+  # Secrets are required: the controller-runtime cache watches all scheme types,
+  # and notification secretRef reads secrets at runtime.
   - apiGroups:
       - ""
     resources:
@@ -14,24 +16,13 @@ rules:
       - pods
       - pods/log
       - namespaces
+      - secrets
       - persistentvolumeclaims
       - resourcequotas
     verbs:
       - get
       - list
       - watch
-  {{- if .Values.checkers.secrets.enabled }}
-  # SecretChecker: read-only secrets access for TLS certificate expiry checks.
-  # Only metadata and tls.crt are inspected; secret values are never logged or stored.
-  - apiGroups:
-      - ""
-    resources:
-      - secrets
-    verbs:
-      - get
-      - list
-      - watch
-  {{- end }}
   - apiGroups:
       - ""
     resources:
