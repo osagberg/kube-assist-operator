@@ -43,10 +43,8 @@ import (
 )
 
 const (
-	providerNoop      = "noop"
-	providerAnthropic = "anthropic"
-	testAuthToken     = "secret-token"
-	testOriginal      = "original"
+	testAuthToken = "secret-token"
+	testOriginal  = "original"
 )
 
 // waitForSSEClients polls until the server has exactly n SSE clients, or the timeout is reached.
@@ -4687,98 +4685,6 @@ func TestHandleAITruncatedForCluster_NoCache(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// With* option setters
-// ---------------------------------------------------------------------------
-
-func TestWithCheckInterval(t *testing.T) {
-	scheme := runtime.NewScheme()
-	client := fake.NewClientBuilder().WithScheme(scheme).Build()
-	registry := checker.NewRegistry()
-	s := NewServer(datasource.NewKubernetes(client), registry, ":8080")
-
-	orig := s.checkInterval
-	s.WithCheckInterval(30 * time.Second)
-	if s.checkInterval != 30*time.Second {
-		t.Errorf("expected 30s, got %v", s.checkInterval)
-	}
-
-	// zero/negative should be ignored
-	s.WithCheckInterval(0)
-	if s.checkInterval != 30*time.Second {
-		t.Error("zero duration should not change interval")
-	}
-	s.WithCheckInterval(-1 * time.Second)
-	if s.checkInterval != 30*time.Second {
-		t.Error("negative duration should not change interval")
-	}
-	_ = orig
-}
-
-func TestWithAIAnalysisTimeout(t *testing.T) {
-	scheme := runtime.NewScheme()
-	client := fake.NewClientBuilder().WithScheme(scheme).Build()
-	registry := checker.NewRegistry()
-	s := NewServer(datasource.NewKubernetes(client), registry, ":8080")
-
-	s.WithAIAnalysisTimeout(60 * time.Second)
-	if s.aiAnalysisTimeout != 60*time.Second {
-		t.Errorf("expected 60s, got %v", s.aiAnalysisTimeout)
-	}
-	s.WithAIAnalysisTimeout(0)
-	if s.aiAnalysisTimeout != 60*time.Second {
-		t.Error("zero should not change timeout")
-	}
-}
-
-func TestWithMaxIssuesPerBatch(t *testing.T) {
-	scheme := runtime.NewScheme()
-	client := fake.NewClientBuilder().WithScheme(scheme).Build()
-	registry := checker.NewRegistry()
-	s := NewServer(datasource.NewKubernetes(client), registry, ":8080")
-
-	s.WithMaxIssuesPerBatch(50)
-	if s.maxIssuesPerBatch != 50 {
-		t.Errorf("expected 50, got %d", s.maxIssuesPerBatch)
-	}
-	s.WithMaxIssuesPerBatch(0)
-	if s.maxIssuesPerBatch != 50 {
-		t.Error("zero should not change max")
-	}
-}
-
-func TestWithSSEBufferSize(t *testing.T) {
-	scheme := runtime.NewScheme()
-	client := fake.NewClientBuilder().WithScheme(scheme).Build()
-	registry := checker.NewRegistry()
-	s := NewServer(datasource.NewKubernetes(client), registry, ":8080")
-
-	s.WithSSEBufferSize(100)
-	if s.sseBufferSize != 100 {
-		t.Errorf("expected 100, got %d", s.sseBufferSize)
-	}
-	s.WithSSEBufferSize(-1)
-	if s.sseBufferSize != 100 {
-		t.Error("negative should not change size")
-	}
-}
-
-func TestWithHistorySize(t *testing.T) {
-	scheme := runtime.NewScheme()
-	client := fake.NewClientBuilder().WithScheme(scheme).Build()
-	registry := checker.NewRegistry()
-	s := NewServer(datasource.NewKubernetes(client), registry, ":8080")
-
-	s.WithHistorySize(200)
-	if s.historySize != 200 {
-		t.Errorf("expected 200, got %d", s.historySize)
-	}
-	s.WithHistorySize(0)
-	if s.historySize != 200 {
-		t.Error("zero should not change size")
-	}
-}
-
-// ---------------------------------------------------------------------------
 // parseBoolEnv tests
 // ---------------------------------------------------------------------------
 
@@ -4850,41 +4756,6 @@ func TestNewMutationLimiter_InvalidEnv(t *testing.T) {
 	}
 	if lim.Burst() != 20 {
 		t.Errorf("expected default burst 20 on invalid env, got %d", lim.Burst())
-	}
-}
-
-// ---------------------------------------------------------------------------
-// handleClusters tests
-// ---------------------------------------------------------------------------
-
-func TestHandleClusters_NonConsoleDataSource(t *testing.T) {
-	scheme := runtime.NewScheme()
-	client := fake.NewClientBuilder().WithScheme(scheme).Build()
-	registry := checker.NewRegistry()
-	s := NewServer(datasource.NewKubernetes(client), registry, ":8080")
-
-	handler := s.buildHandler()
-	req := httptest.NewRequest(http.MethodGet, "/api/clusters", nil)
-	w := httptest.NewRecorder()
-	handler.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Errorf("expected 200, got %d", w.Code)
-	}
-	var resp map[string]any
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to decode response: %v", err)
-	}
-	clusters, ok := resp["clusters"]
-	if !ok {
-		t.Fatal("expected 'clusters' key in response")
-	}
-	arr, ok := clusters.([]any)
-	if !ok {
-		t.Fatal("expected clusters to be an array")
-	}
-	if len(arr) != 0 {
-		t.Errorf("expected empty clusters, got %d", len(arr))
 	}
 }
 

@@ -543,3 +543,186 @@ func TestContextBuilder_DeploymentNoFalseMatch(t *testing.T) {
 		t.Error("expected no logs — ReplicaSet app-v2-abc1234567 should not match deployment app")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// capTokenBudget direct tests
+// ---------------------------------------------------------------------------
+
+func TestCapTokenBudget_UnderBudget(t *testing.T) {
+	b := &ContextBuilder{config: LogContextConfig{MaxTotalChars: 1000}}
+	issues := []ai.IssueContext{
+		{Events: []string{"short"}, Logs: []string{"line"}},
+	}
+	result := b.capTokenBudget(issues)
+	// Under budget, should be unchanged
+	if len(result[0].Events) != 1 || result[0].Events[0] != "short" {
+		t.Errorf("expected events unchanged, got %v", result[0].Events)
+	}
+	if len(result[0].Logs) != 1 || result[0].Logs[0] != "line" {
+		t.Errorf("expected logs unchanged, got %v", result[0].Logs)
+	}
+}
+
+func TestCapTokenBudget_DefaultMaxChars(t *testing.T) {
+	// MaxTotalChars=0 should default to 30000
+	b := &ContextBuilder{config: LogContextConfig{MaxTotalChars: 0}}
+	issues := []ai.IssueContext{
+		{Events: []string{"small event"}},
+	}
+	result := b.capTokenBudget(issues)
+	// 11 chars is well under 30000, should be unchanged
+	if len(result[0].Events) != 1 {
+		t.Errorf("expected events unchanged with default budget, got %d events", len(result[0].Events))
+	}
+}
+
+func TestCapTokenBudget_EventTrimmingPass(t *testing.T) {
+	// Budget is 100, but we have 3 events of 50 chars each (150 total).
+	// Event trimming should remove oldest events until under budget.
+	b := &ContextBuilder{config: LogContextConfig{MaxTotalChars: 100}}
+	issues := []ai.IssueContext{
+		{Events: []string{
+			strings.Repeat("a", 50),
+			strings.Repeat("b", 50),
+			strings.Repeat("c", 50),
+		}},
+	}
+	result := b.capTokenBudget(issues)
+	total := contextChars(result)
+	if total > 100 {
+		t.Errorf("expected total <= 100 after event trimming, got %d", total)
+	}
+	if len(result[0].Events) >= 3 {
+		t.Errorf("expected some events trimmed, got %d events", len(result[0].Events))
+	}
+}
+
+func TestCapTokenBudget_LogTrimmingPass(t *testing.T) {
+	// Budget is 80, events have only 1 entry (can't trim further in pass 1),
+	// but logs have 3 entries. Log trimming should remove oldest lines.
+	b := &ContextBuilder{config: LogContextConfig{MaxTotalChars: 80}}
+	issues := []ai.IssueContext{
+		{
+			Events: []string{strings.Repeat("e", 30)},
+			Logs: []string{
+				strings.Repeat("x", 30),
+				strings.Repeat("y", 30),
+				strings.Repeat("z", 30),
+			},
+		},
+	}
+	// Total: 30 + 30 + 30 + 30 = 120 > 80
+	result := b.capTokenBudget(issues)
+	total := contextChars(result)
+	if total > 80 {
+		t.Errorf("expected total <= 80 after log trimming, got %d", total)
+	}
+}
+
+func TestCapTokenBudget_FinalCascadeClear(t *testing.T) {
+	// Budget is very small (5), but we have single-entry events and logs.
+	// First and second passes can't trim single entries. Final pass should clear them.
+	b := &ContextBuilder{config: LogContextConfig{MaxTotalChars: 5}}
+	issues := []ai.IssueContext{
+		{
+			Events: []string{strings.Repeat("e", 20)},
+			Logs:   []string{strings.Repeat("l", 20)},
+		},
+		{
+			Events: []string{strings.Repeat("f", 20)},
+			Logs:   []string{strings.Repeat("m", 20)},
+		},
+	}
+	// Total: 20 + 20 + 20 + 20 = 80 >> 5
+	result := b.capTokenBudget(issues)
+	total := contextChars(result)
+	if total > 5 {
+		t.Errorf("expected total <= 5 after final cascade, got %d", total)
+	}
+	// Everything should be cleared
+	for i, ic := range result {
+		if len(ic.Events) != 0 {
+			t.Errorf("issue %d: expected Events cleared, got %d", i, len(ic.Events))
+		}
+		if len(ic.Logs) != 0 {
+			t.Errorf("issue %d: expected Logs cleared, got %d", i, len(ic.Logs))
+		}
+	}
+}
+
+func TestCapTokenBudget_EventTrimEarlyReturn(t *testing.T) {
+	// Budget is 60, we have 2 issues with 2 events each of 20 chars.
+	// Total = 80. After trimming 1 event from each issue, we get 40 which is <= 60.
+	// The function should return as soon as budget is met.
+	b := &ContextBuilder{config: LogContextConfig{MaxTotalChars: 60}}
+	issues := []ai.IssueContext{
+		{Events: []string{strings.Repeat("a", 20), strings.Repeat("b", 20)}},
+		{Events: []string{strings.Repeat("c", 20), strings.Repeat("d", 20)}},
+	}
+	result := b.capTokenBudget(issues)
+	total := contextChars(result)
+	if total > 60 {
+		t.Errorf("expected total <= 60, got %d", total)
+	}
+	// Should still have some events (not everything cleared)
+	totalEvents := len(result[0].Events) + len(result[1].Events)
+	if totalEvents == 0 {
+		t.Error("expected some events to remain after partial trim")
+	}
+}
+
+func TestCapTokenBudget_LogTrimEarlyReturn(t *testing.T) {
+	// Only logs, no events. Budget is 40, each issue has 2 log lines of 20 chars.
+	// Total = 80, need to trim. Log trimming should handle it.
+	b := &ContextBuilder{config: LogContextConfig{MaxTotalChars: 40}}
+	issues := []ai.IssueContext{
+		{Logs: []string{strings.Repeat("a", 20), strings.Repeat("b", 20)}},
+		{Logs: []string{strings.Repeat("c", 20), strings.Repeat("d", 20)}},
+	}
+	result := b.capTokenBudget(issues)
+	total := contextChars(result)
+	if total > 40 {
+		t.Errorf("expected total <= 40, got %d", total)
+	}
+}
+
+func TestCapTokenBudget_MixedEventsAndLogs(t *testing.T) {
+	// Mix of events and logs across multiple issues, with a tight budget.
+	b := &ContextBuilder{config: LogContextConfig{MaxTotalChars: 50}}
+	issues := []ai.IssueContext{
+		{
+			Events: []string{strings.Repeat("e", 15), strings.Repeat("e", 15)},
+			Logs:   []string{strings.Repeat("l", 15), strings.Repeat("l", 15)},
+		},
+		{
+			Events: []string{strings.Repeat("f", 15)},
+			Logs:   []string{strings.Repeat("m", 15), strings.Repeat("m", 15)},
+		},
+	}
+	// Total: 15*2 + 15*2 + 15 + 15*2 = 30 + 30 + 15 + 30 = 105 >> 50
+	result := b.capTokenBudget(issues)
+	total := contextChars(result)
+	if total > 50 {
+		t.Errorf("expected total <= 50, got %d", total)
+	}
+}
+
+func TestCapTokenBudget_EmptyIssues(t *testing.T) {
+	b := &ContextBuilder{config: LogContextConfig{MaxTotalChars: 100}}
+	issues := []ai.IssueContext{}
+	result := b.capTokenBudget(issues)
+	if len(result) != 0 {
+		t.Errorf("expected empty result for empty issues, got %d", len(result))
+	}
+}
+
+func TestCapTokenBudget_NoEventsOrLogs(t *testing.T) {
+	b := &ContextBuilder{config: LogContextConfig{MaxTotalChars: 100}}
+	issues := []ai.IssueContext{
+		{Type: "test", Message: "no events or logs"},
+	}
+	result := b.capTokenBudget(issues)
+	if contextChars(result) != 0 {
+		t.Errorf("expected 0 chars for issues with no events/logs")
+	}
+}

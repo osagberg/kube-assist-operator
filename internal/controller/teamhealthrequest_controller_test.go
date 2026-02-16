@@ -777,7 +777,7 @@ var _ = Describe("TeamHealthRequest Controller", func() {
 		})
 
 		It("should complete with an error in the checker result", func() {
-			// Use an empty registry — "secrets" is a valid API name but not registered
+			// Use an empty registry -- "secrets" is a valid API name but not registered
 			registry := checker.NewRegistry()
 
 			reconciler := &TeamHealthRequestReconciler{
@@ -887,7 +887,7 @@ var _ = Describe("TeamHealthRequest Controller", func() {
 	Context("Notification semaphore", func() {
 		It("should not launch goroutine when semaphore is full", func() {
 			sem := make(chan struct{}, 1)
-			// Fill the semaphore — simulates 1 in-flight notification
+			// Fill the semaphore -- simulates 1 in-flight notification
 			sem <- struct{}{}
 
 			// The launch-site pattern from Reconcile: acquire before go
@@ -898,7 +898,7 @@ var _ = Describe("TeamHealthRequest Controller", func() {
 				launched = true
 				<-sem // release (simulating defer)
 			default:
-				// Semaphore full — skip
+				// Semaphore full -- skip
 			}
 
 			Expect(launched).To(BeFalse(), "goroutine should NOT be launched when semaphore is full")
@@ -931,7 +931,7 @@ var _ = Describe("TeamHealthRequest Controller", func() {
 				case sem <- struct{}{}:
 					launchCount++
 				default:
-					// Semaphore full — skip
+					// Semaphore full -- skip
 				}
 			}
 
@@ -1013,7 +1013,7 @@ var _ = Describe("TeamHealthRequest Controller", func() {
 	Context("launchNotifications", func() {
 		It("should dispatch notifications without semaphore", func() {
 			r := &TeamHealthRequestReconciler{
-				// NotifySem is nil — covers the else branch
+				// NotifySem is nil -- covers the else branch
 			}
 
 			hr := &assistv1alpha1.TeamHealthRequest{
@@ -1032,7 +1032,7 @@ var _ = Describe("TeamHealthRequest Controller", func() {
 				},
 			}
 
-			// Should not panic — fire-and-forget goroutine
+			// Should not panic -- fire-and-forget goroutine
 			r.launchNotifications(context.Background(), hr, 5, 0, 0, 0)
 			// Give goroutine time to complete
 			time.Sleep(100 * time.Millisecond)
@@ -1062,12 +1062,42 @@ var _ = Describe("TeamHealthRequest Controller", func() {
 				},
 			}
 
-			// Should not panic — just logs and skips
+			// Should not panic -- just logs and skips
 			r.launchNotifications(context.Background(), hr, 5, 0, 0, 0)
 			time.Sleep(50 * time.Millisecond)
 
 			// Drain
 			<-sem
+		})
+
+		It("should dispatch when semaphore has capacity", func() {
+			sem := make(chan struct{}, 2)
+
+			r := &TeamHealthRequestReconciler{
+				NotifySem: sem,
+			}
+
+			hr := &assistv1alpha1.TeamHealthRequest{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "launch-sem-ok",
+					Namespace: "default",
+				},
+				Spec: assistv1alpha1.TeamHealthRequestSpec{
+					Notify: []assistv1alpha1.NotificationTarget{
+						{
+							Type:         assistv1alpha1.NotificationTypeWebhook,
+							URL:          "https://example.com/webhook",
+							OnCompletion: true,
+						},
+					},
+				},
+			}
+
+			// Should not panic -- goroutine acquires semaphore and dispatches
+			r.launchNotifications(context.Background(), hr, 5, 0, 0, 0)
+			// Wait for goroutine to complete and release the semaphore
+			Eventually(func() int { return len(sem) }, "10s", "100ms").Should(Equal(0),
+				"semaphore should be released after goroutine completes")
 		})
 	})
 
@@ -1092,9 +1122,9 @@ var _ = Describe("TeamHealthRequest Controller", func() {
 				},
 			}
 
-			// No critical issues — should skip
+			// No critical issues -- should skip
 			r.dispatchNotifications(context.Background(), hr, 5, 2, 0, 2)
-			// No assertion needed — just verifying it doesn't panic and exits gracefully
+			// No assertion needed -- just verifying it doesn't panic and exits gracefully
 		})
 
 		It("should skip notifications when OnCompletion is false", func() {

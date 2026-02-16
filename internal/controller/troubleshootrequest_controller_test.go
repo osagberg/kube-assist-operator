@@ -31,6 +31,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -1464,7 +1465,7 @@ var _ = Describe("TroubleshootRequest Controller", func() {
 			reconciler := &TroubleshootRequestReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
-				// Clientset nil — log collection will fail gracefully, but events uses controller-runtime client
+				// Clientset nil -- log collection will fail gracefully, but events uses controller-runtime client
 			}
 
 			result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
@@ -1848,6 +1849,800 @@ var _ = Describe("TroubleshootRequest Controller", func() {
 				}
 			}
 			Expect(foundNotReady).To(BeTrue(), "should detect PodNotReady condition")
+		})
+	})
+
+	// =========================================================================
+	// NEW TESTS: eventTimestamp comprehensive coverage
+	// =========================================================================
+	Context("eventTimestamp comprehensive tests", func() {
+		It("should return zero time when all timestamp fields are zero", func() {
+			event := corev1.Event{}
+			ts := eventTimestamp(event)
+			Expect(ts.IsZero()).To(BeTrue(), "all-zero event should return zero time")
+		})
+
+		It("should prefer LastTimestamp over all others", func() {
+			now := time.Now()
+			event := corev1.Event{
+				ObjectMeta:     metav1.ObjectMeta{CreationTimestamp: metav1.NewTime(now.Add(-40 * time.Minute))},
+				LastTimestamp:  metav1.NewTime(now.Add(-10 * time.Minute)),
+				EventTime:      metav1.MicroTime{Time: now.Add(-20 * time.Minute)},
+				FirstTimestamp: metav1.NewTime(now.Add(-30 * time.Minute)),
+			}
+			ts := eventTimestamp(event)
+			Expect(ts).To(Equal(event.LastTimestamp.Time), "LastTimestamp should take priority")
+		})
+
+		It("should use EventTime when LastTimestamp is zero", func() {
+			now := time.Now()
+			event := corev1.Event{
+				ObjectMeta:     metav1.ObjectMeta{CreationTimestamp: metav1.NewTime(now.Add(-30 * time.Minute))},
+				EventTime:      metav1.MicroTime{Time: now.Add(-10 * time.Minute)},
+				FirstTimestamp: metav1.NewTime(now.Add(-20 * time.Minute)),
+			}
+			ts := eventTimestamp(event)
+			Expect(ts).To(Equal(event.EventTime.Time), "EventTime should be used when LastTimestamp is zero")
+		})
+
+		It("should use FirstTimestamp when LastTimestamp and EventTime are zero", func() {
+			now := time.Now()
+			event := corev1.Event{
+				ObjectMeta:     metav1.ObjectMeta{CreationTimestamp: metav1.NewTime(now.Add(-20 * time.Minute))},
+				FirstTimestamp: metav1.NewTime(now.Add(-10 * time.Minute)),
+			}
+			ts := eventTimestamp(event)
+			Expect(ts).To(Equal(event.FirstTimestamp.Time), "FirstTimestamp should be used")
+		})
+
+		It("should use CreationTimestamp as last resort", func() {
+			now := time.Now()
+			event := corev1.Event{
+				ObjectMeta: metav1.ObjectMeta{CreationTimestamp: metav1.NewTime(now.Add(-5 * time.Minute))},
+			}
+			ts := eventTimestamp(event)
+			Expect(ts).To(Equal(event.CreationTimestamp.Time), "CreationTimestamp should be last resort")
+		})
+	})
+
+	// =========================================================================
+	// NEW TESTS: filterRecentRelevantEvents comprehensive coverage
+	// =========================================================================
+	Context("filterRecentRelevantEvents comprehensive tests", func() {
+		It("should sort events by time ascending", func() {
+			now := time.Now()
+			since := now.Add(-1 * time.Hour)
+			targets := map[string]struct{}{"my-pod": {}}
+
+			events := []corev1.Event{
+				{
+					InvolvedObject: corev1.ObjectReference{Name: "my-pod"},
+					LastTimestamp:  metav1.NewTime(now.Add(-10 * time.Minute)),
+					Type:           "Warning",
+					Reason:         "Late",
+					Message:        "second event",
+				},
+				{
+					InvolvedObject: corev1.ObjectReference{Name: "my-pod"},
+					LastTimestamp:  metav1.NewTime(now.Add(-30 * time.Minute)),
+					Type:           "Normal",
+					Reason:         "Early",
+					Message:        "first event",
+				},
+			}
+
+			lines := filterRecentRelevantEvents(events, targets, since)
+			Expect(lines).To(HaveLen(2))
+			Expect(lines[0]).To(ContainSubstring("first event"), "earlier event should come first")
+			Expect(lines[1]).To(ContainSubstring("second event"), "later event should come second")
+		})
+
+		It("should sort by log string when timestamps are equal", func() {
+			now := time.Now()
+			sameTime := now.Add(-5 * time.Minute)
+			since := now.Add(-1 * time.Hour)
+			targets := map[string]struct{}{"my-pod": {}}
+
+			events := []corev1.Event{
+				{
+					InvolvedObject: corev1.ObjectReference{Name: "my-pod"},
+					LastTimestamp:  metav1.NewTime(sameTime),
+					Type:           "Warning",
+					Reason:         "Zzz",
+					Message:        "z-message",
+				},
+				{
+					InvolvedObject: corev1.ObjectReference{Name: "my-pod"},
+					LastTimestamp:  metav1.NewTime(sameTime),
+					Type:           "Normal",
+					Reason:         "Aaa",
+					Message:        "a-message",
+				},
+			}
+
+			lines := filterRecentRelevantEvents(events, targets, since)
+			Expect(lines).To(HaveLen(2))
+			Expect(lines[0]).To(ContainSubstring("a-message"), "alphabetically earlier log should come first")
+			Expect(lines[1]).To(ContainSubstring("z-message"), "alphabetically later log should come second")
+		})
+
+		It("should handle events with zero timestamps (unknown-time)", func() {
+			now := time.Now()
+			since := now.Add(-1 * time.Hour)
+			targets := map[string]struct{}{"my-pod": {}}
+
+			events := []corev1.Event{
+				{
+					// All timestamp fields are zero
+					InvolvedObject: corev1.ObjectReference{Name: "my-pod"},
+					Type:           "Warning",
+					Reason:         "Unknown",
+					Message:        "event with no timestamp",
+				},
+			}
+
+			lines := filterRecentRelevantEvents(events, targets, since)
+			Expect(lines).To(HaveLen(1))
+			Expect(lines[0]).To(ContainSubstring("unknown-time"), "zero timestamps should show unknown-time")
+			Expect(lines[0]).To(ContainSubstring("event with no timestamp"))
+		})
+
+		It("should return empty slice when no events match targets", func() {
+			now := time.Now()
+			since := now.Add(-1 * time.Hour)
+			targets := map[string]struct{}{"my-pod": {}}
+
+			events := []corev1.Event{
+				{
+					InvolvedObject: corev1.ObjectReference{Name: "other-pod"},
+					LastTimestamp:  metav1.NewTime(now.Add(-5 * time.Minute)),
+					Type:           "Normal",
+					Reason:         "Pulled",
+					Message:        "unrelated event",
+				},
+			}
+
+			lines := filterRecentRelevantEvents(events, targets, since)
+			Expect(lines).To(BeEmpty())
+		})
+
+		It("should return empty slice for empty input", func() {
+			since := time.Now().Add(-1 * time.Hour)
+			targets := map[string]struct{}{"my-pod": {}}
+
+			lines := filterRecentRelevantEvents(nil, targets, since)
+			Expect(lines).To(BeEmpty())
+		})
+
+		It("should handle multiple targets with mixed old and new events", func() {
+			now := time.Now()
+			since := now.Add(-1 * time.Hour)
+			targets := map[string]struct{}{
+				"pod-a":  {},
+				"pod-b":  {},
+				"deploy": {},
+			}
+
+			events := []corev1.Event{
+				{
+					InvolvedObject: corev1.ObjectReference{Name: "pod-a"},
+					LastTimestamp:  metav1.NewTime(now.Add(-2 * time.Hour)),
+					Type:           "Warning",
+					Reason:         "Old",
+					Message:        "old pod-a event",
+				},
+				{
+					InvolvedObject: corev1.ObjectReference{Name: "pod-a"},
+					LastTimestamp:  metav1.NewTime(now.Add(-20 * time.Minute)),
+					Type:           "Normal",
+					Reason:         "Pulled",
+					Message:        "recent pod-a event",
+				},
+				{
+					InvolvedObject: corev1.ObjectReference{Name: "pod-b"},
+					LastTimestamp:  metav1.NewTime(now.Add(-5 * time.Minute)),
+					Type:           "Warning",
+					Reason:         "BackOff",
+					Message:        "recent pod-b event",
+				},
+				{
+					InvolvedObject: corev1.ObjectReference{Name: "deploy"},
+					LastTimestamp:  metav1.NewTime(now.Add(-15 * time.Minute)),
+					Type:           "Normal",
+					Reason:         "ScalingReplicaSet",
+					Message:        "recent deploy event",
+				},
+				{
+					InvolvedObject: corev1.ObjectReference{Name: "unrelated"},
+					LastTimestamp:  metav1.NewTime(now.Add(-1 * time.Minute)),
+					Type:           "Normal",
+					Reason:         "Pulled",
+					Message:        "unrelated event",
+				},
+			}
+
+			lines := filterRecentRelevantEvents(events, targets, since)
+			Expect(lines).To(HaveLen(3))
+			// Sorted by time: pod-a (-20m), deploy (-15m), pod-b (-5m)
+			Expect(lines[0]).To(ContainSubstring("recent pod-a event"))
+			Expect(lines[1]).To(ContainSubstring("recent deploy event"))
+			Expect(lines[2]).To(ContainSubstring("recent pod-b event"))
+		})
+	})
+
+	// =========================================================================
+	// NEW TESTS: collectEvents with nil clientset (fallback path) + real events
+	// =========================================================================
+	Context("collectEvents with nil clientset and real events in envtest", func() {
+		const resourceName = "collect-events-tr"
+		const deployName = "collect-events-deploy"
+		ctx := context.Background()
+
+		AfterEach(func() {
+			// Cleanup events
+			for _, name := range []string{"evt-pod-pulled", "evt-deploy-scaled"} {
+				evt := &corev1.Event{}
+				if err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: "default"}, evt); err == nil {
+					_ = k8sClient.Delete(ctx, evt)
+				}
+			}
+			cm := &corev1.ConfigMap{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: resourceName + "-events", Namespace: "default"}, cm); err == nil {
+				_ = k8sClient.Delete(ctx, cm)
+			}
+		})
+
+		It("should collect and filter events via controller-runtime client fallback", func() {
+			now := time.Now()
+
+			// Create real events in the envtest cluster
+			evt1 := &corev1.Event{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "evt-pod-pulled",
+					Namespace: "default",
+				},
+				InvolvedObject: corev1.ObjectReference{
+					Name:      "collect-events-pod-1",
+					Namespace: "default",
+				},
+				LastTimestamp: metav1.NewTime(now.Add(-5 * time.Minute)),
+				Type:          "Normal",
+				Reason:        "Pulled",
+				Message:       "Successfully pulled image",
+			}
+			Expect(k8sClient.Create(ctx, evt1)).To(Succeed())
+
+			evt2 := &corev1.Event{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "evt-deploy-scaled",
+					Namespace: "default",
+				},
+				InvolvedObject: corev1.ObjectReference{
+					Name:      deployName,
+					Namespace: "default",
+				},
+				LastTimestamp: metav1.NewTime(now.Add(-10 * time.Minute)),
+				Type:          "Normal",
+				Reason:        "ScalingReplicaSet",
+				Message:       "Scaled up replica set",
+			}
+			Expect(k8sClient.Create(ctx, evt2)).To(Succeed())
+
+			// Build a TroubleshootRequest object (not persisted, just for collectEvents)
+			tr := &assistv1alpha1.TroubleshootRequest{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      resourceName,
+					Namespace: "default",
+				},
+				Spec: assistv1alpha1.TroubleshootRequestSpec{
+					Target: assistv1alpha1.TargetRef{
+						Kind: "Deployment",
+						Name: deployName,
+					},
+				},
+			}
+			// Must create it so the owner reference is valid
+			Expect(k8sClient.Create(ctx, tr)).To(Succeed())
+			defer func() {
+				_ = k8sClient.Delete(ctx, tr)
+			}()
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: resourceName, Namespace: "default"}, tr)).To(Succeed())
+
+			pods := []corev1.Pod{{
+				ObjectMeta: metav1.ObjectMeta{Name: "collect-events-pod-1", Namespace: "default"},
+			}}
+
+			reconciler := &TroubleshootRequestReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+				// Clientset is nil -- triggers the fallback path
+			}
+
+			cmName, err := reconciler.collectEvents(ctx, tr, pods)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cmName).To(Equal(resourceName + "-events"))
+
+			// Verify the ConfigMap was created with event data
+			cm := &corev1.ConfigMap{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: cmName, Namespace: "default"}, cm)).To(Succeed())
+			Expect(cm.Data).To(HaveKey("events"))
+			// The events data should contain the deployment event (matching target name)
+			Expect(cm.Data["events"]).To(ContainSubstring("Scaled up replica set"))
+		})
+	})
+
+	// =========================================================================
+	// NEW TESTS: updateIssuesMetrics
+	// =========================================================================
+	Context("updateIssuesMetrics", func() {
+		It("should not panic with empty issues", func() {
+			r := &TroubleshootRequestReconciler{}
+			Expect(func() {
+				r.updateIssuesMetrics("default", nil)
+			}).NotTo(Panic())
+		})
+
+		It("should not panic with mixed severity issues", func() {
+			r := &TroubleshootRequestReconciler{}
+			issues := []assistv1alpha1.DiagnosticIssue{
+				{Severity: "Critical"},
+				{Severity: "Warning"},
+				{Severity: "Info"},
+				{Severity: "Unknown"},
+			}
+			Expect(func() {
+				r.updateIssuesMetrics("test-ns", issues)
+			}).NotTo(Panic())
+		})
+	})
+
+	// =========================================================================
+	// NEW TESTS: idempotent guard (Running + StartedAt set)
+	// =========================================================================
+	Context("When reconciling an already-running resource", func() {
+		const resourceName = "running-tr"
+		ctx := context.Background()
+		nn := types.NamespacedName{Name: resourceName, Namespace: "default"}
+
+		BeforeEach(func() {
+			tr := &assistv1alpha1.TroubleshootRequest{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      resourceName,
+					Namespace: "default",
+				},
+				Spec: assistv1alpha1.TroubleshootRequestSpec{
+					Target: assistv1alpha1.TargetRef{
+						Kind: "Deployment",
+						Name: "some-deploy",
+					},
+					Actions: []assistv1alpha1.TroubleshootAction{assistv1alpha1.ActionDiagnose},
+				},
+			}
+			Expect(k8sClient.Create(ctx, tr)).To(Succeed())
+
+			fetched := &assistv1alpha1.TroubleshootRequest{}
+			Expect(k8sClient.Get(ctx, nn, fetched)).To(Succeed())
+			now := metav1.Now()
+			fetched.Status.Phase = assistv1alpha1.PhaseRunning
+			fetched.Status.StartedAt = &now
+			Expect(k8sClient.Status().Update(ctx, fetched)).To(Succeed())
+		})
+
+		AfterEach(func() {
+			tr := &assistv1alpha1.TroubleshootRequest{}
+			if err := k8sClient.Get(ctx, nn, tr); err == nil {
+				_ = k8sClient.Delete(ctx, tr)
+			}
+		})
+
+		It("should skip duplicate execution and requeue", func() {
+			reconciler := &TroubleshootRequestReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+
+			result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(10 * time.Second))
+		})
+	})
+
+	// =========================================================================
+	// COVERAGE BOOST: collectLogs with nil clientset (error path)
+	// =========================================================================
+	Context("collectLogs with nil clientset", func() {
+		It("should return error when clientset is nil", func() {
+			reconciler := &TroubleshootRequestReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+				// Clientset intentionally nil
+			}
+
+			tr := &assistv1alpha1.TroubleshootRequest{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "logs-nil-cs-tr",
+					Namespace: "default",
+				},
+				Spec: assistv1alpha1.TroubleshootRequestSpec{
+					Target: assistv1alpha1.TargetRef{
+						Kind: "Deployment",
+						Name: "some-deploy",
+					},
+					TailLines: 50,
+				},
+			}
+
+			pods := []corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "pod-a", Namespace: "default"},
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{{Name: "app", Image: "nginx"}},
+					},
+				},
+			}
+
+			cmName, err := reconciler.collectLogs(ctx, tr, pods)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("clientset not initialized"))
+			Expect(cmName).To(BeEmpty())
+		})
+
+		It("should return error when clientset is nil even with zero tailLines", func() {
+			reconciler := &TroubleshootRequestReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+
+			tr := &assistv1alpha1.TroubleshootRequest{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "logs-nil-cs-zero-tr",
+					Namespace: "default",
+				},
+				Spec: assistv1alpha1.TroubleshootRequestSpec{
+					Target: assistv1alpha1.TargetRef{
+						Kind: "Deployment",
+						Name: "some-deploy",
+					},
+					// TailLines defaults to 0
+				},
+			}
+
+			cmName, err := reconciler.collectLogs(ctx, tr, nil)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("clientset not initialized"))
+			Expect(cmName).To(BeEmpty())
+		})
+	})
+
+	// =========================================================================
+	// COVERAGE BOOST: listEventsByTargets with real clientset via envtest
+	// =========================================================================
+	Context("listEventsByTargets with real clientset", func() {
+		ctx := context.Background()
+
+		AfterEach(func() {
+			// Clean up events created during tests
+			for _, name := range []string{
+				"lebt-evt-pod1", "lebt-evt-pod2", "lebt-evt-deploy",
+				"lebt-evt-dup-a", "lebt-evt-dup-b",
+			} {
+				evt := &corev1.Event{}
+				if err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: "default"}, evt); err == nil {
+					_ = k8sClient.Delete(ctx, evt)
+				}
+			}
+		})
+
+		It("should list events matching multiple target names", func() {
+			clientset, err := kubernetes.NewForConfig(cfg)
+			Expect(err).NotTo(HaveOccurred())
+
+			now := time.Now()
+
+			// Create events for different targets
+			evt1 := &corev1.Event{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "lebt-evt-pod1",
+					Namespace: "default",
+				},
+				InvolvedObject: corev1.ObjectReference{
+					Name:      "lebt-target-pod",
+					Namespace: "default",
+					Kind:      "Pod",
+				},
+				LastTimestamp: metav1.NewTime(now.Add(-5 * time.Minute)),
+				Type:          "Warning",
+				Reason:        "BackOff",
+				Message:       "back-off pulling image",
+			}
+			Expect(k8sClient.Create(ctx, evt1)).To(Succeed())
+
+			evt2 := &corev1.Event{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "lebt-evt-deploy",
+					Namespace: "default",
+				},
+				InvolvedObject: corev1.ObjectReference{
+					Name:      "lebt-target-deploy",
+					Namespace: "default",
+					Kind:      "Deployment",
+				},
+				LastTimestamp: metav1.NewTime(now.Add(-10 * time.Minute)),
+				Type:          "Normal",
+				Reason:        "ScalingReplicaSet",
+				Message:       "Scaled up replica set to 3",
+			}
+			Expect(k8sClient.Create(ctx, evt2)).To(Succeed())
+
+			reconciler := &TroubleshootRequestReconciler{
+				Client:    k8sClient,
+				Scheme:    k8sClient.Scheme(),
+				Clientset: clientset,
+			}
+
+			targetNames := map[string]struct{}{
+				"lebt-target-pod":    {},
+				"lebt-target-deploy": {},
+			}
+
+			events, err := reconciler.listEventsByTargets(ctx, "default", targetNames)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(events)).To(BeNumerically(">=", 2))
+
+			// Verify both target events are present
+			var foundPod, foundDeploy bool
+			for _, ev := range events {
+				if ev.InvolvedObject.Name == "lebt-target-pod" {
+					foundPod = true
+				}
+				if ev.InvolvedObject.Name == "lebt-target-deploy" {
+					foundDeploy = true
+				}
+			}
+			Expect(foundPod).To(BeTrue(), "should find pod event")
+			Expect(foundDeploy).To(BeTrue(), "should find deploy event")
+		})
+
+		It("should return empty list when no events match", func() {
+			clientset, err := kubernetes.NewForConfig(cfg)
+			Expect(err).NotTo(HaveOccurred())
+
+			reconciler := &TroubleshootRequestReconciler{
+				Client:    k8sClient,
+				Scheme:    k8sClient.Scheme(),
+				Clientset: clientset,
+			}
+
+			targetNames := map[string]struct{}{
+				"lebt-nonexistent-target": {},
+			}
+
+			events, err := reconciler.listEventsByTargets(ctx, "default", targetNames)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(events).To(BeEmpty())
+		})
+
+		It("should deduplicate events across multiple target lookups", func() {
+			clientset, err := kubernetes.NewForConfig(cfg)
+			Expect(err).NotTo(HaveOccurred())
+
+			now := time.Now()
+
+			// Create two events for the same involved object
+			evt1 := &corev1.Event{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "lebt-evt-dup-a",
+					Namespace: "default",
+				},
+				InvolvedObject: corev1.ObjectReference{
+					Name:      "lebt-shared-target",
+					Namespace: "default",
+					Kind:      "Pod",
+				},
+				LastTimestamp: metav1.NewTime(now.Add(-5 * time.Minute)),
+				Type:          "Warning",
+				Reason:        "BackOff",
+				Message:       "first event for shared target",
+			}
+			Expect(k8sClient.Create(ctx, evt1)).To(Succeed())
+
+			evt2 := &corev1.Event{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "lebt-evt-dup-b",
+					Namespace: "default",
+				},
+				InvolvedObject: corev1.ObjectReference{
+					Name:      "lebt-shared-target",
+					Namespace: "default",
+					Kind:      "Pod",
+				},
+				LastTimestamp: metav1.NewTime(now.Add(-3 * time.Minute)),
+				Type:          "Normal",
+				Reason:        "Pulled",
+				Message:       "second event for shared target",
+			}
+			Expect(k8sClient.Create(ctx, evt2)).To(Succeed())
+
+			reconciler := &TroubleshootRequestReconciler{
+				Client:    k8sClient,
+				Scheme:    k8sClient.Scheme(),
+				Clientset: clientset,
+			}
+
+			// Use the same target name twice -- listEventsByTargets should deduplicate
+			targetNames := map[string]struct{}{
+				"lebt-shared-target": {},
+			}
+
+			events, err := reconciler.listEventsByTargets(ctx, "default", targetNames)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(events).To(HaveLen(2), "should find exactly 2 distinct events")
+		})
+	})
+
+	// =========================================================================
+	// COVERAGE BOOST: collectEvents with real clientset (non-fallback path)
+	// =========================================================================
+	Context("collectEvents with real clientset", func() {
+		const resourceName = "collect-events-cs-tr"
+		const deployName = "collect-events-cs-deploy"
+		ctx := context.Background()
+
+		AfterEach(func() {
+			for _, name := range []string{"ce-cs-evt-pod", "ce-cs-evt-deploy"} {
+				evt := &corev1.Event{}
+				if err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: "default"}, evt); err == nil {
+					_ = k8sClient.Delete(ctx, evt)
+				}
+			}
+			cm := &corev1.ConfigMap{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: resourceName + "-events", Namespace: "default"}, cm); err == nil {
+				_ = k8sClient.Delete(ctx, cm)
+			}
+		})
+
+		It("should use clientset path to collect events and create ConfigMap", func() {
+			clientset, err := kubernetes.NewForConfig(cfg)
+			Expect(err).NotTo(HaveOccurred())
+
+			now := time.Now()
+
+			// Create events in the cluster
+			evt1 := &corev1.Event{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "ce-cs-evt-pod",
+					Namespace: "default",
+				},
+				InvolvedObject: corev1.ObjectReference{
+					Name:      "ce-cs-pod-1",
+					Namespace: "default",
+				},
+				LastTimestamp: metav1.NewTime(now.Add(-5 * time.Minute)),
+				Type:          "Normal",
+				Reason:        "Pulled",
+				Message:       "pod image pulled via clientset",
+			}
+			Expect(k8sClient.Create(ctx, evt1)).To(Succeed())
+
+			evt2 := &corev1.Event{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "ce-cs-evt-deploy",
+					Namespace: "default",
+				},
+				InvolvedObject: corev1.ObjectReference{
+					Name:      deployName,
+					Namespace: "default",
+				},
+				LastTimestamp: metav1.NewTime(now.Add(-10 * time.Minute)),
+				Type:          "Normal",
+				Reason:        "ScalingReplicaSet",
+				Message:       "deploy scaled via clientset",
+			}
+			Expect(k8sClient.Create(ctx, evt2)).To(Succeed())
+
+			// Create a TroubleshootRequest for owner reference
+			tr := &assistv1alpha1.TroubleshootRequest{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      resourceName,
+					Namespace: "default",
+				},
+				Spec: assistv1alpha1.TroubleshootRequestSpec{
+					Target: assistv1alpha1.TargetRef{
+						Kind: "Deployment",
+						Name: deployName,
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, tr)).To(Succeed())
+			defer func() {
+				_ = k8sClient.Delete(ctx, tr)
+			}()
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: resourceName, Namespace: "default"}, tr)).To(Succeed())
+
+			pods := []corev1.Pod{{
+				ObjectMeta: metav1.ObjectMeta{Name: "ce-cs-pod-1", Namespace: "default"},
+			}}
+
+			reconciler := &TroubleshootRequestReconciler{
+				Client:    k8sClient,
+				Scheme:    k8sClient.Scheme(),
+				Clientset: clientset,
+			}
+
+			cmName, err := reconciler.collectEvents(ctx, tr, pods)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cmName).To(Equal(resourceName + "-events"))
+
+			// Verify ConfigMap was created
+			cm := &corev1.ConfigMap{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: cmName, Namespace: "default"}, cm)).To(Succeed())
+			Expect(cm.Data).To(HaveKey("events"))
+			Expect(cm.Data["events"]).To(ContainSubstring("deploy scaled via clientset"))
+		})
+	})
+
+	// =========================================================================
+	// COVERAGE BOOST: collectLogs with real clientset (stream error path)
+	// =========================================================================
+	Context("collectLogs with real clientset but no running pods", func() {
+		const resourceName = "collect-logs-cs-tr"
+		ctx := context.Background()
+
+		AfterEach(func() {
+			cm := &corev1.ConfigMap{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: resourceName + "-logs", Namespace: "default"}, cm); err == nil {
+				_ = k8sClient.Delete(ctx, cm)
+			}
+		})
+
+		It("should create ConfigMap with error messages when pod logs are unavailable", func() {
+			clientset, err := kubernetes.NewForConfig(cfg)
+			Expect(err).NotTo(HaveOccurred())
+
+			tr := &assistv1alpha1.TroubleshootRequest{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      resourceName,
+					Namespace: "default",
+				},
+				Spec: assistv1alpha1.TroubleshootRequestSpec{
+					Target: assistv1alpha1.TargetRef{
+						Kind: "Deployment",
+						Name: "fake-deploy",
+					},
+					TailLines: 10,
+				},
+			}
+			Expect(k8sClient.Create(ctx, tr)).To(Succeed())
+			defer func() {
+				_ = k8sClient.Delete(ctx, tr)
+			}()
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: resourceName, Namespace: "default"}, tr)).To(Succeed())
+
+			// Pass a pod that does not actually exist in the cluster -- GetLogs will fail
+			pods := []corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "nonexistent-pod-for-logs", Namespace: "default"},
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{{Name: "app", Image: "nginx"}},
+					},
+				},
+			}
+
+			reconciler := &TroubleshootRequestReconciler{
+				Client:    k8sClient,
+				Scheme:    k8sClient.Scheme(),
+				Clientset: clientset,
+			}
+
+			cmName, err := reconciler.collectLogs(ctx, tr, pods)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cmName).To(Equal(resourceName + "-logs"))
+
+			// The ConfigMap should exist with an error entry
+			cm := &corev1.ConfigMap{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: cmName, Namespace: "default"}, cm)).To(Succeed())
+			Expect(cm.Data).To(HaveKey("nonexistent-pod-for-logs-app"))
+			Expect(cm.Data["nonexistent-pod-for-logs-app"]).To(ContainSubstring("Error getting logs"))
 		})
 	})
 

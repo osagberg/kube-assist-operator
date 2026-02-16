@@ -37,6 +37,13 @@ const (
 	maxSettingsBodySize = 1 << 20 // 1 MB
 )
 
+// Supported AI provider names.
+const (
+	providerNoop      = "noop"
+	providerOpenAI    = "openai"
+	providerAnthropic = "anthropic"
+)
+
 // handleAISettings handles GET and POST for /api/settings/ai
 func (s *Server) handleAISettings(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
@@ -96,7 +103,7 @@ func (s *Server) handlePostAISettings(w http.ResponseWriter, r *http.Request) {
 
 	// Validate provider name
 	providerName := strings.ToLower(req.Provider)
-	if providerName != "" && providerName != "noop" && providerName != "openai" && providerName != "anthropic" {
+	if providerName != "" && providerName != providerNoop && providerName != providerOpenAI && providerName != providerAnthropic {
 		http.Error(w, "Invalid provider: must be one of noop, openai, anthropic", http.StatusBadRequest)
 		return
 	}

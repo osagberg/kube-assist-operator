@@ -297,3 +297,110 @@ func TestRegistry_Aggregate(t *testing.T) {
 		t.Errorf("Aggregate() CheckerErrors = %d, want 1", len(agg.CheckerErrors))
 	}
 }
+
+func TestRegistry_Unregister(t *testing.T) {
+	tests := []struct {
+		name       string
+		register   []string
+		unregister string
+		wantFound  bool
+		wantCount  int
+	}{
+		{
+			name:       "existing checker returns true",
+			register:   []string{"a", "b", "c"},
+			unregister: "b",
+			wantFound:  true,
+			wantCount:  2,
+		},
+		{
+			name:       "non-existent checker returns false",
+			register:   []string{"a", "b"},
+			unregister: "z",
+			wantFound:  false,
+			wantCount:  2,
+		},
+		{
+			name:       "unregister from empty registry",
+			register:   []string{},
+			unregister: "a",
+			wantFound:  false,
+			wantCount:  0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := NewRegistry()
+			for _, name := range tt.register {
+				r.MustRegister(&mockChecker{name: name, supported: true})
+			}
+
+			got := r.Unregister(tt.unregister)
+			if got != tt.wantFound {
+				t.Errorf("Unregister(%q) = %v, want %v", tt.unregister, got, tt.wantFound)
+			}
+
+			if len(r.List()) != tt.wantCount {
+				t.Errorf("registry count after Unregister = %d, want %d", len(r.List()), tt.wantCount)
+			}
+
+			// Verify the checker is actually gone
+			if tt.wantFound {
+				if _, ok := r.Get(tt.unregister); ok {
+					t.Errorf("checker %q still found after Unregister", tt.unregister)
+				}
+			}
+		})
+	}
+}
+
+func TestRegistry_Replace(t *testing.T) {
+	tests := []struct {
+		name      string
+		register  []string
+		replace   string
+		wantCount int
+	}{
+		{
+			name:      "adds new checker",
+			register:  []string{"a", "b"},
+			replace:   "c",
+			wantCount: 3,
+		},
+		{
+			name:      "replaces existing checker",
+			register:  []string{"a", "b"},
+			replace:   "a",
+			wantCount: 2,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := NewRegistry()
+			for _, name := range tt.register {
+				r.MustRegister(&mockChecker{name: name, supported: true})
+			}
+
+			replacement := &mockChecker{name: tt.replace, supported: false}
+			r.Replace(replacement)
+
+			if len(r.List()) != tt.wantCount {
+				t.Errorf("registry count after Replace = %d, want %d", len(r.List()), tt.wantCount)
+			}
+
+			got, ok := r.Get(tt.replace)
+			if !ok {
+				t.Errorf("checker %q not found after Replace", tt.replace)
+			}
+			if got.Name() != tt.replace {
+				t.Errorf("replaced checker Name() = %q, want %q", got.Name(), tt.replace)
+			}
+			// Verify the replacement checker is actually the new one (supported=false)
+			if got.Supports(context.Background(), nil) {
+				t.Errorf("replaced checker should have supported=false")
+			}
+		})
+	}
+}

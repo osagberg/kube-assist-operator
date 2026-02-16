@@ -42,6 +42,24 @@ jobs:
           go mod tidy
           make test
 
+      - name: Check coverage thresholds
+        run: |
+          check_coverage() {
+            local pkg=$1 min=$2
+            local cov
+            cov=$(go test "./$pkg" -cover 2>&1 | grep -oP 'coverage: \K[0-9.]+')
+            if [ -z "$cov" ]; then echo "FAIL: No coverage data for $pkg"; return 1; fi
+            if awk "BEGIN {exit !($cov < $min)}"; then
+              echo "FAIL: $pkg coverage ${cov}% < ${min}% minimum"
+              return 1
+            fi
+            echo "PASS: $pkg coverage ${cov}% >= ${min}%"
+          }
+          check_coverage internal/checker 85
+          check_coverage internal/checker/workload 85
+          check_coverage internal/dashboard 80
+          check_coverage internal/controller 75
+
       - name: Run vulnerability check
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@v1.1.4

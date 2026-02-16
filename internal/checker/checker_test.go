@@ -271,6 +271,90 @@ func TestNormalizeIssueSignature(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// IsValidNamespace tests
+// ---------------------------------------------------------------------------
+
+func TestIsValidNamespace(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  bool
+	}{
+		{"simple lowercase", "default", true},
+		{"with hyphens", "kube-system", true},
+		{"with numbers", "ns1", true},
+		{"alphanumeric mix", "my-ns-123", true},
+		{"single char", "a", true},
+		{"max length 63 chars", strings.Repeat("a", 63), true},
+		{"empty string", "", false},
+		{"uppercase letters", "Default", false},
+		{"contains underscore", "my_namespace", false},
+		{"starts with hyphen", "-invalid", false},
+		{"ends with hyphen", "invalid-", false},
+		{"too long (64 chars)", strings.Repeat("a", 64), false},
+		{"contains dot", "my.namespace", false},
+		{"contains space", "my namespace", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsValidNamespace(tt.input); got != tt.want {
+				t.Errorf("IsValidNamespace(%q) = %v, want %v", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// normalizeIssueSignature invalid namespace sanitization
+// ---------------------------------------------------------------------------
+
+func TestNormalizeIssueSignature_InvalidNamespace(t *testing.T) {
+	tests := []struct {
+		name      string
+		namespace string
+		wantNS    string
+	}{
+		{
+			name:      "valid namespace preserved",
+			namespace: "default",
+			wantNS:    "default",
+		},
+		{
+			name:      "uppercase namespace sanitized",
+			namespace: "Default",
+			wantNS:    "<invalid>",
+		},
+		{
+			name:      "namespace with special chars sanitized",
+			namespace: "ns_with_underscores",
+			wantNS:    "<invalid>",
+		},
+		{
+			name:      "empty namespace preserved",
+			namespace: "",
+			wantNS:    "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			issue := Issue{
+				Type:      "TestType",
+				Severity:  SeverityWarning,
+				Namespace: tt.namespace,
+				Message:   "test message",
+			}
+			sig := normalizeIssueSignature(issue)
+			wantSig := "TestType|Warning|" + tt.wantNS + "|test message"
+			if sig != wantSig {
+				t.Errorf("normalizeIssueSignature() = %q, want %q", sig, wantSig)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
 // severityRank tests
 // ---------------------------------------------------------------------------
 
