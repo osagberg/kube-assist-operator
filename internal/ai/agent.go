@@ -486,7 +486,7 @@ type anthropicChatContentBlock struct {
 	Name      string          `json:"name,omitempty"`
 	Input     json.RawMessage `json:"input,omitempty"`
 	ToolUseID string          `json:"tool_use_id,omitempty"`
-	Content   string          `json:"content"`
+	Content   *string         `json:"content,omitempty"`
 }
 
 type anthropicChatResponse struct {
@@ -628,10 +628,11 @@ func buildAnthropicMessages(messages []ChatMessage) ([]anthropicChatMessage, err
 			// content blocks. Consecutive tool results must be merged into a
 			// single "user" message to satisfy Anthropic's alternating-role
 			// requirement.
+			toolContent := m.Content
 			newBlock := anthropicChatContentBlock{
 				Type:      "tool_result",
 				ToolUseID: m.ToolCallID,
-				Content:   m.Content,
+				Content:   &toolContent,
 			}
 			if len(result) > 0 && result[len(result)-1].Role == "user" {
 				// Merge into the preceding user message.

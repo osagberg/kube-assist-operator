@@ -476,8 +476,9 @@ func isMutatingMethod(method string) bool {
 func (s *Server) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if s.authToken == "" {
-			// SECURITY-006: block mutating requests when auth is not configured
-			if isMutatingMethod(r.Method) {
+			// SECURITY-006: block mutating requests when auth is not configured,
+			// unless the operator explicitly opted into unauthenticated mode.
+			if isMutatingMethod(r.Method) && !parseBoolEnv("DASHBOARD_ALLOW_UNAUTHENTICATED_DASHBOARD") {
 				http.Error(w, "Authentication not configured", http.StatusServiceUnavailable)
 				return
 			}
@@ -727,19 +728,13 @@ func (s *Server) Start(ctx context.Context) error {
 		go s.cleanupChatSessions(ctx)
 	}
 
-	// Run initial health check synchronously so the first HTTP request
-	// never sees {"status": "initializing"}.
-	s.runCheck(ctx)
-
-	// Start background health checker (skips initial check since we just ran it)
-	go s.runHealthChecker(ctx)
-
 	// PERF-004: periodic cleanup of expired issueStates
 	go s.cleanupExpiredIssueStates(ctx)
 
 	log.Info("Starting dashboard server", "addr", s.addr)
 
-	// Run server in goroutine
+	// Run server in goroutine — start listening BEFORE the initial health check
+	// so the dashboard is reachable immediately (shows "initializing" until first check completes).
 	errCh := make(chan error, 1)
 	go func() {
 		if s.tlsConfigured() {
@@ -753,6 +748,14 @@ func (s *Server) Start(ctx context.Context) error {
 			}
 		}
 	}()
+
+	// Run initial health check after the server starts listening.
+	// The first request may briefly see {"status": "initializing"} but the
+	// dashboard is reachable immediately instead of blocking for 30-90s on AI calls.
+	s.runCheck(ctx)
+
+	// Start background health checker (skips initial check since we just ran it)
+	go s.runHealthChecker(ctx)
 
 	select {
 	case <-ctx.Done():

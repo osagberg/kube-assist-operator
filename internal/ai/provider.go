@@ -503,6 +503,23 @@ func ParseExplainResponse(content string, tokensUsed int) *ExplainResponse {
 		}
 	}
 
+	// Some models return topIssues as a JSON string instead of an array.
+	// Detect and re-parse when the field decoded as nil but is present as a string.
+	if result.TopIssues == nil {
+		var raw map[string]json.RawMessage
+		if json.Unmarshal([]byte(cleaned), &raw) == nil {
+			if ti, ok := raw["topIssues"]; ok {
+				var s string
+				if json.Unmarshal(ti, &s) == nil && strings.TrimSpace(s) != "" {
+					var issues []ExplainIssue
+					if json.Unmarshal([]byte(s), &issues) == nil {
+						result.TopIssues = issues
+					}
+				}
+			}
+		}
+	}
+
 	// Clamp confidence to 0-1
 	if result.Confidence < 0 {
 		result.Confidence = 0

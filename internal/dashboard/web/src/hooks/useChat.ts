@@ -9,6 +9,24 @@ import {
 
 let nextMsgId = 0
 
+/** Summarize raw tool result JSON into a short human-readable string. */
+function summarizeToolResult(raw: string): string {
+  try {
+    const parsed = JSON.parse(raw)
+    if (Array.isArray(parsed)) {
+      return `${parsed.length} result${parsed.length !== 1 ? 's' : ''}`
+    }
+    if (typeof parsed === 'object' && parsed !== null) {
+      if ('healthScore' in parsed) return `Health score: ${parsed.healthScore}`
+      if ('namespaces' in parsed && Array.isArray(parsed.namespaces)) return `${parsed.namespaces.length} namespaces`
+      return 'done'
+    }
+  } catch {
+    // Not JSON — return truncated text
+  }
+  return raw.length > 80 ? raw.slice(0, 80) + '...' : raw
+}
+
 export function useChat() {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [streaming, setStreaming] = useState(false)
@@ -146,7 +164,7 @@ function handleEvent(
         last.toolCalls = [...(last.toolCalls ?? []), { name: event.tool ?? '', args: event.args ?? {} }]
         break
       case 'tool_result':
-        last.toolResults = [...(last.toolResults ?? []), { name: event.tool ?? '', summary: event.content ?? '' }]
+        last.toolResults = [...(last.toolResults ?? []), { name: event.tool ?? '', summary: summarizeToolResult(event.content ?? '') }]
         break
       case 'content':
         last.content = (last.content ?? '') + (event.content ?? '')
