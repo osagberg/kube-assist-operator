@@ -12,7 +12,7 @@ interface Props {
 export function SettingsModal({ open, onClose, settings, onSave }: Props) {
   const [enabled, setEnabled] = useState(false)
   const [provider, setProvider] = useState('noop')
-  const [apiKey, setApiKey] = useState('')
+
   const [model, setModel] = useState('')
   const [explainModel, setExplainModel] = useState('')
   const [customModel, setCustomModel] = useState('')
@@ -38,7 +38,6 @@ export function SettingsModal({ open, onClose, settings, onSave }: Props) {
       setProvider(settings.provider)
       setModel(settings.model ?? '')
       setExplainModel(settings.explainModel ?? '')
-      setApiKey('')
       setClearKey(false)
       setCustomModel('')
       setCustomExplainModel('')
@@ -59,7 +58,7 @@ export function SettingsModal({ open, onClose, settings, onSave }: Props) {
       await onSave({
         enabled,
         provider,
-        ...(clearKey ? { clearApiKey: true } : { apiKey: apiKey || undefined }),
+        ...(clearKey ? { clearApiKey: true } : {}),
         model: finalModel || undefined,
         explainModel: finalExplainModel || undefined,
       })
@@ -129,41 +128,18 @@ export function SettingsModal({ open, onClose, settings, onSave }: Props) {
         </div>
 
         {/* API Key */}
+        {provider !== 'noop' && (
         <div>
           <label className="text-sm" style={{ color: 'var(--text-tertiary)' }}>API Key</label>
-          {clearKey ? (
-            <div className="flex items-center gap-2 mt-1">
-              <span className="text-sm" style={{ color: 'var(--text-tertiary)' }}>Key will be cleared on save</span>
-              <button
-                type="button"
-                onClick={() => setClearKey(false)}
-                className="text-xs text-accent hover:underline transition-all duration-200"
-              >
-                Cancel
-              </button>
-            </div>
-          ) : (
-            <div className="flex items-center gap-2 mt-1">
-              <input
-                type="password"
-                value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
-                placeholder={settings?.hasApiKey ? '••••••••' : 'Enter API key'}
-                className="flex-1 px-3 py-2 glass-inset rounded-xl text-sm transition-all duration-200"
-                style={{ color: 'var(--text-primary)' }}
-              />
-              {settings?.hasApiKey && (
-                <button
-                  type="button"
-                  onClick={() => { setClearKey(true); setApiKey('') }}
-                  className="text-xs text-severity-critical hover:underline transition-all duration-200 flex-shrink-0"
-                >
-                  Clear
-                </button>
-              )}
-            </div>
-          )}
+          <div className="mt-1 px-3 py-2 glass-inset rounded-xl text-sm" style={{ color: 'var(--text-tertiary)' }}>
+            {settings?.hasApiKey ? (
+              <span>Configured via Kubernetes secret</span>
+            ) : (
+              <span>Configure via Helm values <code className="text-xs">ai.apiKeySecretRef</code></span>
+            )}
+          </div>
         </div>
+        )}
 
         {/* Primary Model Selection */}
         {provider !== 'noop' && (
