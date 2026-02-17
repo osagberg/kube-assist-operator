@@ -146,7 +146,7 @@ func (s *Server) handlePostAISettings(w http.ResponseWriter, r *http.Request) {
 		s.aiEnabled = req.Enabled
 		s.aiConfig = stagedConfig
 		for _, cs := range s.clusters {
-			cs.lastIssueHash = ""
+			cs.lastAICacheHash = ""
 			cs.lastAIResult = nil
 			cs.lastAIEnhancements = nil
 			cs.lastCausalInsights = nil
@@ -207,7 +207,7 @@ func (s *Server) handlePostAISettings(w http.ResponseWriter, r *http.Request) {
 	s.aiConfig = stagedConfig
 	s.aiProvider = newProvider
 	for _, cs := range s.clusters {
-		cs.lastIssueHash = ""
+		cs.lastAICacheHash = ""
 		cs.lastAIResult = nil
 		cs.lastAIEnhancements = nil
 		cs.lastCausalInsights = nil
@@ -311,7 +311,7 @@ func (s *Server) handleExplain(w http.ResponseWriter, r *http.Request) {
 	var causalCtx *causal.CausalContext
 	var historyRef *history.RingBuffer
 	if cs != nil {
-		currentHash = cs.lastIssueHash
+		currentHash = cs.lastAICacheHash
 		cached = cs.lastExplain
 		latest = cs.latest
 		causalCtx = cs.latestCausal

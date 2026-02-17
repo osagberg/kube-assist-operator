@@ -1170,7 +1170,7 @@ func TestHandlePostAISettings_WithManager_ResetsClusterAIState(t *testing.T) {
 	// Create a cluster state with cached AI data.
 	s.mu.Lock()
 	cs := s.getOrCreateClusterState("")
-	cs.lastIssueHash = "oldhash"
+	cs.lastAICacheHash = "oldhash"
 	cs.lastAIResult = &AIStatus{Provider: "old", IssuesEnhanced: 5}
 	cs.lastAIEnhancements = map[string]map[string]aiEnhancement{
 		"checker": {"key": {Suggestion: "old suggestion"}},
@@ -1201,8 +1201,8 @@ func TestHandlePostAISettings_WithManager_ResetsClusterAIState(t *testing.T) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	if cs.lastIssueHash != "" {
-		t.Errorf("lastIssueHash should be cleared, got %q", cs.lastIssueHash)
+	if cs.lastAICacheHash != "" {
+		t.Errorf("lastIssueHash should be cleared, got %q", cs.lastAICacheHash)
 	}
 	if cs.lastAIResult != nil {
 		t.Error("lastAIResult should be nil after reconfigure")

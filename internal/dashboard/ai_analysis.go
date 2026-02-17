@@ -104,8 +104,10 @@ func (s *Server) broadcastPhase(clusterID, phase string) {
 	s.mu.RUnlock()
 }
 
-// runAIAnalysisForCluster handles AI caching, throttling, and enhancement of check results
-// for a specific cluster's state. All reads/writes to cs are guarded by s.mu.
+// runAIAnalysisForCluster handles synchronous AI analysis with caching for a specific
+// cluster's state. Used as a fallback when the enrichment queue is not available (tests).
+// The caller must increment cs.checkCounter before calling this method.
+// All reads/writes to cs are guarded by s.mu.
 func (s *Server) runAIAnalysisForCluster(
 	ctx context.Context,
 	results map[string]*checker.CheckResult,
@@ -118,21 +120,17 @@ func (s *Server) runAIAnalysisForCluster(
 	issueHash := computeIssueHash(results)
 
 	if !enabled || provider == nil || !provider.Available() {
-		s.mu.Lock()
-		cs.checkCounter++
-		s.mu.Unlock()
 		return nil
 	}
 
 	// AI-012: read model name under lock for cost estimation
-	s.mu.Lock()
-	cs.checkCounter++
-	hashChanged := issueHash != cs.lastIssueHash
+	s.mu.RLock()
+	hashChanged := issueHash != cs.lastAICacheHash
 	cachedResult := cs.lastAIResult
 	cachedEnhancements := cs.lastAIEnhancements
 	cachedInsights := cs.lastCausalInsights
 	aiModel := s.aiConfig.Model
-	s.mu.Unlock()
+	s.mu.RUnlock()
 
 	if !hashChanged && cachedResult != nil {
 		reapplyAIEnhancements(results, cachedEnhancements)
@@ -150,41 +148,37 @@ func (s *Server) runAIAnalysisForCluster(
 		}
 	}
 
-	// Long-running AI call — outside lock
-	aiCtx, aiCancel := context.WithTimeout(ctx, s.aiAnalysisTimeout)
-	enhanced, tokens, totalCount, aiResp, aiErr := checker.EnhanceAllWithAI(aiCtx, results, checkCtx)
-	aiCancel()
+	// Synchronous AI call using runAIEnrichment helper
+	aiStatus, enhancements, insights, aiErr := runAIEnrichment(
+		ctx, results, causalCtx, checkCtx, provider, aiModel, s.aiAnalysisTimeout,
+	)
 
 	if aiErr != nil {
-		return s.handleAIErrorForCluster(aiErr, results, causalCtx, enabled, provider, totalCount, cs)
+		return s.handleAIErrorForCluster(aiErr, results, causalCtx, enabled, provider, 0, cs)
 	}
 
-	if enhanced > 0 {
-		status := &AIStatus{
-			Enabled:          enabled,
-			Provider:         provider.Name(),
-			IssuesEnhanced:   enhanced,
-			TokensUsed:       tokens,
-			EstimatedCostUSD: estimateCost(provider.Name(), aiModel, tokens),
-			IssuesCapped:     totalCount > enhanced && totalCount > 0,
-			TotalIssueCount:  totalCount,
-			CheckPhase:       "done",
-		}
+	if aiStatus != nil && aiStatus.IssuesEnhanced > 0 {
 		// Commit AI results atomically under lock
 		s.mu.Lock()
-		cs.lastIssueHash = issueHash
-		cs.lastAIResult = status
-		cs.lastAIEnhancements = snapshotAIEnhancements(results)
-		if aiResp != nil && len(aiResp.CausalInsights) > 0 {
-			applyCausalInsights(causalCtx, aiResp.CausalInsights)
-			cs.lastCausalInsights = aiResp.CausalInsights
+		cs.lastAICacheHash = issueHash
+		cs.lastAIResult = aiStatus
+		cs.lastAIEnhancements = enhancements
+		if len(insights) > 0 {
+			cs.lastCausalInsights = insights
 		}
 		s.mu.Unlock()
-		return status
+		return aiStatus
 	}
 
-	// AI returned 0 enhanced (likely truncated JSON)
-	return s.handleAITruncatedForCluster(results, causalCtx, enabled, provider, totalCount, tokens, cs, aiResp)
+	// AI returned 0 enhanced (likely truncated JSON) — handled by runAIEnrichment
+	if aiStatus != nil {
+		return aiStatus
+	}
+	return &AIStatus{
+		Enabled:    enabled,
+		Provider:   provider.Name(),
+		CheckPhase: "done",
+	}
 }
 
 // handleAIErrorForCluster handles AI call failure, reusing cached results when available.
@@ -327,6 +321,7 @@ func (s *Server) runCheck(ctx context.Context) {
 }
 
 // runCheckForCluster performs a health check for a single cluster and broadcasts results.
+// AI enrichment is handled asynchronously via the enrichment queue.
 func (s *Server) runCheckForCluster(ctx context.Context, clusterID string, ds datasource.DataSource) {
 	checkStart := time.Now()
 	defer func() {
@@ -382,14 +377,51 @@ func (s *Server) runCheckForCluster(ctx context.Context, clusterID string, ds da
 	checkCtx.AIEnabled = enabled
 	checkCtx.AIProvider = provider
 
-	s.broadcastPhase(clusterID, "ai")
-
-	// Get or create cluster state for AI analysis
+	// Increment check counter and capture generation for staleness checks
 	s.mu.Lock()
 	cs := s.getOrCreateClusterState(clusterID)
+	cs.checkCounter++
+	generation := cs.checkCounter
 	s.mu.Unlock()
 
-	aiStatus := s.runAIAnalysisForCluster(checkCtx2, results, causalCtx, checkCtx, enabled, provider, cs)
+	issueHash := computeIssueHash(results)
+
+	// Snapshot cache state under lock
+	s.mu.RLock()
+	hashChanged := issueHash != cs.lastAICacheHash
+	cachedResult := cs.lastAIResult
+	cachedEnhancements := cs.lastAIEnhancements
+	cachedInsights := cs.lastCausalInsights
+	aiModel := s.aiConfig.Model
+	s.mu.RUnlock()
+
+	var aiStatus *AIStatus
+
+	if enabled && provider != nil && provider.Available() && !hashChanged && cachedResult != nil {
+		// AC-7: Cache hit → sync path (no queue needed)
+		s.broadcastPhase(clusterID, "ai")
+		reapplyAIEnhancements(results, cachedEnhancements)
+		if len(cachedInsights) > 0 {
+			applyCausalInsights(causalCtx, cachedInsights)
+		}
+		aiStatus = &AIStatus{
+			Enabled:         true,
+			Provider:        provider.Name(),
+			IssuesEnhanced:  cachedResult.IssuesEnhanced,
+			CacheHit:        true,
+			TotalIssueCount: cachedResult.TotalIssueCount,
+			CheckPhase:      "done",
+		}
+	} else if enabled && provider != nil && provider.Available() {
+		// Cache miss → baseline with Pending, enqueue async
+		s.broadcastPhase(clusterID, "ai")
+		aiStatus = &AIStatus{
+			Enabled:    true,
+			Provider:   provider.Name(),
+			Pending:    true,
+			CheckPhase: "ai",
+		}
+	}
 
 	// Convert to dashboard format
 	update := &HealthUpdate{
@@ -415,9 +447,103 @@ func (s *Server) runCheckForCluster(ctx context.Context, clusterID string, ds da
 	}
 	s.mu.RUnlock()
 
-	var summary Summary
-	scoreCheckedResources := 0
-	scoreCriticalResources := 0
+	summary := buildDashboardResults(update, results, activeStates)
+	summary.HealthScore = computeOperationalHealthScore(summary.scoreChecked, summary.scoreCritical)
+	summary.DeploymentReady = deployReady
+	summary.DeploymentDesired = deployDesired
+	summary.DeploymentReadinessScore = deployReadiness
+	update.Summary = summary.Summary
+
+	// Store latest and broadcast — lock-free broadcasting: write lock for state,
+	// then release and use broadcastUpdate (which takes read lock for client iteration).
+	s.mu.Lock()
+	// Merge non-expired issue states into the update and clean up expired entries
+	for k, st := range cs.issueStates {
+		if st.IsExpired() {
+			delete(cs.issueStates, k)
+			continue
+		}
+		if update.IssueStates == nil {
+			update.IssueStates = make(map[string]*IssueState)
+		}
+		update.IssueStates[k] = st
+	}
+	cs.latest = update
+	cs.latestCausal = causalCtx
+	cs.currentIssueHash = issueHash
+	providerName := ""
+	if provider != nil {
+		providerName = provider.Name()
+	}
+	cs.aiConfigVersion = configVersionHash(providerName, aiModel)
+	updateCopy := cloneHealthUpdate(cs.latest)
+	s.mu.Unlock()
+
+	s.broadcastUpdate(clusterID, updateCopy)
+
+	// Record history snapshot
+	snapshot := history.HealthSnapshot{
+		Timestamp:    update.Timestamp,
+		TotalHealthy: update.Summary.TotalHealthy,
+		TotalIssues:  update.Summary.TotalIssues,
+		BySeverity: map[string]int{
+			"Critical": update.Summary.CriticalCount,
+			"Warning":  update.Summary.WarningCount,
+			"Info":     update.Summary.InfoCount,
+		},
+		ByChecker:   make(map[string]int),
+		HealthScore: update.Summary.HealthScore,
+	}
+	for name, result := range update.Results {
+		snapshot.ByChecker[name] = len(result.Issues)
+	}
+	cs.history.Add(snapshot)
+
+	// Enqueue async AI enrichment if needed
+	if aiStatus != nil && aiStatus.Pending && s.enrichQueue != nil {
+		cfgVer := configVersionHash(providerName, aiModel)
+		req := enrichmentRequest{
+			clusterID:     clusterID,
+			generation:    generation,
+			issueHash:     issueHash,
+			configVersion: cfgVer,
+			results:       deepCopyResults(results),
+			causalCtx:     deepCopyCausalContext(causalCtx),
+			checkCtx:      minimalCheckContext(checkCtx, provider),
+			provider:      provider,
+			aiModel:       aiModel,
+			enqueuedAt:    time.Now(),
+		}
+		if !s.enrichQueue.Enqueue(req) {
+			// Queue full — set degraded status only if this generation is still current
+			s.mu.Lock()
+			if cs.checkCounter == generation && cs.latest != nil && cs.latest.AIStatus != nil {
+				cs.latest.AIStatus.Pending = false
+				cs.latest.AIStatus.LastError = "enrichment queue full"
+				cs.latest.AIStatus.CheckPhase = "done"
+			}
+			if cs.latest != nil {
+				queueFullUpdate := cloneHealthUpdate(cs.latest)
+				s.mu.Unlock()
+				s.broadcastUpdate(clusterID, queueFullUpdate)
+			} else {
+				s.mu.Unlock()
+			}
+		}
+	}
+}
+
+// buildResult holds intermediate summary data including internal counters.
+type buildResult struct {
+	Summary
+	scoreChecked  int
+	scoreCritical int
+}
+
+// buildDashboardResults converts checker results into dashboard format, populating
+// update.Results and returning an aggregated summary with scoring counters.
+func buildDashboardResults(update *HealthUpdate, results map[string]*checker.CheckResult, activeStates map[string]*IssueState) buildResult {
+	var br buildResult
 	for name, result := range results {
 		cr := CheckResult{
 			Name:    name,
@@ -427,11 +553,11 @@ func (s *Server) runCheckForCluster(ctx context.Context, clusterID string, ds da
 		if result.Error != nil {
 			cr.Error = result.Error.Error()
 		} else {
-			summary.TotalHealthy += result.Healthy
-			summary.TotalIssues += len(result.Issues)
-			checkedResources, criticalResources := computeCheckerOperationalCounts(result.Healthy, result.Issues, activeStates)
-			scoreCheckedResources += checkedResources
-			scoreCriticalResources += criticalResources
+			br.TotalHealthy += result.Healthy
+			br.TotalIssues += len(result.Issues)
+			checked, critical := computeCheckerOperationalCounts(result.Healthy, result.Issues, activeStates)
+			br.scoreChecked += checked
+			br.scoreCritical += critical
 
 			for _, issue := range result.Issues {
 				suggestion := issue.Suggestion
@@ -458,7 +584,6 @@ func (s *Server) runCheckForCluster(ctx context.Context, clusterID string, ds da
 				}
 				cr.Issues = append(cr.Issues, di)
 
-				// Exclude muted issues from severity counts
 				issueKey := issue.Namespace + "/" + issue.Resource + "/" + issue.Type
 				if _, muted := activeStates[issueKey]; muted {
 					continue
@@ -466,66 +591,18 @@ func (s *Server) runCheckForCluster(ctx context.Context, clusterID string, ds da
 
 				switch issue.Severity {
 				case checker.SeverityCritical:
-					summary.CriticalCount++
+					br.CriticalCount++
 				case checker.SeverityWarning:
-					summary.WarningCount++
+					br.WarningCount++
 				case checker.SeverityInfo:
-					summary.InfoCount++
+					br.InfoCount++
 				}
 			}
 		}
 
 		update.Results[name] = cr
 	}
-	summary.HealthScore = computeOperationalHealthScore(scoreCheckedResources, scoreCriticalResources)
-	summary.DeploymentReady = deployReady
-	summary.DeploymentDesired = deployDesired
-	summary.DeploymentReadinessScore = deployReadiness
-	update.Summary = summary
-
-	// Store latest and broadcast
-	s.mu.Lock()
-	// Merge non-expired issue states into the update and clean up expired entries
-	for k, st := range cs.issueStates {
-		if st.IsExpired() {
-			delete(cs.issueStates, k)
-			continue
-		}
-		if update.IssueStates == nil {
-			update.IssueStates = make(map[string]*IssueState)
-		}
-		update.IssueStates[k] = st
-	}
-	cs.latest = update
-	cs.latestCausal = causalCtx
-	for clientCh, subscribedID := range s.clients {
-		if subscribedID != "" && subscribedID != clusterID {
-			continue
-		}
-		select {
-		case clientCh <- *update:
-		default:
-		}
-	}
-	s.mu.Unlock()
-
-	// Record history snapshot
-	snapshot := history.HealthSnapshot{
-		Timestamp:    update.Timestamp,
-		TotalHealthy: update.Summary.TotalHealthy,
-		TotalIssues:  update.Summary.TotalIssues,
-		BySeverity: map[string]int{
-			"Critical": update.Summary.CriticalCount,
-			"Warning":  update.Summary.WarningCount,
-			"Info":     update.Summary.InfoCount,
-		},
-		ByChecker:   make(map[string]int),
-		HealthScore: update.Summary.HealthScore,
-	}
-	for name, result := range update.Results {
-		snapshot.ByChecker[name] = len(result.Issues)
-	}
-	cs.history.Add(snapshot)
+	return br
 }
 
 // computeCheckerOperationalCounts treats a resource as unhealthy only when it has
@@ -742,4 +819,180 @@ func estimateCost(provider, model string, tokens int) float64 {
 	}
 	costPer1K := ai.CostPer1KTokens(provider, model)
 	return float64(tokens) / 1000.0 * costPer1K
+}
+
+// runAIEnrichment performs the AI call and returns results without touching any server state.
+// It is safe to call from any goroutine. Has ZERO access to s, cs, or s.mu.
+func runAIEnrichment(
+	ctx context.Context,
+	results map[string]*checker.CheckResult,
+	causalCtx *causal.CausalContext,
+	checkCtx *checker.CheckContext,
+	provider ai.Provider,
+	aiModel string,
+	timeout time.Duration,
+) (aiStatus *AIStatus, enhancements map[string]map[string]aiEnhancement, insights []ai.CausalGroupInsight, err error) {
+	aiCtx, aiCancel := context.WithTimeout(ctx, timeout)
+	enhanced, tokens, totalCount, aiResp, aiErr := checker.EnhanceAllWithAI(aiCtx, results, checkCtx)
+	aiCancel()
+
+	if aiErr != nil {
+		return nil, nil, nil, aiErr
+	}
+
+	if enhanced > 0 {
+		status := &AIStatus{
+			Enabled:          true,
+			Provider:         provider.Name(),
+			IssuesEnhanced:   enhanced,
+			TokensUsed:       tokens,
+			EstimatedCostUSD: estimateCost(provider.Name(), aiModel, tokens),
+			IssuesCapped:     totalCount > enhanced && totalCount > 0,
+			TotalIssueCount:  totalCount,
+			CheckPhase:       "done",
+		}
+		enhancements = snapshotAIEnhancements(results)
+		if aiResp != nil && len(aiResp.CausalInsights) > 0 {
+			applyCausalInsights(causalCtx, aiResp.CausalInsights)
+			insights = aiResp.CausalInsights
+		}
+		return status, enhancements, insights, nil
+	}
+
+	// AI returned 0 enhanced (likely truncated JSON)
+	return &AIStatus{
+		Enabled:         true,
+		Provider:        provider.Name(),
+		TotalIssueCount: totalCount,
+		LastError:       aiTruncationReason(aiResp),
+		CheckPhase:      "done",
+	}, nil, nil, nil
+}
+
+// handleEnrichmentResult is called by the enrichment queue worker. It performs the
+// AI call on the snapshot and patches cs.latest if the enrichment is still current.
+// The ctx comes from Run (cancelable on shutdown).
+func (s *Server) handleEnrichmentResult(ctx context.Context, req enrichmentRequest) {
+	defer s.enrichQueue.markDone(req.clusterID)
+	start := time.Now()
+
+	s.mu.RLock()
+	cs, ok := s.clusters[req.clusterID]
+	s.mu.RUnlock()
+	if !ok {
+		enrichmentProcessed.WithLabelValues("stale").Inc()
+		return
+	}
+
+	// Pre-flight staleness: generation + configVersion
+	s.mu.RLock()
+	stale := cs.checkCounter != req.generation ||
+		cs.aiConfigVersion != req.configVersion
+	s.mu.RUnlock()
+	if stale {
+		enrichmentProcessed.WithLabelValues("stale").Inc()
+		return
+	}
+
+	// AI call — uses server ctx (cancelable on shutdown), NOT context.Background()
+	aiStatus, enhancements, insights, err := runAIEnrichment(
+		ctx, req.results, req.causalCtx, req.checkCtx,
+		req.provider, req.aiModel, s.aiAnalysisTimeout,
+	)
+	enrichmentDuration.Observe(time.Since(start).Seconds())
+
+	if err != nil {
+		// Set degraded only if still current generation
+		s.mu.Lock()
+		if cs.checkCounter == req.generation && cs.latest != nil && cs.latest.AIStatus != nil {
+			cs.latest.AIStatus.Pending = false
+			cs.latest.AIStatus.LastError = err.Error()
+			cs.latest.AIStatus.CheckPhase = "done"
+			errUpdate := cloneHealthUpdate(cs.latest)
+			s.mu.Unlock()
+			s.broadcastUpdate(req.clusterID, errUpdate)
+		} else {
+			s.mu.Unlock()
+		}
+		enrichmentProcessed.WithLabelValues("error").Inc()
+		return
+	}
+
+	// Post-flight staleness: generation + issueHash + configVersion
+	s.mu.Lock()
+	if cs.checkCounter != req.generation ||
+		cs.currentIssueHash != req.issueHash ||
+		cs.aiConfigVersion != req.configVersion {
+		s.mu.Unlock()
+		enrichmentProcessed.WithLabelValues("stale").Inc()
+		return
+	}
+	if cs.latest == nil {
+		s.mu.Unlock()
+		enrichmentProcessed.WithLabelValues("stale").Inc()
+		return
+	}
+
+	// Commit AI cache state
+	cs.lastAICacheHash = req.issueHash
+	cs.lastAIResult = aiStatus
+	cs.lastAIEnhancements = enhancements
+	if len(insights) > 0 {
+		cs.lastCausalInsights = insights
+	}
+
+	// Deep-clone cs.latest, patch the clone, then swap atomically
+	enriched := cloneHealthUpdate(cs.latest)
+	enriched.AIStatus = aiStatus
+	patchDashboardResults(enriched.Results, req.results)
+	cs.latest = &enriched
+	s.mu.Unlock()
+
+	s.broadcastUpdate(req.clusterID, enriched)
+	enrichmentProcessed.WithLabelValues("success").Inc()
+}
+
+// broadcastUpdate sends a HealthUpdate to all subscribed SSE clients for a cluster.
+// Uses read lock for client iteration — channel sends NEVER under write lock.
+func (s *Server) broadcastUpdate(clusterID string, update HealthUpdate) {
+	s.mu.RLock()
+	for clientCh, subscribedID := range s.clients {
+		if subscribedID != "" && subscribedID != clusterID {
+			continue
+		}
+		select {
+		case clientCh <- update:
+		default:
+		}
+	}
+	s.mu.RUnlock()
+}
+
+// patchDashboardResults walks enriched checker results (from AI worker) and patches
+// the corresponding dashboard CheckResult.Issues in the health update.
+func patchDashboardResults(dashResults map[string]CheckResult, enrichedResults map[string]*checker.CheckResult) {
+	for name, enriched := range enrichedResults {
+		dr, ok := dashResults[name]
+		if !ok || enriched.Error != nil {
+			continue
+		}
+		for i := range dr.Issues {
+			if i >= len(enriched.Issues) {
+				break
+			}
+			src := enriched.Issues[i]
+			if strings.Contains(src.Suggestion, "AI Analysis:") {
+				suggestion := src.Suggestion
+				if idx := strings.Index(suggestion, "AI Analysis: "); idx >= 0 {
+					suggestion = suggestion[idx+len("AI Analysis: "):]
+				}
+				dr.Issues[i].Suggestion = suggestion
+				dr.Issues[i].AIEnhanced = true
+				if rc, ok := src.Metadata["aiRootCause"]; ok {
+					dr.Issues[i].RootCause = rc
+				}
+			}
+		}
+		dashResults[name] = dr // write back (map value is a struct, not pointer)
+	}
 }

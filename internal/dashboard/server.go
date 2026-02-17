@@ -128,7 +128,9 @@ type clusterState struct {
 	latest             *HealthUpdate
 	latestCausal       *causal.CausalContext
 	history            *history.RingBuffer
-	lastIssueHash      string
+	lastAICacheHash    string // hash of issues when AI last succeeded (for cache hit detection)
+	currentIssueHash   string // hash of latest check's issues (set at baseline publish)
+	aiConfigVersion    string // configVersionHash when AI last succeeded
 	lastAIResult       *AIStatus
 	lastAIEnhancements map[string]map[string]aiEnhancement
 	lastCausalInsights []ai.CausalGroupInsight
@@ -236,6 +238,8 @@ type Server struct {
 	sessions          sync.Map // sessionID (string) -> authSession
 	sessionHMACKey    []byte   // HMAC key for signing session IDs
 	stopCh            chan struct{}
+	enrichQueue       *enrichmentQueue
+	enrichQueueSize   int // default 16
 	chatSessions      map[string]*ChatSession
 	chatMu            sync.RWMutex
 	chatEnabled       bool
@@ -279,6 +283,7 @@ func NewServer(ds datasource.DataSource, registry *checker.Registry, addr string
 		mutationLimiter:   newMutationLimiter(),
 		stopCh:            make(chan struct{}),
 		sessionHMACKey:    hmacKey,
+		enrichQueueSize:   16,
 	}
 }
 
@@ -667,6 +672,14 @@ func (s *Server) WithChatAIConfig(providerName, apiKey, model, endpoint string) 
 	return s
 }
 
+// WithEnrichmentQueueSize sets the capacity of the async AI enrichment queue.
+func (s *Server) WithEnrichmentQueueSize(n int) *Server {
+	if n > 0 {
+		s.enrichQueueSize = n
+	}
+	return s
+}
+
 // buildHandler constructs the full HTTP handler tree (API routes + SPA serving +
 // security headers). Extracted from Start() to enable black-box testing of the
 // live handler without starting a real server.
@@ -791,6 +804,11 @@ func (s *Server) Start(ctx context.Context) error {
 		}
 	}()
 
+	// Initialize enrichment queue BEFORE the first health check so the startup
+	// check already uses the async path instead of blocking on AI.
+	s.enrichQueue = newEnrichmentQueue(s.enrichQueueSize)
+	s.enrichQueue.Run(ctx, s.handleEnrichmentResult)
+
 	// Run initial health check after the server starts listening.
 	// The first request may briefly see {"status": "initializing"} but the
 	// dashboard is reachable immediately instead of blocking for 30-90s on AI calls.
@@ -804,6 +822,9 @@ func (s *Server) Start(ctx context.Context) error {
 		log.Info("Shutting down dashboard server")
 		s.running.Store(false)
 		close(s.stopCh)
+		if s.enrichQueue != nil {
+			s.enrichQueue.Shutdown()
+		}
 		return server.Shutdown(context.Background())
 	case err := <-errCh:
 		return err

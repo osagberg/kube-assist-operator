@@ -131,7 +131,7 @@ func TestServer_HandleExplain_CachedResponse(t *testing.T) {
 	}
 	server.mu.Lock()
 	cs := server.getOrCreateClusterState("")
-	cs.lastIssueHash = "test-hash-123"
+	cs.lastAICacheHash = "test-hash-123"
 	cs.lastExplain = &ExplainCacheEntry{
 		Response:  cachedResp,
 		IssueHash: "test-hash-123",
@@ -184,7 +184,7 @@ func TestServer_HandleExplain_ExpiredCache(t *testing.T) {
 		},
 		Summary: Summary{TotalHealthy: 5},
 	}
-	cs.lastIssueHash = "test-hash-123"
+	cs.lastAICacheHash = "test-hash-123"
 	cs.lastExplain = &ExplainCacheEntry{
 		Response: &ai.ExplainResponse{
 			Narrative:      "Old cached response.",
@@ -235,7 +235,7 @@ func TestServer_HandleExplain_HashMismatchInvalidatesCache(t *testing.T) {
 		Results:    map[string]CheckResult{},
 		Summary:    Summary{},
 	}
-	cs.lastIssueHash = "new-hash-456"
+	cs.lastAICacheHash = "new-hash-456"
 	cs.lastExplain = &ExplainCacheEntry{
 		Response: &ai.ExplainResponse{
 			Narrative: "Cached with old hash.",

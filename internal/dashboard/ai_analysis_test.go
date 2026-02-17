@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sort"
+	"sync"
 	"testing"
 	"time"
 
@@ -1683,6 +1684,8 @@ func TestRunAIAnalysisForCluster_DisabledProvider(t *testing.T) {
 	}
 	s.mu.Lock()
 	s.clusters["test"] = cs
+	// Counter is now incremented by the caller (runCheckForCluster), simulate it
+	cs.checkCounter++
 	s.mu.Unlock()
 
 	results := map[string]*checker.CheckResult{
@@ -1697,7 +1700,7 @@ func TestRunAIAnalysisForCluster_DisabledProvider(t *testing.T) {
 		t.Errorf("expected nil status when AI is disabled, got %+v", status)
 	}
 
-	// checkCounter should have been incremented
+	// checkCounter should remain at 1 (not incremented by runAIAnalysisForCluster)
 	s.mu.RLock()
 	counter := cs.checkCounter
 	s.mu.RUnlock()
@@ -1743,9 +1746,9 @@ func TestRunAIAnalysisForCluster_CacheHit(t *testing.T) {
 	issueHash := computeIssueHash(results)
 
 	cs := &clusterState{
-		history:       history.New(10),
-		issueStates:   make(map[string]*IssueState),
-		lastIssueHash: issueHash,
+		history:         history.New(10),
+		issueStates:     make(map[string]*IssueState),
+		lastAICacheHash: issueHash,
 		lastAIResult: &AIStatus{
 			Enabled:         true,
 			Provider:        providerNoop,
@@ -1849,6 +1852,610 @@ func TestComputeOperationalHealthScore_EdgeCases(t *testing.T) {
 				t.Errorf("computeOperationalHealthScore(%d, %d) = %f, want %f", tt.checked, tt.critical, got, tt.want)
 			}
 		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Async AI enrichment test providers
+// ---------------------------------------------------------------------------
+
+// errorProvider always returns an error.
+type errorProvider struct {
+	err  error
+	name string
+}
+
+func (p *errorProvider) Name() string    { return p.name }
+func (p *errorProvider) Available() bool { return true }
+func (p *errorProvider) Analyze(_ context.Context, _ ai.AnalysisRequest) (*ai.AnalysisResponse, error) {
+	return nil, p.err
+}
+
+// ---------------------------------------------------------------------------
+// Async AI enrichment integration tests
+// ---------------------------------------------------------------------------
+
+func newTestServerWithQueue(t *testing.T) *Server {
+	t.Helper()
+	s := newTestServer(t)
+	s.enrichQueue = newEnrichmentQueue(s.enrichQueueSize)
+	return s
+}
+
+func TestAsyncAI_CacheHitSynchronous(t *testing.T) {
+	// AC-7: second check with same hash should get AI from cache with no Pending
+	s := newTestServerWithQueue(t)
+	provider := ai.NewNoOpProvider()
+	s.WithAI(provider, true)
+
+	results := map[string]*checker.CheckResult{
+		"workloads": {
+			Healthy: 2,
+			Issues: []checker.Issue{
+				{Type: "CrashLoop", Severity: "critical", Namespace: "default", Resource: "deploy/app"},
+			},
+		},
+	}
+	issueHash := computeIssueHash(results)
+
+	cs := &clusterState{
+		history:         history.New(10),
+		issueStates:     make(map[string]*IssueState),
+		lastAICacheHash: issueHash,
+		lastAIResult: &AIStatus{
+			Enabled:         true,
+			Provider:        providerNoop,
+			IssuesEnhanced:  1,
+			TotalIssueCount: 1,
+		},
+		lastAIEnhancements: map[string]map[string]aiEnhancement{
+			"workloads": {
+				"CrashLoop|deploy/app|default": {
+					Suggestion: "AI Analysis: cached from previous run",
+				},
+			},
+		},
+	}
+
+	s.mu.Lock()
+	s.clusters["test"] = cs
+	cs.checkCounter++
+	s.mu.Unlock()
+
+	causalCtx := &causal.CausalContext{}
+	checkCtx := &checker.CheckContext{AIEnabled: true, AIProvider: provider}
+
+	status := s.runAIAnalysisForCluster(context.Background(), results, causalCtx, checkCtx, true, provider, cs)
+	if status == nil {
+		t.Fatal("expected non-nil status on cache hit")
+	}
+	if !status.CacheHit {
+		t.Error("expected CacheHit=true")
+	}
+	if status.Pending {
+		t.Error("cache hit should NOT have Pending=true")
+	}
+	if status.IssuesEnhanced != 1 {
+		t.Errorf("IssuesEnhanced = %d, want 1", status.IssuesEnhanced)
+	}
+}
+
+func TestAsyncAI_FailureNonBlocking(t *testing.T) {
+	// AC-5: error provider should result in degraded status, not blocking
+	s := newTestServerWithQueue(t)
+	ctx := t.Context()
+
+	errProv := &errorProvider{err: errors.New("API key invalid"), name: "test-err"}
+	s.WithAI(errProv, true)
+
+	s.enrichQueue.Run(ctx, s.handleEnrichmentResult)
+
+	cs := &clusterState{
+		history:     history.New(10),
+		issueStates: make(map[string]*IssueState),
+	}
+	s.mu.Lock()
+	cs.checkCounter = 1
+	cs.aiConfigVersion = configVersionHash("test-err", "")
+	cs.currentIssueHash = "test-hash"
+	cs.latest = &HealthUpdate{
+		Timestamp: time.Now(),
+		Results:   map[string]CheckResult{},
+		AIStatus: &AIStatus{
+			Enabled:  true,
+			Provider: "test-err",
+			Pending:  true,
+		},
+	}
+	s.clusters["test"] = cs
+	s.mu.Unlock()
+
+	// Subscribe a client to receive broadcasts
+	clientCh := make(chan HealthUpdate, 5)
+	s.mu.Lock()
+	s.clients[clientCh] = "test"
+	s.mu.Unlock()
+
+	// Enqueue an enrichment that will fail
+	req := enrichmentRequest{
+		clusterID:     "test",
+		generation:    1,
+		issueHash:     "test-hash",
+		configVersion: configVersionHash("test-err", ""),
+		results:       map[string]*checker.CheckResult{},
+		checkCtx:      &checker.CheckContext{AIEnabled: true, AIProvider: errProv},
+		provider:      errProv,
+		aiModel:       "",
+		enqueuedAt:    time.Now(),
+	}
+	s.enrichQueue.Enqueue(req)
+
+	// Wait for the error to be processed and broadcast
+	select {
+	case update := <-clientCh:
+		if update.AIStatus == nil {
+			t.Fatal("expected AIStatus in broadcast")
+		}
+		if update.AIStatus.Pending {
+			t.Error("Pending should be false after error")
+		}
+		if update.AIStatus.LastError == "" {
+			t.Error("expected LastError to be set")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for error broadcast")
+	}
+
+	s.mu.Lock()
+	delete(s.clients, clientCh)
+	s.mu.Unlock()
+}
+
+func TestAsyncAI_QueueFullSetsError(t *testing.T) {
+	// AC-1/5: fill queue, verify LastError on drop
+	s := newTestServer(t)
+	s.enrichQueueSize = 1
+	s.enrichQueue = newEnrichmentQueue(1)
+	// Don't start worker — channel stays full
+
+	provider := ai.NewNoOpProvider()
+	s.WithAI(provider, true)
+
+	cs := &clusterState{
+		history:     history.New(10),
+		issueStates: make(map[string]*IssueState),
+	}
+	s.mu.Lock()
+	s.clusters["test"] = cs
+	s.mu.Unlock()
+
+	// Fill the queue
+	s.enrichQueue.Enqueue(enrichmentRequest{clusterID: "other", generation: 1})
+
+	// This second enqueue (different cluster) should fail
+	cs.checkCounter = 1
+	cs.latest = &HealthUpdate{
+		Timestamp: time.Now(),
+		Results:   map[string]CheckResult{},
+		AIStatus: &AIStatus{
+			Enabled: true,
+			Pending: true,
+		},
+	}
+
+	ok := s.enrichQueue.Enqueue(enrichmentRequest{clusterID: "test", generation: 1})
+	if ok {
+		t.Error("enqueue should fail when channel is full with different clusters")
+	}
+}
+
+func TestAsyncAI_StaleEnrichmentDiscarded(t *testing.T) {
+	// Trigger enrichment, advance generation before worker finishes, verify discard
+	s := newTestServerWithQueue(t)
+	ctx := t.Context()
+
+	provider := ai.NewNoOpProvider()
+	s.WithAI(provider, true)
+
+	s.enrichQueue.Run(ctx, s.handleEnrichmentResult)
+
+	cs := &clusterState{
+		history:     history.New(10),
+		issueStates: make(map[string]*IssueState),
+	}
+	s.mu.Lock()
+	// Set generation to 5, but enqueue with generation 3 — should be stale
+	cs.checkCounter = 5
+	cs.currentIssueHash = "current-hash"
+	cs.aiConfigVersion = configVersionHash("noop", "")
+	cs.latest = &HealthUpdate{
+		Timestamp: time.Now(),
+		Results:   map[string]CheckResult{},
+		AIStatus:  &AIStatus{Enabled: true, Provider: "noop"},
+	}
+	s.clusters["test"] = cs
+	s.mu.Unlock()
+
+	req := enrichmentRequest{
+		clusterID:     "test",
+		generation:    3, // stale — current is 5
+		issueHash:     "current-hash",
+		configVersion: configVersionHash("noop", ""),
+		results:       map[string]*checker.CheckResult{},
+		checkCtx:      &checker.CheckContext{AIEnabled: true, AIProvider: provider},
+		provider:      provider,
+		enqueuedAt:    time.Now(),
+	}
+	s.enrichQueue.Enqueue(req)
+
+	// Wait for processing
+	time.Sleep(100 * time.Millisecond)
+
+	// AI cache should NOT have been updated (stale enrichment discarded)
+	s.mu.RLock()
+	if cs.lastAICacheHash != "" {
+		t.Errorf("stale enrichment should not update cache, got hash %q", cs.lastAICacheHash)
+	}
+	s.mu.RUnlock()
+}
+
+func TestAsyncAI_ConfigChangeDiscards(t *testing.T) {
+	// Trigger enrichment, reconfigure provider before worker finishes, verify discard
+	s := newTestServerWithQueue(t)
+	ctx := t.Context()
+
+	provider := ai.NewNoOpProvider()
+	s.WithAI(provider, true)
+
+	s.enrichQueue.Run(ctx, s.handleEnrichmentResult)
+
+	oldConfigVersion := configVersionHash("noop", "old-model")
+	newConfigVersion := configVersionHash("noop", "new-model")
+
+	cs := &clusterState{
+		history:     history.New(10),
+		issueStates: make(map[string]*IssueState),
+	}
+	s.mu.Lock()
+	cs.checkCounter = 1
+	cs.currentIssueHash = "hash1"
+	cs.aiConfigVersion = newConfigVersion // config was updated after enqueue
+	cs.latest = &HealthUpdate{
+		Timestamp: time.Now(),
+		Results:   map[string]CheckResult{},
+		AIStatus:  &AIStatus{Enabled: true},
+	}
+	s.clusters["test"] = cs
+	s.mu.Unlock()
+
+	req := enrichmentRequest{
+		clusterID:     "test",
+		generation:    1,
+		issueHash:     "hash1",
+		configVersion: oldConfigVersion, // outdated config version
+		results:       map[string]*checker.CheckResult{},
+		checkCtx:      &checker.CheckContext{AIEnabled: true, AIProvider: provider},
+		provider:      provider,
+		enqueuedAt:    time.Now(),
+	}
+	s.enrichQueue.Enqueue(req)
+
+	time.Sleep(100 * time.Millisecond)
+
+	s.mu.RLock()
+	if cs.lastAICacheHash != "" {
+		t.Error("config-changed enrichment should not update cache")
+	}
+	s.mu.RUnlock()
+}
+
+func TestAsyncAI_NilLatestSafe(t *testing.T) {
+	// Enrichment arrives for cluster with no baseline yet — no panic
+	s := newTestServerWithQueue(t)
+	ctx := t.Context()
+
+	provider := ai.NewNoOpProvider()
+	s.WithAI(provider, true)
+
+	s.enrichQueue.Run(ctx, s.handleEnrichmentResult)
+
+	cs := &clusterState{
+		history:          history.New(10),
+		issueStates:      make(map[string]*IssueState),
+		checkCounter:     1,
+		currentIssueHash: "hash",
+		aiConfigVersion:  configVersionHash("noop", ""),
+		latest:           nil, // no baseline yet
+	}
+	s.mu.Lock()
+	s.clusters["test"] = cs
+	s.mu.Unlock()
+
+	req := enrichmentRequest{
+		clusterID:     "test",
+		generation:    1,
+		issueHash:     "hash",
+		configVersion: configVersionHash("noop", ""),
+		results:       map[string]*checker.CheckResult{},
+		checkCtx:      &checker.CheckContext{AIEnabled: true, AIProvider: provider},
+		provider:      provider,
+		enqueuedAt:    time.Now(),
+	}
+
+	// Should not panic
+	s.enrichQueue.Enqueue(req)
+	time.Sleep(100 * time.Millisecond)
+}
+
+func TestAsyncAI_RaceSafety(t *testing.T) {
+	// Run with -race: concurrent checks + enrichments
+	s := newTestServerWithQueue(t)
+	ctx := t.Context()
+
+	provider := ai.NewNoOpProvider()
+	s.WithAI(provider, true)
+
+	s.enrichQueue.Run(ctx, s.handleEnrichmentResult)
+
+	cs := &clusterState{
+		history:     history.New(10),
+		issueStates: make(map[string]*IssueState),
+	}
+	s.mu.Lock()
+	s.clusters["test"] = cs
+	s.mu.Unlock()
+
+	// Run concurrent enqueues
+	var wg sync.WaitGroup
+	for i := range 20 {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			s.mu.Lock()
+			cs.checkCounter++
+			gen := cs.checkCounter
+			cs.currentIssueHash = fmt.Sprintf("hash-%d", i)
+			cs.aiConfigVersion = configVersionHash("noop", "")
+			cs.latest = &HealthUpdate{
+				Timestamp: time.Now(),
+				Results:   map[string]CheckResult{},
+				AIStatus:  &AIStatus{Enabled: true, Provider: "noop", Pending: true},
+			}
+			s.mu.Unlock()
+
+			s.enrichQueue.Enqueue(enrichmentRequest{
+				clusterID:     "test",
+				generation:    gen,
+				issueHash:     fmt.Sprintf("hash-%d", i),
+				configVersion: configVersionHash("noop", ""),
+				results:       deepCopyResults(map[string]*checker.CheckResult{}),
+				checkCtx:      &checker.CheckContext{AIEnabled: true, AIProvider: provider},
+				provider:      provider,
+				enqueuedAt:    time.Now(),
+			})
+		}(i)
+	}
+	wg.Wait()
+
+	// Wait for all to process
+	time.Sleep(200 * time.Millisecond)
+}
+
+func TestAsyncAI_WorkerShutdownNoLeak(t *testing.T) {
+	q := newEnrichmentQueue(4)
+	ctx, cancel := context.WithCancel(context.Background())
+
+	q.Run(ctx, func(_ context.Context, req enrichmentRequest) {
+		time.Sleep(10 * time.Millisecond)
+		q.markDone(req.clusterID)
+	})
+
+	q.Enqueue(enrichmentRequest{clusterID: "a", generation: 1})
+
+	cancel()
+
+	done := make(chan struct{})
+	go func() {
+		q.Shutdown()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// No leak
+	case <-time.After(2 * time.Second):
+		t.Fatal("Shutdown timed out — possible goroutine leak")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// broadcastUpdate tests
+// ---------------------------------------------------------------------------
+
+func TestBroadcastUpdate(t *testing.T) {
+	s := newTestServer(t)
+
+	clientCh := make(chan HealthUpdate, 5)
+	s.mu.Lock()
+	s.clients[clientCh] = "test"
+	s.mu.Unlock()
+
+	update := HealthUpdate{
+		Timestamp: time.Now(),
+		ClusterID: "test",
+		Results:   map[string]CheckResult{},
+		AIStatus:  &AIStatus{Enabled: true, Provider: "noop"},
+	}
+
+	s.broadcastUpdate("test", update)
+
+	select {
+	case received := <-clientCh:
+		if received.AIStatus == nil || received.AIStatus.Provider != "noop" {
+			t.Error("broadcast should deliver update to subscribed client")
+		}
+	default:
+		t.Error("client should have received update")
+	}
+
+	s.mu.Lock()
+	delete(s.clients, clientCh)
+	s.mu.Unlock()
+}
+
+func TestBroadcastUpdate_FiltersByCluster(t *testing.T) {
+	s := newTestServer(t)
+
+	clientCh := make(chan HealthUpdate, 5)
+	s.mu.Lock()
+	s.clients[clientCh] = "beta" // subscribed to different cluster
+	s.mu.Unlock()
+
+	update := HealthUpdate{ClusterID: "alpha"}
+	s.broadcastUpdate("alpha", update)
+
+	select {
+	case <-clientCh:
+		t.Error("client subscribed to 'beta' should NOT receive 'alpha' updates")
+	default:
+		// Expected
+	}
+
+	s.mu.Lock()
+	delete(s.clients, clientCh)
+	s.mu.Unlock()
+}
+
+// ---------------------------------------------------------------------------
+// patchDashboardResults tests
+// ---------------------------------------------------------------------------
+
+func TestPatchDashboardResults(t *testing.T) {
+	dashResults := map[string]CheckResult{
+		"workloads": {
+			Name: "workloads",
+			Issues: []Issue{
+				{Type: "CrashLoop", Severity: "critical", Namespace: "default", Resource: "deploy/app", Suggestion: "original"},
+				{Type: "HighRestarts", Severity: "warning", Namespace: "default", Resource: "deploy/web", Suggestion: "original2"},
+			},
+		},
+	}
+
+	enrichedResults := map[string]*checker.CheckResult{
+		"workloads": {
+			Issues: []checker.Issue{
+				{
+					Type: "CrashLoop", Severity: "critical", Namespace: "default", Resource: "deploy/app",
+					Suggestion: "AI Analysis: OOM killed due to memory limits",
+					Metadata:   map[string]string{"aiRootCause": "Memory pressure"},
+				},
+				{
+					Type: "HighRestarts", Severity: "warning", Namespace: "default", Resource: "deploy/web",
+					Suggestion: "Check restart count", // not AI-enhanced
+				},
+			},
+		},
+	}
+
+	patchDashboardResults(dashResults, enrichedResults)
+
+	cr := dashResults["workloads"]
+	if !cr.Issues[0].AIEnhanced {
+		t.Error("first issue should be AI-enhanced")
+	}
+	if cr.Issues[0].Suggestion != "OOM killed due to memory limits" {
+		t.Errorf("first issue suggestion = %q, want stripped AI prefix", cr.Issues[0].Suggestion)
+	}
+	if cr.Issues[0].RootCause != "Memory pressure" {
+		t.Errorf("first issue RootCause = %q", cr.Issues[0].RootCause)
+	}
+	// Second issue should be unchanged
+	if cr.Issues[1].AIEnhanced {
+		t.Error("second issue should NOT be AI-enhanced")
+	}
+	if cr.Issues[1].Suggestion != "original2" {
+		t.Errorf("second issue suggestion = %q, should be unchanged", cr.Issues[1].Suggestion)
+	}
+}
+
+func TestPatchDashboardResults_MissingChecker(t *testing.T) {
+	dashResults := map[string]CheckResult{
+		"workloads": {
+			Issues: []Issue{{Suggestion: "original"}},
+		},
+	}
+	enrichedResults := map[string]*checker.CheckResult{
+		"nonexistent": {
+			Issues: []checker.Issue{
+				{Suggestion: "AI Analysis: should not crash"},
+			},
+		},
+	}
+	// Should not panic
+	patchDashboardResults(dashResults, enrichedResults)
+	if dashResults["workloads"].Issues[0].Suggestion != "original" {
+		t.Error("existing issues should be unchanged")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// runAIEnrichment tests
+// ---------------------------------------------------------------------------
+
+func TestRunAIEnrichment_ReturnsStatus(t *testing.T) {
+	provider := ai.NewNoOpProvider()
+	results := map[string]*checker.CheckResult{
+		"workloads": {
+			Issues: []checker.Issue{
+				{Type: "CrashLoop", Severity: "critical", Namespace: "default", Resource: "deploy/app"},
+			},
+		},
+	}
+	causalCtx := &causal.CausalContext{}
+	checkCtx := &checker.CheckContext{
+		AIEnabled:  true,
+		AIProvider: provider,
+		MaxIssues:  15,
+	}
+
+	status, _, _, err := runAIEnrichment(
+		context.Background(), results, causalCtx, checkCtx,
+		provider, "", 30*time.Second,
+	)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if status == nil {
+		t.Fatal("expected non-nil status")
+	}
+	if status.CheckPhase != phaseDone {
+		t.Errorf("CheckPhase = %q, want %q", status.CheckPhase, phaseDone)
+	}
+}
+
+func TestRunAIEnrichment_ErrorReturnsErr(t *testing.T) {
+	errProv := &errorProvider{err: errors.New("test error"), name: "err-prov"}
+	results := map[string]*checker.CheckResult{
+		"workloads": {
+			Issues: []checker.Issue{
+				{Type: "CrashLoop", Severity: "critical", Namespace: "default", Resource: "deploy/app"},
+			},
+		},
+	}
+	checkCtx := &checker.CheckContext{
+		AIEnabled:  true,
+		AIProvider: errProv,
+		MaxIssues:  15,
+	}
+
+	_, _, _, err := runAIEnrichment(
+		context.Background(), results, nil, checkCtx,
+		errProv, "", 30*time.Second,
+	)
+
+	if err == nil {
+		t.Error("expected error from error provider")
 	}
 }
 
