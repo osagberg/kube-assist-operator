@@ -238,6 +238,66 @@ func TestEnrichmentQueue_NewestWins(t *testing.T) {
 	}
 }
 
+func TestEnrichmentQueue_PendingFromOtherClusterDrainsOnNextMarkDone(t *testing.T) {
+	// Regression: pending requests for cluster A must not get stuck forever
+	// when markDone(A) cannot dispatch due to channel pressure from cluster B.
+	q := newEnrichmentQueue(1)
+	ctx := t.Context()
+
+	startedA1 := make(chan struct{})
+	releaseA1 := make(chan struct{})
+	processed := make(chan enrichmentRequest, 4)
+
+	q.Run(ctx, func(_ context.Context, req enrichmentRequest) {
+		if req.clusterID == "a" && req.generation == 1 {
+			close(startedA1)
+			<-releaseA1
+		}
+		processed <- req
+		q.markDone(req.clusterID)
+	})
+
+	if !q.Enqueue(enrichmentRequest{clusterID: "a", generation: 1}) {
+		t.Fatal("enqueue a1 should succeed")
+	}
+	<-startedA1
+
+	// Coalesced pending for inflight cluster A.
+	if !q.Enqueue(enrichmentRequest{clusterID: "a", generation: 2}) {
+		t.Fatal("enqueue a2 should succeed as pending")
+	}
+	// Occupy channel with another cluster so markDone(a) cannot dispatch a2 immediately.
+	if !q.Enqueue(enrichmentRequest{clusterID: "b", generation: 1}) {
+		t.Fatal("enqueue b1 should succeed")
+	}
+
+	close(releaseA1)
+
+	var seenA1, seenB1, seenA2 bool
+	timeout := time.After(2 * time.Second)
+	for range 3 {
+		select {
+		case req := <-processed:
+			switch {
+			case req.clusterID == "a" && req.generation == 1:
+				seenA1 = true
+			case req.clusterID == "b" && req.generation == 1:
+				seenB1 = true
+			case req.clusterID == "a" && req.generation == 2:
+				seenA2 = true
+			default:
+				t.Fatalf("unexpected processed request: %+v", req)
+			}
+		case <-timeout:
+			t.Fatal("timed out waiting for expected requests to drain")
+		}
+	}
+
+	if !seenA1 || !seenB1 || !seenA2 {
+		t.Fatalf("missing processed requests: seenA1=%t seenB1=%t seenA2=%t", seenA1, seenB1, seenA2)
+	}
+}
+
 func TestEnrichmentQueue_Shutdown(t *testing.T) {
 	q := newEnrichmentQueue(4)
 	ctx, cancel := context.WithCancel(context.Background())

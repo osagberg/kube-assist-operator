@@ -1871,6 +1871,40 @@ func (p *errorProvider) Analyze(_ context.Context, _ ai.AnalysisRequest) (*ai.An
 	return nil, p.err
 }
 
+// insightProvider returns one enhanced issue plus one causal insight.
+type insightProvider struct {
+	name string
+}
+
+func (p *insightProvider) Name() string {
+	if p.name == "" {
+		return "insight"
+	}
+	return p.name
+}
+func (p *insightProvider) Available() bool { return true }
+func (p *insightProvider) Analyze(_ context.Context, _ ai.AnalysisRequest) (*ai.AnalysisResponse, error) {
+	return &ai.AnalysisResponse{
+		EnhancedSuggestions: map[string]ai.EnhancedSuggestion{
+			"issue_0": {
+				Suggestion: "Increase memory limits",
+				RootCause:  "Pod memory pressure",
+				Confidence: 0.95,
+			},
+		},
+		CausalInsights: []ai.CausalGroupInsight{
+			{
+				GroupID:      "group_0",
+				AIRootCause:  "Node memory contention",
+				AISuggestion: "Reschedule workload to a larger node pool",
+				AISteps:      []string{"Increase requests", "Roll deployment"},
+				Confidence:   0.9,
+			},
+		},
+		TokensUsed: 42,
+	}, nil
+}
+
 // ---------------------------------------------------------------------------
 // Async AI enrichment integration tests
 // ---------------------------------------------------------------------------
@@ -2185,6 +2219,104 @@ func TestAsyncAI_NilLatestSafe(t *testing.T) {
 	// Should not panic
 	s.enrichQueue.Enqueue(req)
 	time.Sleep(100 * time.Millisecond)
+}
+
+func TestHandleEnrichmentResult_UpdatesLatestCausal(t *testing.T) {
+	s := newTestServerWithQueue(t)
+	provider := &insightProvider{name: "insight"}
+	s.WithAI(provider, true)
+
+	cs := &clusterState{
+		history:          history.New(10),
+		issueStates:      make(map[string]*IssueState),
+		checkCounter:     1,
+		currentIssueHash: "hash-1",
+		aiConfigVersion:  configVersionHash(provider.Name(), ""),
+		latest: &HealthUpdate{
+			Timestamp: time.Now(),
+			ClusterID: "test",
+			Results: map[string]CheckResult{
+				"workloads": {
+					Name: "workloads",
+					Issues: []Issue{
+						{
+							Type:      "CrashLoop",
+							Severity:  checker.SeverityCritical,
+							Namespace: "default",
+							Resource:  "deploy/app",
+							Message:   "crashing",
+						},
+					},
+				},
+			},
+			AIStatus: &AIStatus{
+				Enabled:  true,
+				Provider: provider.Name(),
+				Pending:  true,
+			},
+		},
+		latestCausal: &causal.CausalContext{
+			Groups: []causal.CausalGroup{
+				{
+					ID:       "g1",
+					Rule:     "test_rule",
+					Severity: checker.SeverityCritical,
+				},
+			},
+			TotalIssues: 1,
+		},
+	}
+	s.mu.Lock()
+	s.clusters["test"] = cs
+	s.mu.Unlock()
+
+	req := enrichmentRequest{
+		clusterID:     "test",
+		generation:    1,
+		issueHash:     "hash-1",
+		configVersion: configVersionHash(provider.Name(), ""),
+		results: map[string]*checker.CheckResult{
+			"workloads": {
+				Healthy: 0,
+				Issues: []checker.Issue{
+					{
+						Type:      "CrashLoop",
+						Severity:  checker.SeverityCritical,
+						Namespace: "default",
+						Resource:  "deploy/app",
+						Message:   "crashing",
+					},
+				},
+			},
+		},
+		causalCtx:  deepCopyCausalContext(cs.latestCausal),
+		checkCtx:   &checker.CheckContext{AIEnabled: true, AIProvider: provider},
+		provider:   provider,
+		aiModel:    "",
+		enqueuedAt: time.Now(),
+	}
+
+	s.handleEnrichmentResult(t.Context(), req)
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if cs.latestCausal == nil || len(cs.latestCausal.Groups) == 0 {
+		t.Fatal("expected latestCausal to be present")
+	}
+	group := cs.latestCausal.Groups[0]
+	if !group.AIEnhanced {
+		t.Fatal("expected async enrichment to update latestCausal AIEnhanced")
+	}
+	if group.AIRootCause == "" {
+		t.Fatal("expected AIRootCause in latestCausal")
+	}
+	if cs.latest == nil || cs.latest.AIStatus == nil {
+		t.Fatal("expected latest AIStatus to be updated")
+	}
+	if cs.latest.AIStatus.Pending {
+		t.Fatal("expected Pending=false after enrichment")
+	}
 }
 
 func TestAsyncAI_RaceSafety(t *testing.T) {

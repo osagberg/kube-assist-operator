@@ -806,8 +806,9 @@ func (s *Server) Start(ctx context.Context) error {
 
 	// Initialize enrichment queue BEFORE the first health check so the startup
 	// check already uses the async path instead of blocking on AI.
+	enrichCtx, cancelEnrichment := context.WithCancel(ctx)
 	s.enrichQueue = newEnrichmentQueue(s.enrichQueueSize)
-	s.enrichQueue.Run(ctx, s.handleEnrichmentResult)
+	s.enrichQueue.Run(enrichCtx, s.handleEnrichmentResult)
 
 	// Run initial health check after the server starts listening.
 	// The first request may briefly see {"status": "initializing"} but the
@@ -817,16 +818,26 @@ func (s *Server) Start(ctx context.Context) error {
 	// Start background health checker (skips initial check since we just ran it)
 	go s.runHealthChecker(ctx)
 
-	select {
-	case <-ctx.Done():
-		log.Info("Shutting down dashboard server")
+	cleanup := func() {
 		s.running.Store(false)
-		close(s.stopCh)
+		select {
+		case <-s.stopCh:
+		default:
+			close(s.stopCh)
+		}
+		cancelEnrichment()
 		if s.enrichQueue != nil {
 			s.enrichQueue.Shutdown()
 		}
+	}
+
+	select {
+	case <-ctx.Done():
+		log.Info("Shutting down dashboard server")
+		cleanup()
 		return server.Shutdown(context.Background())
 	case err := <-errCh:
+		cleanup()
 		return err
 	}
 }

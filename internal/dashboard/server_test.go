@@ -22,6 +22,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -1133,8 +1134,7 @@ func TestServer_HandleSSE_InitialState(t *testing.T) {
 	}
 	server.mu.Unlock()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx, cancel := context.WithCancel(t.Context())
 
 	req := httptest.NewRequest(http.MethodGet, "/api/events", nil).WithContext(ctx)
 	rr := httptest.NewRecorder()
@@ -1730,8 +1730,7 @@ func TestServer_HandleSSE_ClusterFiltering(t *testing.T) {
 	server.mu.Unlock()
 
 	// Subscribe to cluster "alpha"
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx, cancel := context.WithCancel(t.Context())
 
 	req := httptest.NewRequest(http.MethodGet, "/api/events?clusterId=alpha", nil).WithContext(ctx)
 	rr := httptest.NewRecorder()
@@ -5109,5 +5108,61 @@ func TestHandleAICatalog_UnknownProvider(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Errorf("expected 200, got %d", w.Code)
+	}
+}
+
+func TestStart_ListenErrorCleansUp(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to reserve test port: %v", err)
+	}
+	defer func() { _ = ln.Close() }()
+
+	server := NewServer(datasource.NewKubernetes(client), registry, ln.Addr().String())
+	server.authToken = "test-token"
+	server.allowInsecureHTTP = true
+
+	ctx := t.Context()
+
+	startErrCh := make(chan error, 1)
+	go func() {
+		startErrCh <- server.Start(ctx)
+	}()
+
+	select {
+	case startErr := <-startErrCh:
+		if startErr == nil {
+			t.Fatal("expected listen error, got nil")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for Start() to fail")
+	}
+
+	if server.running.Load() {
+		t.Fatal("server.running should be false after Start() error")
+	}
+
+	select {
+	case <-server.stopCh:
+		// closed as expected
+	default:
+		t.Fatal("stopCh should be closed on Start() listen error")
+	}
+
+	if server.enrichQueue != nil {
+		done := make(chan struct{})
+		go func() {
+			server.enrichQueue.Shutdown()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatal("enrichment queue did not shut down after Start() error")
+		}
 	}
 }

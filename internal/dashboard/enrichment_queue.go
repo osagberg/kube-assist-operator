@@ -111,6 +111,15 @@ func (q *enrichmentQueue) Enqueue(req enrichmentRequest) bool {
 		return true
 	}
 
+	// If a pending request already exists for this non-inflight cluster,
+	// replace it with the newest payload and attempt dispatch.
+	if _, ok := q.pending[req.clusterID]; ok {
+		q.pending[req.clusterID] = &req
+		q.dispatchPendingLocked()
+		q.updateDepthGauge()
+		return true
+	}
+
 	// Try to dispatch directly via channel
 	select {
 	case q.ch <- req:
@@ -132,19 +141,9 @@ func (q *enrichmentQueue) markDone(clusterID string) {
 
 	delete(q.inflight, clusterID)
 
-	// Check if there's a pending request for this cluster
-	if pending, ok := q.pending[clusterID]; ok {
-		delete(q.pending, clusterID)
-		// Try to dispatch the pending request
-		select {
-		case q.ch <- *pending:
-			q.inflight[clusterID] = struct{}{}
-		default:
-			// Channel full — put back in pending
-			q.pending[clusterID] = pending
-		}
-	}
-
+	// A free worker slot for any cluster just opened. Drain as many pending
+	// non-inflight clusters as channel capacity allows.
+	q.dispatchPendingLocked()
 	q.updateDepthGauge()
 }
 
@@ -182,4 +181,32 @@ func (q *enrichmentQueue) Depth() int {
 // updateDepthGauge updates the Prometheus gauge. Must be called with q.mu held.
 func (q *enrichmentQueue) updateDepthGauge() {
 	enrichmentQueueDepth.Set(float64(len(q.pending) + len(q.inflight)))
+}
+
+// dispatchPendingLocked promotes pending requests into the channel while there
+// is room and respecting single-writer semantics per cluster.
+// Must be called with q.mu held.
+func (q *enrichmentQueue) dispatchPendingLocked() {
+	for {
+		dispatched := false
+		for clusterID, pendingReq := range q.pending {
+			if _, inFlight := q.inflight[clusterID]; inFlight {
+				continue
+			}
+			select {
+			case q.ch <- *pendingReq:
+				delete(q.pending, clusterID)
+				q.inflight[clusterID] = struct{}{}
+				dispatched = true
+			default:
+				return
+			}
+			if dispatched {
+				break
+			}
+		}
+		if !dispatched {
+			return
+		}
+	}
 }

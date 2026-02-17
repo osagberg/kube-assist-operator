@@ -939,6 +939,11 @@ func (s *Server) handleEnrichmentResult(ctx context.Context, req enrichmentReque
 	cs.lastAIEnhancements = enhancements
 	if len(insights) > 0 {
 		cs.lastCausalInsights = insights
+		if cs.latestCausal != nil {
+			updatedCausal := deepCopyCausalContext(cs.latestCausal)
+			applyCausalInsights(updatedCausal, insights)
+			cs.latestCausal = updatedCausal
+		}
 	}
 
 	// Deep-clone cs.latest, patch the clone, then swap atomically
