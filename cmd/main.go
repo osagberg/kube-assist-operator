@@ -153,7 +153,7 @@ func main() {
 	flag.IntVar(&historySize, "history-size", 100,
 		"Health history ring buffer capacity.")
 	flag.IntVar(&notifySemCapacity, "notify-sem-capacity", 5,
-		"Maximum concurrent notification dispatches.")
+		"Maximum concurrent notification dispatches (0 = unlimited).")
 	flag.StringVar(&datasourceType, "datasource", "kubernetes",
 		"DataSource backend: kubernetes or console.")
 	flag.StringVar(&consoleURL, "console-url", "",
@@ -423,6 +423,14 @@ func main() {
 		os.Exit(1)
 	}
 
+	var notifySem chan struct{}
+	switch {
+	case notifySemCapacity > 0:
+		notifySem = make(chan struct{}, notifySemCapacity)
+	case notifySemCapacity < 0:
+		setupLog.Info("invalid --notify-sem-capacity; using unlimited dispatch", "value", notifySemCapacity)
+	}
+
 	if err := (&controller.TeamHealthRequestReconciler{
 		Client:           mgr.GetClient(),
 		Scheme:           mgr.GetScheme(),
@@ -431,7 +439,7 @@ func main() {
 		DataSource:       ds,
 		Correlator:       causal.NewCorrelator(),
 		NotifierRegistry: notifierRegistry,
-		NotifySem:        make(chan struct{}, notifySemCapacity),
+		NotifySem:        notifySem,
 		Recorder:         mgr.GetEventRecorderFor("teamhealthrequest-controller"), //nolint:staticcheck
 		LogContextConfig: logCtxConfig,
 		Clientset:        clientset,

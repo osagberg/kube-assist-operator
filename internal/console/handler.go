@@ -142,6 +142,7 @@ func (h *Handler) handleGet(w http.ResponseWriter, r *http.Request, reader clien
 		writeK8sError(w, err)
 		return
 	}
+	sanitizeSensitiveFields(obj)
 	writeJSON(w, http.StatusOK, obj)
 }
 
@@ -163,7 +164,24 @@ func (h *Handler) handleList(w http.ResponseWriter, r *http.Request, reader clie
 		writeK8sError(w, err)
 		return
 	}
+	sanitizeSensitiveFields(list)
 	writeJSON(w, http.StatusOK, list)
+}
+
+func sanitizeSensitiveFields(v any) {
+	switch obj := v.(type) {
+	case *corev1.Secret:
+		sanitizeSecret(obj)
+	case *corev1.SecretList:
+		for i := range obj.Items {
+			sanitizeSecret(&obj.Items[i])
+		}
+	}
+}
+
+func sanitizeSecret(secret *corev1.Secret) {
+	secret.Data = nil
+	secret.StringData = nil
 }
 
 // buildListOptions extracts query parameters into controller-runtime ListOptions.

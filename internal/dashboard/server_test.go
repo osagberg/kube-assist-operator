@@ -292,6 +292,37 @@ func TestServer_AuthMiddleware_AcceptsValidToken(t *testing.T) {
 	}
 }
 
+func TestServer_AuthMiddleware_IssuesSessionCookieForValidBearer(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(client), registry, ":8080")
+	server.authToken = testAuthToken
+
+	handler := server.authMiddleware(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/explain", nil)
+	req.Header.Set("Authorization", "Bearer "+testAuthToken)
+	rr := httptest.NewRecorder()
+	handler(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("authMiddleware valid token status = %d, want %d", rr.Code, http.StatusNoContent)
+	}
+	var found bool
+	for _, c := range rr.Result().Cookies() {
+		if c.Name == "__dashboard_session" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected authMiddleware to mint session cookie for valid bearer token")
+	}
+}
+
 func TestServer_AuthMiddleware_ConstantTimeComparison(t *testing.T) {
 	scheme := runtime.NewScheme()
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
@@ -2350,6 +2381,7 @@ func TestServeIndex_SetsCookieWithoutMetaTag(t *testing.T) {
 
 	handler := server.buildHandler()
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer "+testAuthToken)
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
 
@@ -2380,6 +2412,25 @@ func TestServeIndex_SetsCookieWithoutMetaTag(t *testing.T) {
 	}
 	if !found {
 		t.Error("__dashboard_session cookie not set")
+	}
+}
+
+func TestServeIndex_DoesNotSetCookieWithoutAuthProof(t *testing.T) {
+	scheme := runtime.NewScheme()
+	cl := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+	server := NewServer(datasource.NewKubernetes(cl), registry, ":8080")
+	server.authToken = testAuthToken
+
+	handler := server.buildHandler()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	for _, c := range rr.Result().Cookies() {
+		if c.Name == "__dashboard_session" {
+			t.Fatal("did not expect __dashboard_session cookie for unauthenticated index request")
+		}
 	}
 }
 
@@ -3794,6 +3845,7 @@ func TestServer_SessionCookie_MaxAgeHeader(t *testing.T) {
 	// Black-box test: exercise the real handler routing via buildHandler()
 	handler := server.buildHandler()
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer "+testAuthToken)
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
 

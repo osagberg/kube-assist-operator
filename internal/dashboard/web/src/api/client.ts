@@ -16,8 +16,8 @@ import type {
 const BASE = '/api'
 
 // Authentication is handled via HttpOnly session cookie (__dashboard_session).
-// The cookie is set by the server when serving index.html and sent automatically
-// by the browser with every same-origin request. No token is exposed to JavaScript.
+// The cookie is minted by the server only after a request proves possession of
+// DASHBOARD_AUTH_TOKEN (Bearer auth) and is then sent automatically by the browser.
 
 /** Normalize Go nil slices (JSON null) to empty arrays */
 export function normalizeHealth(data: HealthUpdate): HealthUpdate {

@@ -573,3 +573,60 @@ func TestManager_ProviderAvailable_IgnoresEnabled(t *testing.T) {
 		t.Error("ProviderAvailable() should still be true when disabled")
 	}
 }
+
+func TestManager_Reconfigure_ClearsCache(t *testing.T) {
+	cache := NewCache(10, 5*time.Minute, true)
+	m := NewManager(NewNoOpProvider(), nil, true, nil, cache, nil)
+
+	// Populate cache via Analyze
+	req := AnalysisRequest{
+		Issues: []IssueContext{
+			{
+				Type:             "CrashLoopBackOff",
+				Severity:         "critical",
+				Resource:         "deployment/test",
+				Namespace:        "default",
+				Message:          "Container crashing",
+				StaticSuggestion: "Check logs",
+			},
+		},
+	}
+
+	resp1, err := m.Analyze(context.Background(), req)
+	if err != nil {
+		t.Fatalf("first Analyze() error = %v", err)
+	}
+	if resp1 == nil {
+		t.Fatal("first Analyze() returned nil")
+	}
+	if cache.Size() != 1 {
+		t.Fatalf("cache.Size() = %d after first Analyze(), want 1", cache.Size())
+	}
+
+	// Reconfigure to a different provider (noop with different name triggers cache clear)
+	if err := m.Reconfigure(ProviderNameNoop, "", "", ""); err != nil {
+		t.Fatalf("Reconfigure() error = %v", err)
+	}
+
+	// Cache should be cleared
+	if cache.Size() != 0 {
+		t.Errorf("cache.Size() = %d after Reconfigure(), want 0", cache.Size())
+	}
+
+	// Re-enable so Analyze works with the new noop provider
+	m.SetEnabled(true)
+
+	// Same request should return a fresh response (not cached)
+	resp2, err := m.Analyze(context.Background(), req)
+	if err != nil {
+		t.Fatalf("second Analyze() error = %v", err)
+	}
+	if resp2 == nil {
+		t.Fatal("second Analyze() returned nil")
+	}
+
+	// Cache should have exactly 1 entry again (the fresh response)
+	if cache.Size() != 1 {
+		t.Errorf("cache.Size() = %d after second Analyze(), want 1", cache.Size())
+	}
+}

@@ -109,7 +109,7 @@ spec:
             {{- if and .Values.datasource .Values.datasource.clusterID }}
             - --cluster-id={{ .Values.datasource.clusterID }}
             {{- end }}
-            {{- if .Values.notifications.semaphoreCapacity }}
+            {{- if and .Values.notifications (hasKey .Values.notifications "semaphoreCapacity") }}
             - --notify-sem-capacity={{ .Values.notifications.semaphoreCapacity }}
             {{- end }}
           env:

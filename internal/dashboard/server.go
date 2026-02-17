@@ -413,55 +413,105 @@ func (s *Server) createSession() string {
 	return signedID
 }
 
+func (s *Server) setSessionCookie(w http.ResponseWriter) bool {
+	sessionID := s.createSession()
+	if sessionID == "" {
+		return false
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     "__dashboard_session",
+		Value:    sessionID,
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   s.tlsConfigured(),
+		SameSite: http.SameSiteStrictMode,
+		MaxAge:   int(s.sessionTTL.Seconds()),
+	})
+	return true
+}
+
+func bearerTokenFromHeader(authHeader string) string {
+	if !strings.HasPrefix(authHeader, "Bearer ") {
+		return ""
+	}
+	return strings.TrimPrefix(authHeader, "Bearer ")
+}
+
+func (s *Server) validateSessionCookie(r *http.Request, wantHash [sha256.Size]byte) bool {
+	cookie, err := r.Cookie("__dashboard_session")
+	if err != nil || cookie.Value == "" {
+		return false
+	}
+	parts := strings.SplitN(cookie.Value, ".", 2)
+	if len(parts) != 2 {
+		return false
+	}
+	sessionID, sig := parts[0], parts[1]
+	// Verify HMAC signature
+	mac := hmac.New(sha256.New, s.sessionHMACKey)
+	mac.Write([]byte(sessionID))
+	expectedSig := hex.EncodeToString(mac.Sum(nil))
+	if subtle.ConstantTimeCompare([]byte(sig), []byte(expectedSig)) != 1 {
+		return false
+	}
+	// Look up session in store
+	value, ok := s.sessions.Load(sessionID)
+	if !ok {
+		return false
+	}
+	session, ok := value.(authSession)
+	if !ok {
+		s.sessions.Delete(sessionID)
+		return false
+	}
+	if !session.expiresAt.After(time.Now()) {
+		s.sessions.Delete(sessionID)
+		return false
+	}
+	if subtle.ConstantTimeCompare(session.tokenHash[:], wantHash[:]) != 1 {
+		s.sessions.Delete(sessionID)
+		return false
+	}
+	// Sliding expiry keeps active browser sessions alive within TTL bounds.
+	session.expiresAt = time.Now().Add(s.sessionTTL)
+	s.sessions.Store(sessionID, session)
+	return true
+}
+
+func (s *Server) maybeIssueSessionCookie(w http.ResponseWriter, r *http.Request) {
+	if s.authToken == "" {
+		return
+	}
+	wantHash := sha256.Sum256([]byte(s.authToken))
+	if s.validateSessionCookie(r, wantHash) {
+		return
+	}
+	bearerToken := bearerTokenFromHeader(r.Header.Get("Authorization"))
+	if bearerToken == "" {
+		return
+	}
+	gotHash := sha256.Sum256([]byte(bearerToken))
+	if subtle.ConstantTimeCompare(gotHash[:], wantHash[:]) != 1 {
+		return
+	}
+	if s.setSessionCookie(w) {
+		w.Header().Set("Cache-Control", "no-store")
+	}
+}
+
 // validateToken checks the request for a valid auth token via Bearer header
 // or session cookie. Returns true if authenticated.
 func (s *Server) validateToken(r *http.Request) bool {
 	wantHash := sha256.Sum256([]byte(s.authToken))
 
 	// 1. Check Authorization header (programmatic clients / curl)
-	if auth := r.Header.Get("Authorization"); auth != "" && strings.HasPrefix(auth, "Bearer ") {
-		token := strings.TrimPrefix(auth, "Bearer ")
+	if token := bearerTokenFromHeader(r.Header.Get("Authorization")); token != "" {
 		gotHash := sha256.Sum256([]byte(token))
 		return subtle.ConstantTimeCompare(gotHash[:], wantHash[:]) == 1
 	}
 
 	// 2. Check session cookie (browser clients) — opaque session ID lookup
-	if cookie, err := r.Cookie("__dashboard_session"); err == nil && cookie.Value != "" {
-		parts := strings.SplitN(cookie.Value, ".", 2)
-		if len(parts) != 2 {
-			return false
-		}
-		sessionID, sig := parts[0], parts[1]
-		// Verify HMAC signature
-		mac := hmac.New(sha256.New, s.sessionHMACKey)
-		mac.Write([]byte(sessionID))
-		expectedSig := hex.EncodeToString(mac.Sum(nil))
-		if subtle.ConstantTimeCompare([]byte(sig), []byte(expectedSig)) != 1 {
-			return false
-		}
-		// Look up session in store
-		if value, ok := s.sessions.Load(sessionID); ok {
-			session, ok := value.(authSession)
-			if !ok {
-				s.sessions.Delete(sessionID)
-				return false
-			}
-			if !session.expiresAt.After(time.Now()) {
-				s.sessions.Delete(sessionID)
-				return false
-			}
-			if subtle.ConstantTimeCompare(session.tokenHash[:], wantHash[:]) != 1 {
-				s.sessions.Delete(sessionID)
-				return false
-			}
-			// Sliding expiry keeps active browser sessions alive within TTL bounds.
-			session.expiresAt = time.Now().Add(s.sessionTTL)
-			s.sessions.Store(sessionID, session)
-			return true
-		}
-	}
-
-	return false
+	return s.validateSessionCookie(r, wantHash)
 }
 
 func hasCookie(r *http.Request, name string) bool {
@@ -487,6 +537,7 @@ func (s *Server) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		}
 
 		if s.validateToken(r) {
+			s.maybeIssueSessionCookie(w, r)
 			next(w, r)
 			return
 		}
@@ -652,22 +703,11 @@ func (s *Server) buildHandler() http.Handler {
 			indexHTML = []byte("<!DOCTYPE html><html><body>Dashboard unavailable</body></html>")
 		}
 
-		serveIndex := func(w http.ResponseWriter, _ *http.Request) {
+		serveIndex := func(w http.ResponseWriter, r *http.Request) {
 			if s.authToken != "" {
-				// Set HttpOnly session cookie with opaque session ID.
-				// Token is never exposed to the browser.
-				sessionID := s.createSession()
-				if sessionID != "" {
-					http.SetCookie(w, &http.Cookie{
-						Name:     "__dashboard_session",
-						Value:    sessionID,
-						Path:     "/",
-						HttpOnly: true,
-						Secure:   s.tlsConfigured(),
-						SameSite: http.SameSiteStrictMode,
-						MaxAge:   int(s.sessionTTL.Seconds()),
-					})
-				}
+				// Only bootstrap a session cookie for requests that prove possession
+				// of the auth token. Never mint sessions for unauthenticated visits.
+				s.maybeIssueSessionCookie(w, r)
 				w.Header().Set("Cache-Control", "no-store")
 			}
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")

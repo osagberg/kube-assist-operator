@@ -131,12 +131,11 @@ func (s *Server) handlePostAISettings(w http.ResponseWriter, r *http.Request) {
 	s.mu.RUnlock()
 
 	if isManager {
-		if providerName != "" || req.ClearAPIKey {
-			if err := mgr.Reconfigure(stagedConfig.Provider, stagedConfig.APIKey, stagedConfig.Model, stagedConfig.ExplainModel); err != nil {
-				log.Error(err, "Failed to reconfigure AI provider", "provider", stagedConfig.Provider)
-				http.Error(w, "Failed to reconfigure AI provider", http.StatusInternalServerError)
-				return
-			}
+		// Reconfigure every POST to keep provider/model/api key in sync with staged config.
+		if err := mgr.Reconfigure(stagedConfig.Provider, stagedConfig.APIKey, stagedConfig.Model, stagedConfig.ExplainModel); err != nil {
+			log.Error(err, "Failed to reconfigure AI provider", "provider", stagedConfig.Provider)
+			http.Error(w, "Failed to reconfigure AI provider", http.StatusInternalServerError)
+			return
 		}
 		// Set enabled AFTER successful reconfigure to avoid partial state.
 		// This also overrides Reconfigure's own m.enabled inference.
@@ -151,6 +150,7 @@ func (s *Server) handlePostAISettings(w http.ResponseWriter, r *http.Request) {
 			cs.lastAIResult = nil
 			cs.lastAIEnhancements = nil
 			cs.lastCausalInsights = nil
+			cs.lastExplain = nil
 			if cs.latest != nil {
 				cs.latest.AIStatus = &AIStatus{
 					Enabled:  req.Enabled,
@@ -211,6 +211,7 @@ func (s *Server) handlePostAISettings(w http.ResponseWriter, r *http.Request) {
 		cs.lastAIResult = nil
 		cs.lastAIEnhancements = nil
 		cs.lastCausalInsights = nil
+		cs.lastExplain = nil
 		if cs.latest != nil {
 			cs.latest.AIStatus = &AIStatus{
 				Enabled:  req.Enabled,

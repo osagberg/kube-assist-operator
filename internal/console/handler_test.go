@@ -219,6 +219,35 @@ func TestHandleGetDeploymentNamespaced(t *testing.T) {
 	}
 }
 
+func TestHandleGetSecret_RedactsSensitiveData(t *testing.T) {
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "api-key", Namespace: "default"},
+		Data: map[string][]byte{
+			"token": []byte("super-secret"),
+		},
+	}
+
+	mux := newTestHandler(t, map[string][]client.Object{
+		"c1": {secret},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/clusters/c1/namespaces/default/secrets/api-key", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var got corev1.Secret
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+	if got.Data != nil {
+		t.Errorf("expected secret data to be redacted, got keys: %v", got.Data)
+	}
+}
+
 func TestHandleGetNotFound(t *testing.T) {
 	mux := newTestHandler(t, map[string][]client.Object{"c1": nil})
 
@@ -307,6 +336,48 @@ func TestHandleListDeployments(t *testing.T) {
 	}
 	if len(got.Items) != 1 || got.Items[0].Name != "api" {
 		t.Errorf("expected 1 deployment named api, got %v", got.Items)
+	}
+}
+
+func TestHandleListSecrets_RedactsSensitiveData(t *testing.T) {
+	secrets := []client.Object{
+		&corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: "one", Namespace: "default"},
+			Data: map[string][]byte{
+				"password": []byte("secret-1"),
+			},
+		},
+		&corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: "two", Namespace: "default"},
+			Data: map[string][]byte{
+				"password": []byte("secret-2"),
+			},
+		},
+	}
+
+	mux := newTestHandler(t, map[string][]client.Object{
+		"c1": secrets,
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/clusters/c1/namespaces/default/secrets", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var got corev1.SecretList
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+	if len(got.Items) != 2 {
+		t.Fatalf("expected 2 secrets, got %d", len(got.Items))
+	}
+	for _, item := range got.Items {
+		if item.Data != nil {
+			t.Errorf("expected secret %q data to be redacted", item.Name)
+		}
 	}
 }
 

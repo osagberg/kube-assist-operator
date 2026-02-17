@@ -1038,7 +1038,7 @@ func TestHandlePostAISettings_WithManager_NoopProvider(t *testing.T) {
 
 	body := AISettingsRequest{
 		Enabled:  true,
-		Provider: "noop",
+		Provider: providerNoop,
 	}
 	data, _ := json.Marshal(body)
 
@@ -1059,7 +1059,7 @@ func TestHandlePostAISettings_WithManager_NoopProvider(t *testing.T) {
 	if !resp.Enabled {
 		t.Error("expected AI enabled after POST")
 	}
-	if resp.Provider != "noop" {
+	if resp.Provider != providerNoop {
 		t.Errorf("provider = %q, want noop", resp.Provider)
 	}
 
@@ -1081,11 +1081,11 @@ func TestHandlePostAISettings_WithManager_ClearAPIKey(t *testing.T) {
 	s.aiProvider = mgr
 	s.aiEnabled = true
 	s.aiConfig.APIKey = "sk-secret"
-	s.aiConfig.Provider = "noop"
+	s.aiConfig.Provider = providerNoop
 
 	body := AISettingsRequest{
 		Enabled:     true,
-		Provider:    "noop",
+		Provider:    providerNoop,
 		ClearAPIKey: true,
 	}
 	data, _ := json.Marshal(body)
@@ -1102,6 +1102,56 @@ func TestHandlePostAISettings_WithManager_ClearAPIKey(t *testing.T) {
 
 	if s.aiConfig.APIKey != "" {
 		t.Errorf("apiKey should be empty after clearApiKey, got %q", s.aiConfig.APIKey)
+	}
+}
+
+func TestHandlePostAISettings_WithManager_ModelOnlyUpdateReconfigures(t *testing.T) {
+	scheme := runtime.NewScheme()
+	cl := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+
+	s := NewServer(datasource.NewKubernetes(cl), registry, ":0")
+
+	cache := ai.NewCache(10, 5*time.Minute, true)
+	noop := ai.NewNoOpProvider()
+	mgr := ai.NewManager(noop, nil, true, nil, cache, nil)
+	s.aiProvider = mgr
+	s.aiEnabled = true
+	s.aiConfig.Provider = providerNoop
+	s.aiConfig.Model = "old-model"
+
+	// Seed manager cache; model-only updates must still trigger Reconfigure() and clear cache.
+	seedReq := ai.AnalysisRequest{
+		Issues: []ai.IssueContext{
+			{Type: "CrashLoopBackOff", Severity: "critical", Namespace: "default", Resource: "deployment/app", Message: "crash"},
+		},
+	}
+	cache.Put(seedReq, &ai.AnalysisResponse{Summary: "seed", TokensUsed: 1}, providerNoop, "")
+	if cache.Size() != 1 {
+		t.Fatalf("expected seeded cache size 1, got %d", cache.Size())
+	}
+
+	body := AISettingsRequest{
+		Enabled: true,
+		Model:   "new-model",
+	}
+	data, _ := json.Marshal(body)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/settings/ai", bytes.NewReader(data))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	s.handlePostAISettings(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("handlePostAISettings (Manager, model-only) status = %d, want %d; body: %s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+
+	if s.aiConfig.Model != "new-model" {
+		t.Fatalf("server aiConfig.model = %q, want %q", s.aiConfig.Model, "new-model")
+	}
+	if cache.Size() != 0 {
+		t.Fatalf("manager cache should be cleared on model-only update, got size %d", cache.Size())
 	}
 }
 
@@ -1134,7 +1184,7 @@ func TestHandlePostAISettings_WithManager_ResetsClusterAIState(t *testing.T) {
 
 	body := AISettingsRequest{
 		Enabled:  true,
-		Provider: "noop",
+		Provider: providerNoop,
 	}
 	data, _ := json.Marshal(body)
 
@@ -1173,7 +1223,7 @@ func TestHandlePostAISettings_DirectAPIKey_Rejected(t *testing.T) {
 
 	body := AISettingsRequest{
 		Enabled:  true,
-		Provider: "noop",
+		Provider: providerNoop,
 		APIKey:   "sk-should-be-rejected",
 	}
 	data, _ := json.Marshal(body)
@@ -1371,5 +1421,68 @@ func TestHandleHealthHistory_SinceQuery(t *testing.T) {
 
 	if rr.Code != http.StatusOK {
 		t.Errorf("handleHealthHistory(?since=...) status = %d, want %d", rr.Code, http.StatusOK)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// handlePostAISettings explain cache invalidation
+// ---------------------------------------------------------------------------
+
+func TestHandlePostAISettings_ClearsExplainCache(t *testing.T) {
+	scheme := runtime.NewScheme()
+	cl := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := checker.NewRegistry()
+
+	s := NewServer(datasource.NewKubernetes(cl), registry, ":0")
+
+	// Wire up an ai.Manager as the provider
+	noop := ai.NewNoOpProvider()
+	mgr := ai.NewManager(noop, nil, true, nil, nil, nil)
+	s.aiProvider = mgr
+	s.aiEnabled = true
+	s.aiConfig.Provider = providerNoop
+
+	// Set lastExplain to a non-nil value
+	s.mu.Lock()
+	cs := s.getOrCreateClusterState("")
+	cs.lastExplain = &ExplainCacheEntry{
+		Response: &ai.ExplainResponse{
+			Narrative:      "cached explanation",
+			RiskLevel:      "low",
+			TrendDirection: "stable",
+		},
+		IssueHash: "testhash",
+		CachedAt:  time.Now(),
+	}
+	cs.latest = &HealthUpdate{
+		Timestamp: time.Now(),
+		Results:   map[string]CheckResult{},
+		Summary:   Summary{HealthScore: 95},
+	}
+	s.mu.Unlock()
+
+	// POST AI settings with a provider change
+	body := AISettingsRequest{
+		Enabled:  true,
+		Provider: providerNoop,
+	}
+	data, _ := json.Marshal(body)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/settings/ai", bytes.NewReader(data))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	s.handlePostAISettings(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("handlePostAISettings status = %d, want %d; body: %s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+
+	// Verify lastExplain is nil after reconfigure
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if cs.lastExplain != nil {
+		t.Error("lastExplain should be nil after reconfigure, but it is still set")
 	}
 }

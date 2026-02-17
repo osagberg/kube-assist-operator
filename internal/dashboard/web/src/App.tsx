@@ -47,7 +47,6 @@ function App() {
   const [issueStates, setIssueStates] = useState<Record<string, IssueState>>({})
   const searchRef = useRef<HTMLInputElement>(null)
   const nsRef = useRef<HTMLSelectElement>(null)
-  const seededRef = useRef(false)
   const triggerTimeoutRef = useRef<ReturnType<typeof setTimeout>>(undefined)
 
   const { settings, save: saveSettings } = useSettings()
@@ -73,12 +72,14 @@ function App() {
   const { fleet } = useFleet(showFleet)
   const { data: sseData, connected } = useSSE(paused || showFleet, effectiveCluster)
 
-  // Seed issueStates from initial health fetch
+  // Reset issue-state cache when switching active cluster to avoid cross-cluster leakage.
   useEffect(() => {
-    if (!seededRef.current && health?.issueStates) {
-      seededRef.current = true
-      setIssueStates(health.issueStates)
-    }
+    setIssueStates({})
+  }, [effectiveCluster])
+
+  // Keep issue-state cache aligned with the latest health payload.
+  useEffect(() => {
+    setIssueStates(health?.issueStates ?? {})
   }, [health?.issueStates])
 
   // Update health from SSE
@@ -86,7 +87,7 @@ function App() {
     if (sseData) {
       setHealth(sseData)
       if (sseData.issueStates) {
-        setIssueStates(prev => ({...prev, ...sseData.issueStates}))
+        setIssueStates(sseData.issueStates)
       }
     }
   }, [sseData, setHealth])

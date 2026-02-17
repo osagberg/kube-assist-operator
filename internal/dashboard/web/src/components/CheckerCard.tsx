@@ -23,10 +23,11 @@ function makeIssueKey(issue: { namespace: string; resource: string; type: string
 function isStateMuted(state: IssueState | undefined): boolean {
   if (!state) return false
   if (state.action === 'acknowledged') return true
-  if (state.action === 'snoozed' && state.snoozedUntil) {
-    return new Date(state.snoozedUntil) > new Date()
+  if (state.action === 'snoozed') {
+    if (!state.snoozedUntil) return true
+    return new Date(state.snoozedUntil).getTime() > Date.now()
   }
-  return true
+  return false
 }
 
 export function CheckerCard({ name, result, search, severity, namespace, issueStates, onAcknowledge, onSnooze, onDismissState, onDiagnose }: Props) {

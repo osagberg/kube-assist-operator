@@ -19,7 +19,9 @@ package ai
 import (
 	"container/list"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 )
@@ -148,23 +150,56 @@ func extractProviderModel(args []string) (string, string) {
 	return provider, model
 }
 
+// normalizeRequestForKey returns a copy of request with deterministic ordering
+// for semantically order-insensitive fields.
+func normalizeRequestForKey(request AnalysisRequest) AnalysisRequest {
+	normalized := request
+
+	// ExplainContext is ignored unless ExplainMode is true.
+	if !normalized.ExplainMode {
+		normalized.ExplainContext = ""
+	}
+
+	// Causal context is only used by BuildPrompt when groups exist.
+	if normalized.CausalContext != nil && len(normalized.CausalContext.Groups) == 0 {
+		normalized.CausalContext = nil
+	}
+
+	// Namespace order is not semantically meaningful for cluster context.
+	sorted := make([]string, len(normalized.ClusterContext.Namespaces))
+	copy(sorted, normalized.ClusterContext.Namespaces)
+	slices.Sort(sorted)
+	normalized.ClusterContext.Namespaces = sorted
+
+	return normalized
+}
+
 // computeRequestKey generates a deterministic cache key from an AnalysisRequest.
-// It hashes the normalized issue signatures (type+severity+resource+message)
-// along with provider and model to avoid cross-provider cache collisions.
+//
+// Key dimensions (all contribute to the hash):
+//   - provider, model: avoid cross-provider/model cache collisions
+//   - full AnalysisRequest payload after normalization (issue content, cluster context, causal context)
+//   - ExplainMode + ExplainContext: separates explain from analyze requests
+//   - MaxTokens: different token limits yield different responses
+//   - ClusterContext.Namespaces: sorted namespace list
+//
 // NOTE: SHA-256 is used here; xxhash could be substituted if profiling shows this is a bottleneck.
 func computeRequestKey(request AnalysisRequest, provider, model string) string {
-	h := sha256.New()
-	_, _ = fmt.Fprintf(h, "provider:%s|model:%s\n", provider, model)
-	for _, issue := range request.Issues {
-		_, _ = fmt.Fprintf(h, "%s|%s|%s|%s\n", issue.Type, issue.Severity, issue.Resource, issue.Message)
+	payload := struct {
+		Provider string          `json:"provider"`
+		Model    string          `json:"model"`
+		Request  AnalysisRequest `json:"request"`
+	}{
+		Provider: provider,
+		Model:    model,
+		Request:  normalizeRequestForKey(request),
 	}
-	// Include explain mode in key
-	if request.ExplainMode {
-		_, _ = fmt.Fprintf(h, "explain:%s\n", request.ExplainContext)
+	data, err := json.Marshal(payload)
+	if err != nil {
+		// Fallback keeps cache operational if marshaling ever fails.
+		sum := sha256.Sum256([]byte(fmt.Sprintf("%+v", payload)))
+		return fmt.Sprintf("%x", sum[:])
 	}
-	_, _ = fmt.Fprintf(h, "k8s:%s\n", request.ClusterContext.KubernetesVersion)
-	if request.CausalContext != nil {
-		_, _ = fmt.Fprintf(h, "causal:%d\n", len(request.CausalContext.Groups))
-	}
-	return fmt.Sprintf("%x", h.Sum(nil))
+	sum := sha256.Sum256(data)
+	return fmt.Sprintf("%x", sum[:])
 }
