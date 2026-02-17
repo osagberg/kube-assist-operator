@@ -307,6 +307,8 @@ func parseBoolEnv(name string) bool {
 
 const defaultSessionTTL = 24 * time.Hour
 
+const sessionCookieName = "__dashboard_session"
+
 func parseSessionTTL() time.Duration {
 	v := strings.TrimSpace(os.Getenv("DASHBOARD_SESSION_TTL"))
 	if v == "" {
@@ -419,7 +421,7 @@ func (s *Server) setSessionCookie(w http.ResponseWriter) bool {
 		return false
 	}
 	http.SetCookie(w, &http.Cookie{
-		Name:     "__dashboard_session",
+		Name:     sessionCookieName,
 		Value:    sessionID,
 		Path:     "/",
 		HttpOnly: true,
@@ -438,7 +440,7 @@ func bearerTokenFromHeader(authHeader string) string {
 }
 
 func (s *Server) validateSessionCookie(r *http.Request, wantHash [sha256.Size]byte) bool {
-	cookie, err := r.Cookie("__dashboard_session")
+	cookie, err := r.Cookie(sessionCookieName)
 	if err != nil || cookie.Value == "" {
 		return false
 	}
@@ -543,7 +545,7 @@ func (s *Server) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		}
 
 		// Distinguish no-creds (401) from bad-creds (403)
-		if r.Header.Get("Authorization") != "" || hasCookie(r, "__dashboard_session") {
+		if r.Header.Get("Authorization") != "" || hasCookie(r, sessionCookieName) {
 			http.Error(w, "Forbidden", http.StatusForbidden)
 			return
 		}
@@ -563,7 +565,7 @@ func (s *Server) sseAuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
-		if r.Header.Get("Authorization") != "" || hasCookie(r, "__dashboard_session") {
+		if r.Header.Get("Authorization") != "" || hasCookie(r, sessionCookieName) {
 			http.Error(w, "Forbidden", http.StatusForbidden)
 			return
 		}

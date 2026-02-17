@@ -313,7 +313,7 @@ func TestServer_AuthMiddleware_IssuesSessionCookieForValidBearer(t *testing.T) {
 	}
 	var found bool
 	for _, c := range rr.Result().Cookies() {
-		if c.Name == "__dashboard_session" {
+		if c.Name == sessionCookieName {
 			found = true
 			break
 		}
@@ -2395,7 +2395,7 @@ func TestServeIndex_SetsCookieWithoutMetaTag(t *testing.T) {
 	cookies := rr.Result().Cookies()
 	var found bool
 	for _, c := range cookies {
-		if c.Name == "__dashboard_session" {
+		if c.Name == sessionCookieName {
 			found = true
 			// Cookie value should be an opaque HMAC-signed session ID (hex.hex format)
 			parts := strings.SplitN(c.Value, ".", 2)
@@ -2428,7 +2428,7 @@ func TestServeIndex_DoesNotSetCookieWithoutAuthProof(t *testing.T) {
 	handler.ServeHTTP(rr, req)
 
 	for _, c := range rr.Result().Cookies() {
-		if c.Name == "__dashboard_session" {
+		if c.Name == sessionCookieName {
 			t.Fatal("did not expect __dashboard_session cookie for unauthenticated index request")
 		}
 	}
@@ -2451,7 +2451,7 @@ func TestAuthMiddleware_AcceptsCookie(t *testing.T) {
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/health", nil)
-	req.AddCookie(&http.Cookie{Name: "__dashboard_session", Value: sessionID})
+	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: sessionID})
 	rr := httptest.NewRecorder()
 	handler(rr, req)
 
@@ -2478,7 +2478,7 @@ func TestValidateToken_RejectsExpiredSessionCookie(t *testing.T) {
 	}
 	rawSessionID := parts[0]
 	req := httptest.NewRequest(http.MethodGet, "/api/health", nil)
-	req.AddCookie(&http.Cookie{Name: "__dashboard_session", Value: sessionID})
+	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: sessionID})
 
 	if !server.validateToken(req) {
 		t.Fatal("expected freshly created session cookie to validate")
@@ -2535,7 +2535,7 @@ func TestAuthMiddleware_RejectsInvalidCookie(t *testing.T) {
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/health", nil)
-	req.AddCookie(&http.Cookie{Name: "__dashboard_session", Value: "wrong-cookie"})
+	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: "wrong-cookie"})
 	rr := httptest.NewRecorder()
 	handler(rr, req)
 
@@ -2561,7 +2561,7 @@ func TestSSEAuth_CookieAuth(t *testing.T) {
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/events", nil)
-	req.AddCookie(&http.Cookie{Name: "__dashboard_session", Value: sessionID})
+	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: sessionID})
 	rr := httptest.NewRecorder()
 	handler(rr, req)
 
@@ -2591,7 +2591,7 @@ func TestSSEAuth_CookiePrecedence(t *testing.T) {
 
 	// Valid cookie but no query param or header
 	req := httptest.NewRequest(http.MethodGet, "/api/events", nil)
-	req.AddCookie(&http.Cookie{Name: "__dashboard_session", Value: sessionID})
+	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: sessionID})
 	rr := httptest.NewRecorder()
 	handler(rr, req)
 
@@ -2635,7 +2635,7 @@ func TestSSEAuth_InvalidCookie_Rejects(t *testing.T) {
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/events", nil)
-	req.AddCookie(&http.Cookie{Name: "__dashboard_session", Value: "wrong-token"})
+	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: "wrong-token"})
 	rr := httptest.NewRecorder()
 	handler(rr, req)
 
@@ -3852,7 +3852,7 @@ func TestServer_SessionCookie_MaxAgeHeader(t *testing.T) {
 	cookies := rr.Result().Cookies()
 	var sessionCookie *http.Cookie
 	for _, c := range cookies {
-		if c.Name == "__dashboard_session" {
+		if c.Name == sessionCookieName {
 			sessionCookie = c
 			break
 		}

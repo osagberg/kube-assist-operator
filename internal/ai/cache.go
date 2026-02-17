@@ -197,7 +197,7 @@ func computeRequestKey(request AnalysisRequest, provider, model string) string {
 	data, err := json.Marshal(payload)
 	if err != nil {
 		// Fallback keeps cache operational if marshaling ever fails.
-		sum := sha256.Sum256([]byte(fmt.Sprintf("%+v", payload)))
+		sum := sha256.Sum256(fmt.Appendf(nil, "%+v", payload))
 		return fmt.Sprintf("%x", sum[:])
 	}
 	sum := sha256.Sum256(data)

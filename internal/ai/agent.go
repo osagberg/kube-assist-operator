@@ -37,6 +37,18 @@ commands or remediation steps. If you need more context, call the appropriate to
 // Reserve a conservative floor per provider call to avoid underestimation races.
 const minChatTurnReservationTokens = 500
 
+// Anthropic API content block type constants.
+const (
+	contentTypeText    = "text"
+	contentTypeToolUse = "tool_use"
+)
+
+// Anthropic API message role constants.
+const (
+	roleUser      = "user"
+	roleAssistant = "assistant"
+)
+
 // ToolDef defines a tool available to the ChatAgent.
 type ToolDef struct {
 	Name        string         `json:"name"`
@@ -270,13 +282,13 @@ func (a *ChatAgent) RunTurn(ctx context.Context, messages []ChatMessage, emit fu
 			emit(ChatEvent{Type: ChatEventContent, Content: content, Tokens: tokens})
 			emit(ChatEvent{Type: ChatEventDone, Tokens: totalTokens})
 			// Append assistant message to history.
-			msgs = append(msgs, ChatMessage{Role: "assistant", Content: content})
+			msgs = append(msgs, ChatMessage{Role: roleAssistant, Content: content})
 			return msgs, totalTokens, nil
 		}
 
 		// Append the assistant message with tool calls to history.
 		msgs = append(msgs, ChatMessage{
-			Role:      "assistant",
+			Role:      roleAssistant,
 			Content:   content,
 			ToolCalls: calls,
 		})
@@ -566,9 +578,9 @@ func (a *ChatAgent) callAnthropic(ctx context.Context, messages []ChatMessage) (
 	var calls []ToolCall
 	for _, block := range anthResp.Content {
 		switch block.Type {
-		case "text":
+		case contentTypeText:
 			textBuilder.WriteString(block.Text)
-		case "tool_use":
+		case contentTypeToolUse:
 			calls = append(calls, ToolCall{
 				ID:   block.ID,
 				Name: block.Name,
@@ -588,27 +600,27 @@ func buildAnthropicMessages(messages []ChatMessage) ([]anthropicChatMessage, err
 
 	for _, m := range messages {
 		switch m.Role {
-		case "user":
+		case roleUser:
 			content, err := json.Marshal(m.Content)
 			if err != nil {
 				return nil, fmt.Errorf("marshal user content: %w", err)
 			}
 			result = append(result, anthropicChatMessage{
-				Role:    "user",
+				Role:    roleUser,
 				Content: content,
 			})
 
-		case "assistant":
+		case roleAssistant:
 			var blocks []anthropicChatContentBlock
 			if m.Content != "" {
 				blocks = append(blocks, anthropicChatContentBlock{
-					Type: "text",
+					Type: contentTypeText,
 					Text: m.Content,
 				})
 			}
 			for _, tc := range m.ToolCalls {
 				blocks = append(blocks, anthropicChatContentBlock{
-					Type:  "tool_use",
+					Type:  contentTypeToolUse,
 					ID:    tc.ID,
 					Name:  tc.Name,
 					Input: tc.Args,
@@ -619,7 +631,7 @@ func buildAnthropicMessages(messages []ChatMessage) ([]anthropicChatMessage, err
 				return nil, fmt.Errorf("marshal assistant blocks: %w", err)
 			}
 			result = append(result, anthropicChatMessage{
-				Role:    "assistant",
+				Role:    roleAssistant,
 				Content: blockJSON,
 			})
 
@@ -634,7 +646,7 @@ func buildAnthropicMessages(messages []ChatMessage) ([]anthropicChatMessage, err
 				ToolUseID: m.ToolCallID,
 				Content:   &toolContent,
 			}
-			if len(result) > 0 && result[len(result)-1].Role == "user" {
+			if len(result) > 0 && result[len(result)-1].Role == roleUser {
 				// Merge into the preceding user message.
 				var existing []anthropicChatContentBlock
 				if err := json.Unmarshal(result[len(result)-1].Content, &existing); err != nil {
@@ -652,7 +664,7 @@ func buildAnthropicMessages(messages []ChatMessage) ([]anthropicChatMessage, err
 					return nil, fmt.Errorf("marshal tool result: %w", err)
 				}
 				result = append(result, anthropicChatMessage{
-					Role:    "user",
+					Role:    roleUser,
 					Content: blockJSON,
 				})
 			}
@@ -713,7 +725,7 @@ func (a *ChatAgent) maybeCompactHistory(msgs []ChatMessage) []ChatMessage {
 
 	compacted := make([]ChatMessage, 0, 1+keepTail)
 	compacted = append(compacted, ChatMessage{
-		Role:    "user",
+		Role:    roleUser,
 		Content: summary.String(),
 	})
 	compacted = append(compacted, tail...)
